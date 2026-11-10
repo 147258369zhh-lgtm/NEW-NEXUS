@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="attachment_draft_loading">正在恢復附件…</string>
+    <string name="attachment_draft_load_failed">附件恢復失敗，請重新開啟此對話重試，原草稿仍會保留。</string>
+    <string name="attachment_draft_save_failed">附件儲存失敗，請保留目前頁面後重試。</string>
+    <string name="attachment_draft_wait">請等待附件草稿恢復完成後再次傳送。</string>
+    <string name="attachment_importing">正在匯入附件…</string>
+    <string name="attachment_import_failed">附件新增失敗，請檢查存取權限；最多新增 24 張圖片或 64 個檔案。</string>
+</resources>

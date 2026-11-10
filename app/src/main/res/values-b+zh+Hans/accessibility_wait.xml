@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_wait_title">等待无障碍恢复</string>
+    <string name="accessibility_wait_detail">屏幕操作正在等待无障碍服务连接。请打开设置恢复服务；每个任务累计最多等待五分钟，也可以随时停止。</string>
+    <string name="accessibility_wait_restored">无障碍已连接。旧屏幕观察已清除，Agent 将重新观察后再决定操作。</string>
+    <string name="accessibility_wait_timeout">恢复等待已超时，本次屏幕操作未执行。请恢复服务后再继续。</string>
+    <string name="accessibility_wait_cancelled">恢复等待已结束，之前的屏幕操作没有重放。</string>
+    <string name="accessibility_wait_permissions">权限健康</string>
+    <string name="accessibility_wait_settings">无障碍设置</string>
+    <string name="accessibility_wait_stop">停止任务</string>
+    <string name="accessibility_wait_settings_failed">暂时无法打开设置，请从系统设置中进入无障碍并恢复 Nexus 服务。</string>
+</resources>

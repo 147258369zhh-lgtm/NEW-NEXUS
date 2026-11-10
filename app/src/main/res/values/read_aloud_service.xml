@@ -1,0 +1,4 @@
+<resources>
+    <string name="read_aloud_start_denied">Android could not start reading aloud. Open Nexus and try again. If this persists, check background activity in Permission health.</string>
+    <string name="read_aloud_start_timeout">Reading aloud did not start in time. Open Nexus and try again.</string>
+</resources>

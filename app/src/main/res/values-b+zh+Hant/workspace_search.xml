@@ -1,0 +1,19 @@
+<resources>
+    <string name="capability_workspace_export_folder">匯出資料夾為 ZIP</string>
+    <string name="capability_workspace_export_folder_summary">包含子資料夾和空資料夾，不支援連結。最多 10,000 項，單檔 128 MiB，總計 256 MiB。</string>
+    <string name="capability_workspace_export_folder_limit">資料夾超過匯出限制，請分別匯出較小的子資料夾。</string>
+    <string name="capability_workspace_export_folder_link">資料夾含連結或不支援的項目，已停止匯出，避免產生不完整封存檔。</string>
+    <string name="capability_workspace_file_changed">操作期間檔案已變更，請在修改結束後重試。</string>
+    <string name="capability_workspace_search_subfolders">搜尋子資料夾</string>
+    <string name="capability_workspace_search_scope">在目前資料夾及其子資料夾中搜尋</string>
+    <string name="capability_workspace_search_contents">同時搜尋文字內容</string>
+    <string name="capability_workspace_search_contents_summary">搜尋名稱及不超過 1 MiB 的 UTF-8 文字檔案</string>
+    <string name="capability_workspace_search_running">正在搜尋…</string>
+    <string name="capability_workspace_search_cancelled">搜尋已取消</string>
+    <string name="capability_workspace_search_restart">修改關鍵字或重新開啟子資料夾搜尋後重試</string>
+    <string name="capability_workspace_search_count">%1$d 個結果 · 已檢查 %2$d 項</string>
+    <string name="capability_workspace_search_limited">目前為部分結果，已略過 %1$d 項。請縮小搜尋範圍後重試。</string>
+    <string name="capability_workspace_search_skipped">已略過 %1$d 項：無法讀取、連結、過大或不支援的文字檔案。</string>
+    <string name="capability_workspace_search_hit">%1$s · 第 %2$d 行\n%3$s</string>
+    <string name="capability_workspace_open_parent">開啟所在資料夾</string>
+</resources>

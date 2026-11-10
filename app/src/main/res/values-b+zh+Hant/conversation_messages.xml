@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="conversation_message_summary">彙總</string>
+    <string name="conversation_message_host">主持人</string>
+    <string name="conversation_message_system">系統</string>
+    <string name="conversation_message_expand">展開完整彙總</string>
+    <string name="conversation_message_collapse">收起彙總</string>
+</resources>

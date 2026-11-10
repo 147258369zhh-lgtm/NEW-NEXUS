@@ -1,0 +1,166 @@
+{
+  "audited_at": "2026-11-06",
+  "scope": "Static source manifest and checked-in ARM64 ELF inventory. No device or OTA validation. Transitive AAR and final APK alignment remain a delivery check.",
+  "sdk": {
+    "min": 33,
+    "compile": 37,
+    "target": 37
+  },
+  "permissions": [
+    "android.permission.INTERNET",
+    "android.permission.ACCESS_LOCAL_NETWORK",
+    "android.permission.READ_ASSIST_STRUCTURE_SCREEN_CONTENT",
+    "android.permission.FOREGROUND_SERVICE",
+    "android.permission.FOREGROUND_SERVICE_MICROPHONE",
+    "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+    "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
+    "android.permission.POST_NOTIFICATIONS",
+    "android.permission.POST_PROMOTED_NOTIFICATIONS",
+    "android.permission.MANAGE_EXTERNAL_STORAGE",
+    "android.permission.ACCESS_NETWORK_STATE",
+    "android.permission.ACCESS_WIFI_STATE",
+    "android.permission.NFC",
+    "android.permission.MODIFY_AUDIO_SETTINGS",
+    "android.permission.READ_CALENDAR",
+    "android.permission.WRITE_CALENDAR",
+    "android.permission.ACCESS_NOTIFICATION_POLICY",
+    "android.permission.RECORD_AUDIO",
+    "com.android.alarm.permission.SET_ALARM",
+    "android.permission.ACCESS_COARSE_LOCATION",
+    "android.permission.ACCESS_FINE_LOCATION",
+    "android.permission.ACCESS_BACKGROUND_LOCATION",
+    "android.permission.PACKAGE_USAGE_STATS",
+    "android.permission.SYSTEM_ALERT_WINDOW",
+    "android.permission.QUERY_ALL_PACKAGES",
+    "android.permission.VIBRATE",
+    "io.github.mangi.eta.permission.CONTROL_ACCESSIBILITY_PROTECTION"
+  ],
+  "foreground_services": [
+    {
+      "name": ".agent.voice.EtaAssistantOverlayService",
+      "foreground_service_type": "microphone|mediaPlayback"
+    },
+    {
+      "name": ".agent.voice.ReadAloudPlaybackService",
+      "foreground_service_type": "mediaPlayback"
+    },
+    {
+      "name": ".agent.runtime.AgentExecutionService",
+      "foreground_service_type": "specialUse"
+    },
+    {
+      "name": ".fork.a2a.A2AInboundService",
+      "foreground_service_type": "specialUse"
+    }
+  ],
+  "native_libraries": [
+    {
+      "file": "app/src/main/jniLibs/arm64-v8a/libeta_pty.so",
+      "sha256": "6fb44924067a2c9a6a0456c08e505c08669b5cd80fe78eff8737ba3d3b7527b8",
+      "load_segments": [
+        {
+          "alignment": 16384,
+          "offset": 0,
+          "virtual_address": 0,
+          "aligned_16k": true
+        },
+        {
+          "alignment": 16384,
+          "offset": 3392,
+          "virtual_address": 19776,
+          "aligned_16k": true
+        },
+        {
+          "alignment": 16384,
+          "offset": 6528,
+          "virtual_address": 39296,
+          "aligned_16k": true
+        },
+        {
+          "alignment": 16384,
+          "offset": 7216,
+          "virtual_address": 56368,
+          "aligned_16k": true
+        }
+      ],
+      "static_16k_alignment_passed": true
+    },
+    {
+      "file": "app/src/main/jniLibs/arm64-v8a/libproot_exec.so",
+      "sha256": "25486ef3de81806dad67f483c501330019526404ec746d8402b99427b8a22a83",
+      "load_segments": [
+        {
+          "alignment": 16384,
+          "offset": 0,
+          "virtual_address": 0,
+          "aligned_16k": true
+        },
+        {
+          "alignment": 16384,
+          "offset": 76480,
+          "virtual_address": 92864,
+          "aligned_16k": true
+        },
+        {
+          "alignment": 16384,
+          "offset": 241920,
+          "virtual_address": 274688,
+          "aligned_16k": true
+        },
+        {
+          "alignment": 16384,
+          "offset": 247672,
+          "virtual_address": 296824,
+          "aligned_16k": true
+        }
+      ],
+      "static_16k_alignment_passed": true
+    },
+    {
+      "file": "app/src/main/jniLibs/arm64-v8a/libproot_loader.so",
+      "sha256": "5abbee45cc8eb70d7a89b69a680af5dec775d2b945cb2296d6e5bd6de087e2e0",
+      "load_segments": [
+        {
+          "alignment": 16384,
+          "offset": 0,
+          "virtual_address": 2097152,
+          "aligned_16k": true
+        },
+        {
+          "alignment": 16384,
+          "offset": 16384,
+          "virtual_address": 137438953472,
+          "aligned_16k": true
+        }
+      ],
+      "static_16k_alignment_passed": true
+    }
+  ],
+  "device_matrix": [
+    {
+      "android_api": 36,
+      "mode": "standard",
+      "lsposed_required": false,
+      "device_result": "not_tested"
+    },
+    {
+      "android_api": 36,
+      "mode": "root",
+      "lsposed_required": false,
+      "device_result": "not_tested"
+    },
+    {
+      "android_api": 37,
+      "mode": "standard",
+      "lsposed_required": false,
+      "device_result": "not_tested"
+    },
+    {
+      "android_api": 37,
+      "mode": "root",
+      "lsposed_required": false,
+      "device_result": "not_tested"
+    }
+  ],
+  "ota_16_to_17": "not_tested"
+}

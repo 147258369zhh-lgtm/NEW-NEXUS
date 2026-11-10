@@ -1,0 +1,134 @@
+{
+  "scope": "First targeted test/lint pass for independent Root accessibility recovery. No physical Root helper or ColorOS/OTA execution. Follow-up changes are verified in the final run.",
+  "suites": [
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.AccessibilityNodeIdentityTest",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.AccessibilityPlatformCompatibilityTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.AccessibilityRebindTransactionTest",
+      "tests": 14,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.AccessibilityRecoveryBudgetTest",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.AccessibilityRecoveryLeaseTest",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.AgentAccessibilityHealthTest",
+      "tests": 24,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.AgentAccessibilityKeeperTest",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.MainThreadCallGateTest",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.RootAccessibilityRecoveryTest",
+      "tests": 15,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.ScreenshotWindowPolicyTest",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.ScrollEventObservationGateTest",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.TextEditPlannerTest",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.device.RootAccessPolicyTest",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.model.AgentPromptBuilderTest",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.tool.AgentLocalToolsPermissionTest",
+      "tests": 18,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.tool.AgentToolRequirementsTest",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.ui.app.PermissionHealthStateTest",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "total": {
+    "tests": 131,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "lint": {
+    "Warning": 426,
+    "Hint": 2
+  }
+}

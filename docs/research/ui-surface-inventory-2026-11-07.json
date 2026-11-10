@@ -1,0 +1,753 @@
+{
+  "date": "2026-11-07",
+  "scope": "P01.4 foundation; full visual audit remains P15",
+  "routes": {
+    "Home": {
+      "surfaces": [
+        "AgentHomeScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/home/AgentHomeScreen.kt"
+      ]
+    },
+    "Browser": {
+      "surfaces": [
+        "AgentBrowserActivity (native browser window; saved route restores activity)"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/agent/browser/AgentBrowserActivity.kt"
+      ]
+    },
+    "Terminal": {
+      "surfaces": [
+        "TerminalEntryScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/terminal/ConsoleScreen.kt"
+      ]
+    },
+    "Tools": {
+      "surfaces": [
+        "AgentToolsScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/tools/AgentToolsScreen.kt"
+      ]
+    },
+    "WebToolsSettings": {
+      "surfaces": [
+        "WebToolsSettingsScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/tools/WebToolsSettingsScreen.kt"
+      ]
+    },
+    "Subagents": {
+      "surfaces": [
+        "SubagentSettingsScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/subagent/SubagentSettingsScreen.kt"
+      ]
+    },
+    "TaskCenter": {
+      "surfaces": [
+        "AgentTaskCenterScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/tasks/AgentTaskCenterScreen.kt"
+      ]
+    },
+    "A2AAgents": {
+      "surfaces": [
+        "A2ASettingsScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/a2a/A2ASettingsScreen.kt"
+      ]
+    },
+    "SelfLearning": {
+      "surfaces": [
+        "LearningSettingsScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/learning/LearningSettingsScreen.kt"
+      ]
+    },
+    "Skills": {
+      "surfaces": [
+        "AgentSkillsScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/skills/AgentSkillsScreen.kt"
+      ]
+    },
+    "Characters": {
+      "surfaces": [
+        "CharacterLibraryScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/characters/CharacterLibraryScreen.kt"
+      ]
+    },
+    "CharacterDetail": {
+      "surfaces": [
+        "CharacterDetailScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/characters/CharacterDetailScreen.kt"
+      ]
+    },
+    "CharacterEditor": {
+      "surfaces": [
+        "CharacterEditorScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/characters/CharacterEditorScreen.kt"
+      ]
+    },
+    "CharacterPersona": {
+      "surfaces": [
+        "CharacterPersonaScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/characters/CharacterContextScreens.kt"
+      ]
+    },
+    "CharacterMemory": {
+      "surfaces": [
+        "CharacterMemoryScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/characters/CharacterContextScreens.kt"
+      ]
+    },
+    "Permissions": {
+      "surfaces": [
+        "PermissionHealthScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/permissions/PermissionHealthScreen.kt"
+      ]
+    },
+    "SystemEnhance": {
+      "surfaces": [
+        "SystemEnhanceScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/enhance/SystemEnhanceScreen.kt"
+      ]
+    },
+    "Workspace": {
+      "surfaces": [
+        "WorkspaceScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/terminal/WorkspaceScreen.kt"
+      ]
+    },
+    "Projects": {
+      "surfaces": [
+        "ProjectsScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/projects/ProjectsScreen.kt"
+      ]
+    },
+    "Settings": {
+      "surfaces": [
+        "SettingsScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/SettingsScreen.kt"
+      ]
+    },
+    "SpeechSettings": {
+      "surfaces": [
+        "SpeechSettingsScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/voice/SpeechSettingsScreen.kt"
+      ]
+    },
+    "SpeechRecognition": {
+      "surfaces": [
+        "SpeechRecognitionScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/voice/SpeechRecognitionScreen.kt"
+      ]
+    },
+    "SpeechSynthesis": {
+      "surfaces": [
+        "SpeechSynthesisScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/voice/SpeechSynthesisScreen.kt"
+      ]
+    },
+    "SpeechOss": {
+      "surfaces": [
+        "SpeechOssScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/voice/SpeechOssScreen.kt"
+      ]
+    },
+    "AppearanceSettings": {
+      "surfaces": [
+        "AppearanceSettingsScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/AppearanceSettingsScreen.kt"
+      ]
+    },
+    "ConversationArchiveSettings": {
+      "surfaces": [
+        "ConversationArchiveSettingsScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/ConversationArchiveSettingsScreen.kt"
+      ]
+    },
+    "MeetingRooms": {
+      "surfaces": [
+        "MeetingRoomsScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/meeting/MeetingRoomsScreen.kt"
+      ]
+    },
+    "MeetingSettings": {
+      "surfaces": [
+        "MeetingSettingsScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/MeetingSettingsScreen.kt"
+      ]
+    },
+    "MeetingRoom": {
+      "surfaces": [
+        "MeetingRoomScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/meeting/MeetingRoomScreen.kt"
+      ]
+    },
+    "DataBackup": {
+      "surfaces": [
+        "DataBackupScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/backup/DataBackupScreen.kt"
+      ]
+    },
+    "Memory": {
+      "surfaces": [
+        "AgentMemoryScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/memory/AgentMemoryScreen.kt"
+      ]
+    },
+    "LinuxEnvironment": {
+      "surfaces": [
+        "LinuxEnvironmentScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/terminal/LinuxEnvironmentScreen.kt"
+      ]
+    },
+    "SharedFolders": {
+      "surfaces": [
+        "SharedFoldersScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/terminal/SharedFoldersScreen.kt"
+      ]
+    },
+    "LinuxFiles": {
+      "surfaces": [
+        "LinuxFilesScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/terminal/LinuxFilesScreen.kt"
+      ]
+    },
+    "ModelProviders": {
+      "surfaces": [
+        "ModelProviderListScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/pages/providers/ModelProviderListScreen.kt"
+      ]
+    },
+    "CommunityCatalog": {
+      "surfaces": [
+        "CommunityCatalogScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/pages/providers/CommunityCatalogScreens.kt"
+      ]
+    },
+    "CommunityCatalogProvider": {
+      "surfaces": [
+        "CommunityCatalogProviderScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/pages/providers/CommunityCatalogScreens.kt"
+      ]
+    },
+    "McpServers": {
+      "surfaces": [
+        "McpServersScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/mcp/McpServersScreen.kt"
+      ]
+    },
+    "McpServerDetail": {
+      "surfaces": [
+        "McpServerDetailScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/mcp/McpServersScreen.kt"
+      ]
+    },
+    "McpCatalog": {
+      "surfaces": [
+        "McpCatalogScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/mcp/McpCatalogScreen.kt"
+      ]
+    },
+    "AgentMetrics": {
+      "surfaces": [
+        "AgentMetricsScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/metrics/AgentMetricsScreen.kt"
+      ]
+    },
+    "ConversationBranches": {
+      "surfaces": [
+        "ConversationBranchesScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/conversations/ConversationBranchesScreen.kt"
+      ]
+    },
+    "AgentTokenPricing": {
+      "surfaces": [
+        "AgentTokenPricingScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/metrics/AgentTokenPricingScreen.kt"
+      ]
+    },
+    "AgentTokenPriceEditor": {
+      "surfaces": [
+        "AgentTokenPriceEditorScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/metrics/AgentTokenPricingScreen.kt"
+      ]
+    },
+    "AgentMetricDetail": {
+      "surfaces": [
+        "AgentMetricDetailScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/screens/metrics/AgentMetricDetailScreen.kt"
+      ]
+    },
+    "ModelProviderDetail": {
+      "surfaces": [
+        "ModelProviderDetailScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/pages/providers/ModelProviderDetailScreen.kt"
+      ]
+    },
+    "ModelProviderNew": {
+      "surfaces": [
+        "ModelProviderDetailScreen"
+      ],
+      "sources": [
+        "app/src/main/kotlin/io/github/mangi/eta/ui/pages/providers/ModelProviderDetailScreen.kt"
+      ]
+    }
+  },
+  "surfaceFiles": [
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/app/AgentAppRoot.kt",
+      "functions": [
+        "ConversationContextBudgetDialog"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/AppearanceSettingsScreen.kt",
+      "functions": [
+        "AppearanceSettingsScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/components/ConversationPanePanel.kt",
+      "functions": [
+        "ConversationPanePanel"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/components/ItemDescriptionDialog.kt",
+      "functions": [
+        "ItemDescriptionDialog"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/ConversationArchiveSettingsScreen.kt",
+      "functions": [
+        "ConversationArchiveSettingsScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/layout/AdaptivePageLayout.kt",
+      "functions": [
+        "isWideScreen",
+        "rememberIsWideScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/MeetingSettingsScreen.kt",
+      "functions": [
+        "MeetingSettingsScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/pages/providers/CommunityCatalogScreens.kt",
+      "functions": [
+        "CommunityCatalogProviderScreen",
+        "CommunityCatalogScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/pages/providers/ModelProviderDetailScreen.kt",
+      "functions": [
+        "ModelProviderDetailScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/pages/providers/ModelProviderListScreen.kt",
+      "functions": [
+        "ModelProviderListScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/pages/providers/ProviderModelsTab.kt",
+      "functions": [
+        "ModelEditDialog"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/a2a/A2ASettingsScreen.kt",
+      "functions": [
+        "A2ASettingsScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/backup/DataBackupScreen.kt",
+      "functions": [
+        "DataBackupScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/browser/AgentBrowserScreen.kt",
+      "functions": [
+        "AgentBrowserScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/characters/CharacterContextScreens.kt",
+      "functions": [
+        "CharacterMemoryScreen",
+        "CharacterPersonaScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/characters/CharacterDetailScreen.kt",
+      "functions": [
+        "CharacterDetailScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/characters/CharacterEditorScreen.kt",
+      "functions": [
+        "CharacterEditorScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/characters/CharacterLibraryScreen.kt",
+      "functions": [
+        "CharacterLibraryScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/conversations/ConversationBranchesScreen.kt",
+      "functions": [
+        "ConversationBranchesScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/enhance/SystemEnhanceScreen.kt",
+      "functions": [
+        "SystemEnhanceScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/home/AgentHomeScreen.kt",
+      "functions": [
+        "AgentHomeScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/learning/LearningSettingsScreen.kt",
+      "functions": [
+        "LearningSettingsScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/mcp/McpCatalogScreen.kt",
+      "functions": [
+        "McpCatalogScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/mcp/McpServersScreen.kt",
+      "functions": [
+        "McpServerDetailScreen",
+        "McpServersScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/meeting/MeetingRoomScreen.kt",
+      "functions": [
+        "MeetingParticipantDialog",
+        "MeetingRoomDeleteDialog",
+        "MeetingRoomManagementDialog",
+        "MeetingRoomRenameDialog",
+        "MeetingRoomScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/meeting/MeetingRoomsScreen.kt",
+      "functions": [
+        "MeetingRoomCreateDialog",
+        "MeetingRoomsScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/memory/AgentMemoryScreen.kt",
+      "functions": [
+        "AgentMemoryScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/metrics/AgentMetricDetailScreen.kt",
+      "functions": [
+        "AgentMetricDetailScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/metrics/AgentMetricsScreen.kt",
+      "functions": [
+        "AgentMetricsScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/metrics/AgentTokenPricingScreen.kt",
+      "functions": [
+        "AgentTokenPriceEditorScreen",
+        "AgentTokenPricingScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/permissions/PermissionHealthScreen.kt",
+      "functions": [
+        "PermissionHealthScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/projects/ProjectsScreen.kt",
+      "functions": [
+        "ProjectsScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/skills/AgentSkillsScreen.kt",
+      "functions": [
+        "AgentSkillsScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/subagent/SubagentSettingsScreen.kt",
+      "functions": [
+        "SubagentSettingsScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/tasks/AgentTaskCenterScreen.kt",
+      "functions": [
+        "AgentTaskCenterScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/terminal/ConsoleScreen.kt",
+      "functions": [
+        "ConsoleScreen",
+        "TerminalEntryScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/terminal/DaemonTasksDialog.kt",
+      "functions": [
+        "DaemonTasksDialog"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/terminal/LinuxEnvironmentScreen.kt",
+      "functions": [
+        "LinuxEnvironmentScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/terminal/LinuxFilesScreen.kt",
+      "functions": [
+        "LinuxFilesScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/terminal/SessionListDialog.kt",
+      "functions": [
+        "SessionListDialog"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/terminal/SharedFoldersScreen.kt",
+      "functions": [
+        "SharedFolderPickerDialog",
+        "SharedFoldersScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/terminal/UserTerminalScreen.kt",
+      "functions": [
+        "InputPanel",
+        "UserTerminalScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/terminal/WorkspaceScreen.kt",
+      "functions": [
+        "WorkspaceActionDialog",
+        "WorkspaceNameDialog",
+        "WorkspacePreviewDialog",
+        "WorkspaceScreen",
+        "WorkspaceSortDialog"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/tools/AgentToolsScreen.kt",
+      "functions": [
+        "AgentToolsScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/screens/tools/WebToolsSettingsScreen.kt",
+      "functions": [
+        "WebToolsSettingsScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/SettingsScreen.kt",
+      "functions": [
+        "SettingsScreen",
+        "SystemizerConfirmDialog"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/voice/SpeechOssScreen.kt",
+      "functions": [
+        "SpeechOssScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/voice/SpeechRecognitionScreen.kt",
+      "functions": [
+        "SpeechRecognitionScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/voice/SpeechSettingsScreen.kt",
+      "functions": [
+        "SpeechSettingsScreen"
+      ],
+      "visualVerification": "pending"
+    },
+    {
+      "source": "app/src/main/kotlin/io/github/mangi/eta/ui/voice/SpeechSynthesisScreen.kt",
+      "functions": [
+        "SpeechSynthesisScreen"
+      ],
+      "visualVerification": "pending"
+    }
+  ],
+  "platformValidation": "source and automated tests only; OPPO and ColorOS device verification pending"
+}

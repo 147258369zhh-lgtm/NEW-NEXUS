@@ -1,0 +1,123 @@
+{
+  "Date": "2026-11-07",
+  "Scope": "Original P02.1 actual local/IPC tool transcript, ordered IO recorder, typed Room presentation and encrypted restore; P02 remains incomplete",
+  "Command": ".\\gradlew.bat --offline --no-daemon --no-configuration-cache :app:testDebugUnitTest :app:lintDebug",
+  "Result": "BUILD SUCCESSFUL",
+  "Duration": "3m 23s",
+  "Log": "F:\\eta\\p02-meeting-tool-final-verification.log",
+  "LogSha256": "8F75676A4605A76BF6171ACA425360D0B314211EA80E146F3CEBB763792545EF",
+  "Tests": {
+    "Suites": 396,
+    "Tests": 2669,
+    "Passed": 2520,
+    "Skipped": 149,
+    "Failures": 0,
+    "Errors": 0
+  },
+  "NewTestsSinceSharedTimeline": 28,
+  "RelatedSuites": [
+    {
+      "Name": "io.github.mangi.eta.data.repository.EtaFullBackupArchiveTest",
+      "Tests": 19,
+      "Skipped": 1,
+      "Failures": 0,
+      "Errors": 0
+    },
+    {
+      "Name": "io.github.mangi.eta.fork.meeting.MeetingRunEventRecorderTest",
+      "Tests": 10,
+      "Skipped": 0,
+      "Failures": 0,
+      "Errors": 0
+    },
+    {
+      "Name": "io.github.mangi.eta.fork.meeting.MeetingRunEventRecorderWaitTest",
+      "Tests": 4,
+      "Skipped": 0,
+      "Failures": 0,
+      "Errors": 0
+    },
+    {
+      "Name": "io.github.mangi.eta.fork.meeting.MeetingToolActivityTest",
+      "Tests": 5,
+      "Skipped": 0,
+      "Failures": 0,
+      "Errors": 0
+    },
+    {
+      "Name": "io.github.mangi.eta.fork.meeting.MeetingToolTranscriptTest",
+      "Tests": 9,
+      "Skipped": 0,
+      "Failures": 0,
+      "Errors": 0
+    },
+    {
+      "Name": "io.github.mangi.eta.ui.screens.meeting.MeetingConversationTimelineTest",
+      "Tests": 11,
+      "Skipped": 0,
+      "Failures": 0,
+      "Errors": 0
+    }
+  ],
+  "Lint": {
+    "Errors": 0,
+    "Warnings": 441,
+    "Hints": 2,
+    "Report": "F:\\eta\\source\\app\\build\\reports\\lint-results-debug.txt",
+    "ReportSha256": "CEADF2E29742699001D87DE1E302B05CA1EBC4024713E76981146E194771A482"
+  },
+  "Resources": [
+    {
+      "Locale": "values",
+      "File": "meeting_runtime_trace.xml",
+      "Keys": [
+        "meeting_tool_interrupted",
+        "meeting_tool_sensitive_hidden"
+      ]
+    },
+    {
+      "Locale": "values-b+zh+Hans",
+      "File": "meeting_runtime_trace.xml",
+      "Keys": [
+        "meeting_tool_interrupted",
+        "meeting_tool_sensitive_hidden"
+      ]
+    },
+    {
+      "Locale": "values-b+zh+Hant",
+      "File": "meeting_runtime_trace.xml",
+      "Keys": [
+        "meeting_tool_interrupted",
+        "meeting_tool_sensitive_hidden"
+      ]
+    }
+  ],
+  "Regressions": [
+    "Actual execution wrapper callback -> ordered IO writes -> Room -> shared tool presentation; exception and cancellation finish states",
+    "Local/hosted tool identity, stable sort/time/author, independent parallel member work groups, terminal dedup and stale replay",
+    "Bounded flush, slow/stuck database, transient terminal retry, truthful unresolved write failure, independent outage retry snapshots",
+    "Sensitive tool fields excluded; ordinary credentials redacted before truncation; nested subagent JSON not archived",
+    "Interrupted process recovery closes tool cards without replaying actions; deleted/idle room events cannot create new cards",
+    "Readable Markdown exports and model history separation; encrypted full archive export/import/startup restore retains actual tool messages and phases",
+    "Current task/round and stopped-room guards, malformed/future/mismatched metadata fallback; existing API33/36/37 common Compose tests retained"
+  ],
+  "Limitations": [
+    "No physical device, ColorOS/Root/OTA, TalkBack, landscape/split-screen verification",
+    "Meeting text/thinking streaming, remote A2A step events, attachments/drafts, navigation/management, drag/undo and independent runtime control remain incomplete",
+    "Flush bounds are cooperative cancellation bounds; native uninterruptible filesystem stalls cannot be certified by coroutine tests"
+  ],
+  "Delivery": {
+    "VersionName": "4.7.0",
+    "VersionCode": 2026110707,
+    "SourceBackupsUsed": 2,
+    "SourceBackupsLimit": 3,
+    "ApkBuilt": false,
+    "NextApkGate": "Original complete P01-P02 pair",
+    "CommitsOrPushes": false
+  },
+  "FixtureNotes": [
+    "The former wait-only recorder tests now exercise the production common recorder; their four existing cases are retained",
+    "No new cases are platform-skipped; the existing 149 platform skips remain",
+    "The earlier green 3m 15s full run preceded terminal snapshot retry hardening and is superseded by this final 3m 23s run"
+  ]
+}

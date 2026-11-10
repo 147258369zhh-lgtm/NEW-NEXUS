@@ -1,0 +1,4 @@
+<resources>
+    <string name="read_aloud_start_denied">系统未能启动朗读，请打开 Nexus 后重试。若仍失败，请在「权限健康」检查后台运行设置。</string>
+    <string name="read_aloud_start_timeout">朗读服务启动超时，请打开 Nexus 后重试。</string>
+</resources>

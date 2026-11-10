@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="metrics_prices_title">模型 Token 單價</string>
+    <string name="metrics_prices_note">分別設定供應商和模型的手動單價。使用你指定的幣別，不同幣別分別顯示。</string>
+    <string name="metrics_prices_history_note">模型嘗試開始時儲存當時單價；修改或移除設定只影響後續嘗試。</string>
+    <string name="metrics_prices_search">搜尋模型或供應商</string>
+    <string name="metrics_prices_empty">沒有符合的模型，請先在供應商設定中新增模型。</string>
+    <string name="metrics_prices_unset">未設定單價 · 費用保留未知</string>
+    <string name="metrics_prices_rates">%1$s · 輸入 %2$s / 輸出 %3$s，每百萬 Token</string>
+    <string name="metrics_prices_cache_rates">當時快取單價 · 讀取 %1$s / 寫入 %2$s，每百萬 Token</string>
+    <string name="metrics_prices_edit">編輯 Token 單價</string>
+    <string name="metrics_prices_unit">每 1,000,000 Token 的單價</string>
+    <string name="metrics_prices_rules">使用小數點，最多 8 位小數，範圍 0 至 1,000,000。輸入和輸出必填；快取單價留空表示未知，填 0 表示免費。</string>
+    <string name="metrics_prices_currency">幣別代碼（如 USD、CNY）</string>
+    <string name="metrics_prices_input">未快取輸入 · 必填</string>
+    <string name="metrics_prices_output">輸出 · 必填</string>
+    <string name="metrics_prices_read">快取讀取 · 選填</string>
+    <string name="metrics_prices_write">快取寫入 · 選填</string>
+    <string name="metrics_prices_save">儲存單價</string>
+    <string name="metrics_prices_saving">正在儲存…</string>
+    <string name="metrics_prices_invalid">請檢查幣別代碼和單價。不能使用負數、科學記號或千位分隔符號。</string>
+    <string name="metrics_prices_failed">儲存失敗，已保留填寫內容，請重試。</string>
+    <string name="metrics_prices_remove">移除單價設定</string>
+    <string name="metrics_prices_remove_note">後續嘗試的費用將保留未知。已有費用估算和當時單價會繼續保留。</string>
+    <string name="metrics_cost_title">Token 費用估算</string>
+    <string name="metrics_cost_unknown">費用未知 · 缺少單價或回報用量</string>
+    <string name="metrics_cost_estimate">%1$s %2$s · Token 估算</string>
+    <string name="metrics_cost_partial">%1$s %2$s · 僅已知部分</string>
+    <string name="metrics_cost_coverage">Token 估算完整的模型嘗試：%1$d / %2$d</string>
+    <string name="metrics_cost_scope">按手動單價估算已登記的主執行、子 Agent 和壓縮請求。缺少用量、無法逐次對帳的重試及非 Token 服務費會影響完整性，目前不是完整任務帳單。</string>
+    <string name="metrics_children_title">獨立模型請求</string>
+    <string name="metrics_child_compaction">上下文摘要</string>
+    <string name="metrics_child_subagent">子 Agent</string>
+    <string name="metrics_child_relation">請求組 %1$d · 上級：%2$s</string>
+    <string name="metrics_child_parent_root">主執行</string>
+    <string name="metrics_child_start">獨立請求開始</string>
+    <string name="metrics_child_finish">獨立請求結束</string>
+</resources>

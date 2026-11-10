@@ -1,0 +1,6 @@
+<resources>
+    <string name="conversation_draft_loading">正在恢復草稿…</string>
+    <string name="conversation_draft_load_failed">無法恢復草稿，已保留目前輸入。</string>
+    <string name="conversation_draft_save_failed">草稿尚未儲存，請保留此頁面並重試。</string>
+    <string name="conversation_draft_retry">重試</string>
+</resources>

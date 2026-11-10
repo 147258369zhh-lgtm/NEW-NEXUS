@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="recovery_title">Root 无障碍恢复</string>
+    <string name="recovery_summary_off">开启后，在应用运行期间恢复已启用的 Nexus 无障碍连接。无需 LSPosed，保留其他无障碍服务。</string>
+    <string name="recovery_summary_ready">已开启恢复。检测实际连接，连续失败三次后停止；尊重系统无障碍开关的关闭操作。</string>
+    <string name="recovery_root_required">需要已有 Root 授权。没有 Root 时，仍可正常使用系统无障碍服务。</string>
+    <string name="recovery_not_configured">请先在系统无障碍设置中开启 Nexus。恢复功能不会擅自开启已关闭的系统服务。</string>
+    <string name="recovery_in_progress">正在重绑 Nexus 并等待服务实际连接。关闭恢复开关可停止后续尝试。</string>
+    <string name="recovery_waiting">正在等待下一次尝试，避免反复重启服务。</string>
+    <string name="recovery_exhausted">已尝试三次，自动恢复已停止。请检查系统无障碍设置，需要时再重试。</string>
+    <string name="recovery_unconfirmed">上次恢复被中断，请到系统无障碍设置检查并重新开启 Nexus；自动写入已暂停。</string>
+    <string name="recovery_save_failed">无法保存恢复开关，请重试。</string>
+    <string name="recovery_failed">服务尚未重新连接，将在次数限制内重试；若持续失败，请检查系统设置。</string>
+    <string name="recovery_retry">重新尝试恢复</string>
+    <string name="recovery_retry_summary">重置尝试次数，不会申请 Root 或开启已关闭的系统服务。</string>
+    <string name="recovery_manual_required">Nexus 是当前最后一个已启用的无障碍服务。为避免重绑时系统关闭无障碍，请到系统设置重新开启 Nexus。</string>
+</resources>

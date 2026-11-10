@@ -1,0 +1,149 @@
+{
+  "Date": "2026-11-07",
+  "Phase": "P02 shared editor, text drafts and input handoff subset",
+  "OriginalBatchComplete": false,
+  "Command": ".\\gradlew.bat --offline --no-daemon --no-configuration-cache :app:testDebugUnitTest :app:lintDebug",
+  "Log": "F:\\eta\\p02-shared-drafts-ime-final-verification.log",
+  "LogSha256": "8DBB20C681CCD0AF82B1D11F634703BB376F39D20CB48AA921C05DA21D79E873",
+  "Result": "BUILD SUCCESSFUL",
+  "Duration": "2m 28s",
+  "Totals": {
+    "Suites": 391,
+    "Tests": 2612,
+    "Skipped": 149,
+    "Failures": 0,
+    "Errors": 0
+  },
+  "NewTestsComparedWithP01": 84,
+  "NewTestsExecuted": 84,
+  "RelatedSuites": [
+    {
+      "Name": "io.github.mangi.eta.data.repository.ConversationDraftRepositoryTest",
+      "Tests": 33,
+      "Skipped": 0,
+      "Failures": 0,
+      "Errors": 0
+    },
+    {
+      "Name": "io.github.mangi.eta.data.repository.EtaBranchBackupTest",
+      "Tests": 9,
+      "Skipped": 0,
+      "Failures": 0,
+      "Errors": 0
+    },
+    {
+      "Name": "io.github.mangi.eta.data.repository.EtaFullBackupArchiveTest",
+      "Tests": 18,
+      "Skipped": 1,
+      "Failures": 0,
+      "Errors": 0
+    },
+    {
+      "Name": "io.github.mangi.eta.fork.meeting.MeetingArchiveDatabaseTest",
+      "Tests": 3,
+      "Skipped": 0,
+      "Failures": 0,
+      "Errors": 0
+    },
+    {
+      "Name": "io.github.mangi.eta.fork.meeting.MeetingUiStateTest",
+      "Tests": 6,
+      "Skipped": 0,
+      "Failures": 0,
+      "Errors": 0
+    },
+    {
+      "Name": "io.github.mangi.eta.ui.app.AgentAppStateConversationLoadingTest",
+      "Tests": 19,
+      "Skipped": 0,
+      "Failures": 0,
+      "Errors": 0
+    },
+    {
+      "Name": "io.github.mangi.eta.ui.components.ChatConversationKeyTest",
+      "Tests": 3,
+      "Skipped": 0,
+      "Failures": 0,
+      "Errors": 0
+    },
+    {
+      "Name": "io.github.mangi.eta.ui.components.ConversationEditorStateTest",
+      "Tests": 39,
+      "Skipped": 0,
+      "Failures": 0,
+      "Errors": 0
+    },
+    {
+      "Name": "io.github.mangi.eta.ui.components.ConversationSubjectTest",
+      "Tests": 2,
+      "Skipped": 0,
+      "Failures": 0,
+      "Errors": 0
+    }
+  ],
+  "Lint": {
+    "Errors": 0,
+    "Warnings": 441,
+    "Hints": 2,
+    "NewDraftModelRepositoryEditorWarnings": 0,
+    "Report": "F:\\eta\\source\\app\\build\\reports\\lint-results-debug.txt",
+    "ReportSha256": "1A7296F0E01ED2C7B49378193769A69745DA123284A6208DDD6BC6B0FA3699CA"
+  },
+  "Resources": [
+    {
+      "Locale": "values",
+      "File": "conversation_drafts.xml",
+      "Keys": [
+        "conversation_draft_load_failed",
+        "conversation_draft_loading",
+        "conversation_draft_retry",
+        "conversation_draft_save_failed"
+      ]
+    },
+    {
+      "Locale": "values-b+zh+Hans",
+      "File": "conversation_drafts.xml",
+      "Keys": [
+        "conversation_draft_load_failed",
+        "conversation_draft_loading",
+        "conversation_draft_retry",
+        "conversation_draft_save_failed"
+      ]
+    },
+    {
+      "Locale": "values-b+zh+Hant",
+      "File": "conversation_drafts.xml",
+      "Keys": [
+        "conversation_draft_load_failed",
+        "conversation_draft_loading",
+        "conversation_draft_retry",
+        "conversation_draft_save_failed"
+      ]
+    }
+  ],
+  "Regressions": [
+    "API33/36/37 draft order, cache eviction, failures, selection and restore fences",
+    "Typed chat/meeting identity, deletion and import lease invalidation",
+    "Mounted editor handoff and late disposal, IME type-then-erase before observation",
+    "Actual sharing, stale acknowledgement, accepted queue receipt and slow image ABA switch",
+    "Encrypted full backup drains pending drafts, preserves actual XML and applies startup restore",
+    "Logical import clears drafts after commit; rejected import preserves old draft and lease"
+  ],
+  "Limitations": [
+    "No physical device, ColorOS, Root, OTA, UI screenshot or TalkBack validation",
+    "P02 remains incomplete: shared messages/tools/attachments, attachment drafts, navigation, drag/folders and full control channels remain"
+  ],
+  "Delivery": {
+    "VersionName": "4.7.0",
+    "VersionCode": 2026110707,
+    "SourceBackupsUsed": 2,
+    "SourceBackupsLimit": 3,
+    "ApkBuilt": false,
+    "NextApkGate": "Original complete P01-P02 pair",
+    "CommitsOrPushes": false
+  },
+  "FixtureNotes": [
+    "Local AgentAppState tests use Application plus explicitly initialized dependencies; EtaApp startup workers and mock Room Binder callbacks are outside this local fixture",
+    "Existing 149 platform skips remain; none of the 84 added cases is skipped"
+  ]
+}

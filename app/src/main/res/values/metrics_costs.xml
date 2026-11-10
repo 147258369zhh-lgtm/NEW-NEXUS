@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="metrics_prices_title">Model token prices</string>
+    <string name="metrics_prices_note">Set manual prices for each provider and model. Rates use the currency you choose; different currencies are shown separately.</string>
+    <string name="metrics_prices_history_note">Prices are saved when a model attempt starts. Changing or removing a price affects future attempts only.</string>
+    <string name="metrics_prices_search">Search model or provider</string>
+    <string name="metrics_prices_empty">No matching models. Add a model in provider settings first.</string>
+    <string name="metrics_prices_unset">Price not set · costs remain unknown</string>
+    <string name="metrics_prices_rates">%1$s · input %2$s / output %3$s per million tokens</string>
+    <string name="metrics_prices_cache_rates">Saved cache rates · read %1$s / write %2$s per million tokens</string>
+    <string name="metrics_prices_edit">Edit token prices</string>
+    <string name="metrics_prices_unit">Prices per 1,000,000 tokens</string>
+    <string name="metrics_prices_rules">Use a decimal point and up to 8 decimal places, between 0 and 1,000,000. Input and output are required. Leave cache prices blank if unknown; enter 0 for free.</string>
+    <string name="metrics_prices_currency">Currency code (e.g. USD or CNY)</string>
+    <string name="metrics_prices_input">Uncached input · required</string>
+    <string name="metrics_prices_output">Output · required</string>
+    <string name="metrics_prices_read">Cache read · optional</string>
+    <string name="metrics_prices_write">Cache write · optional</string>
+    <string name="metrics_prices_save">Save prices</string>
+    <string name="metrics_prices_saving">Saving…</string>
+    <string name="metrics_prices_invalid">Check the currency code and decimal rates. Negative numbers, exponent notation and thousands separators are not accepted.</string>
+    <string name="metrics_prices_failed">Could not save prices. Your edits are kept; try again.</string>
+    <string name="metrics_prices_remove">Remove price configuration</string>
+    <string name="metrics_prices_remove_note">Future attempts will have unknown costs. Existing estimates and their price snapshots are kept.</string>
+    <string name="metrics_cost_title">Estimated token cost</string>
+    <string name="metrics_cost_unknown">Cost unknown · price or reported usage is missing</string>
+    <string name="metrics_cost_estimate">%1$s %2$s · token estimate</string>
+    <string name="metrics_cost_partial">%1$s %2$s · known portion only</string>
+    <string name="metrics_cost_coverage">Complete token estimates: %1$d / %2$d model attempts</string>
+    <string name="metrics_cost_scope">Estimates include recorded root, subagent and compaction requests at manual prices. Missing usage, ambiguous retries and non-token service fees prevent a full task bill.</string>
+    <string name="metrics_children_title">Independent model requests</string>
+    <string name="metrics_child_compaction">Context summary</string>
+    <string name="metrics_child_subagent">Subagent</string>
+    <string name="metrics_child_relation">Request group %1$d · parent: %2$s</string>
+    <string name="metrics_child_parent_root">main run</string>
+    <string name="metrics_child_start">Independent request started</string>
+    <string name="metrics_child_finish">Independent request ended</string>
+</resources>

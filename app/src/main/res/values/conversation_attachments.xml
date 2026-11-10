@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="attachment_draft_loading">Restoring attachments…</string>
+    <string name="attachment_draft_load_failed">Could not restore attachments. Reopen this conversation to retry; your draft is still saved.</string>
+    <string name="attachment_draft_save_failed">Could not save attachments. Keep this conversation open and try again.</string>
+    <string name="attachment_draft_wait">Wait for attachments to finish restoring, then send again.</string>
+    <string name="attachment_importing">Importing attachments…</string>
+    <string name="attachment_import_failed">Could not add attachments. Check access and select up to 24 images or 64 files.</string>
+</resources>

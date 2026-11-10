@@ -1,0 +1,28 @@
+{
+  "versionName": "4.7.2-debug",
+  "versionCode": 2026110709,
+  "command": ".\\gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:assembleDebug",
+  "result": "BUILD SUCCESSFUL",
+  "durationSeconds": 161,
+  "tests": { "suites": 411, "total": 2795, "passed": 2646, "skipped": 149, "failures": 0, "errors": 0 },
+  "lint": { "errors": 0, "warnings": 515, "hints": 2 },
+  "backupTargetedTests": { "total": 83, "passed": 80, "skipped": 3, "failures": 0 },
+  "apk": {
+    "path": "C:\\Users\\29136\\Desktop\\Eta-v4.7.2-cost-trace-backup.apk",
+    "bytes": 33873724,
+    "sha256": "8B37FDCB12142C9322175E5B784D39F3C4EA037DE6DDAC90BDE789EBB0D9E00D",
+    "signatureVerified": true,
+    "signatureScheme": "v2",
+    "desktopCopyHashMatches": true
+  },
+  "device": { "adbDevices": ["emulator-5554"], "phoneInstalled": false },
+  "screenshots": "app/build/reports/memory-learning-ui",
+  "limits": [
+    "Statistics cover retained latest 200 completed runs and active runs, not lifetime billing.",
+    "Costs are estimates from captured manual rates; unknown usage and prices stay unknown.",
+    "Android and ColorOS can delay automatic backups.",
+    "JSON content selection does not include meetings, complete settings, learning rules or workspace files.",
+    "Full restore requires process restart; external directories and system permissions require local reauthorization.",
+    "Real ColorOS SAF, long-duration scheduling, restart activity, Android Keystore and Android 17 OTA remain device checks."
+  ]
+}

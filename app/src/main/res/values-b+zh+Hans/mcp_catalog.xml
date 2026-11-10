@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="mcp_catalog_timeout">服务器在一分钟内未完成响应，请重试。</string>
+    <string name="mcp_catalog_server_missing">服务器已不可用，请返回服务器列表。</string>
+    <string name="mcp_catalog_list_limit">当前显示前 128 项或前 8 页，服务器可能还有更多内容。</string>
+    <string name="mcp_catalog_preview_note">在这里查看资源和模板内容。预览不会运行 Agent，也不会写入聊天。</string>
+    <string name="mcp_catalog_retry">重试</string>
+    <string name="mcp_catalog_search">搜索资源和提示模板</string>
+    <string name="mcp_catalog_resources">资源</string>
+    <string name="mcp_catalog_prompts">提示模板</string>
+    <string name="mcp_resources_unsupported">此服务器不支持资源。</string>
+    <string name="mcp_prompts_unsupported">此服务器不支持提示模板。</string>
+    <string name="mcp_catalog_no_matches">没有匹配项。</string>
+    <string name="mcp_prompt_preview">预览模板</string>
+    <string name="mcp_preview_limits">预览最多显示 128 KiB 文本；省略了 %1$d 项非文本内容。</string>
+    <string name="mcp_preview_empty">没有可预览的文本内容。</string>
+</resources>

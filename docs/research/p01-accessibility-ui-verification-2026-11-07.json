@@ -1,0 +1,87 @@
+{
+  "date": "2026-11-07",
+  "command": ".\\gradlew.bat --offline --no-daemon --no-configuration-cache :app:testDebugUnitTest :app:lintDebug",
+  "log": "F:\\eta\\p01-accessibility-ui-complete-verification.log",
+  "logSha256": "261c65078f51579f9b79adf0fa15b00ecc31f6b5dac6f80618895e0344f554fe",
+  "result": "BUILD SUCCESSFUL",
+  "duration": "6m 53s",
+  "suites": 384,
+  "tests": 2465,
+  "skipped": 149,
+  "failures": 0,
+  "errors": 0,
+  "passed": 2316,
+  "lint": {
+    "Warning": 441,
+    "Hint": 2,
+    "Error": 0
+  },
+  "selectedSuites": {
+    "io.github.mangi.eta.agent.accessibility.AccessibilityRunGateTest": {
+      "tests": 30,
+      "skipped": 0,
+      "failures": 0,
+      "errors": 0
+    },
+    "io.github.mangi.eta.agent.runtime.GuiControlCoordinatorTest": {
+      "tests": 9,
+      "skipped": 0,
+      "failures": 0,
+      "errors": 0
+    },
+    "io.github.mangi.eta.agent.tool.AgentLocalToolsPermissionTest": {
+      "tests": 22,
+      "skipped": 0,
+      "failures": 0,
+      "errors": 0
+    },
+    "io.github.mangi.eta.fork.meeting.MeetingAccessibilityWaitRecorderTest": {
+      "tests": 4,
+      "skipped": 0,
+      "failures": 0,
+      "errors": 0
+    },
+    "io.github.mangi.eta.fork.meeting.MeetingAccessibilityWaitTest": {
+      "tests": 3,
+      "skipped": 0,
+      "failures": 0,
+      "errors": 0
+    },
+    "io.github.mangi.eta.ui.app.AccessibilityWaitProjectionTest": {
+      "tests": 15,
+      "skipped": 0,
+      "failures": 0,
+      "errors": 0
+    }
+  },
+  "previousFullRun": {
+    "date": "2026-11-07",
+    "command": ".\\gradlew.bat --offline --no-daemon --no-configuration-cache :app:testDebugUnitTest :app:lintDebug",
+    "log": "F:\\eta\\p01-accessibility-ui-final-verification.log",
+    "logSha256": "b0199b6e3294a36e609a2b5a2e344dc0dc77093c18fee3e70faabcce2c174452",
+    "result": "BUILD SUCCESSFUL",
+    "duration": "4m 57s",
+    "suites": 383,
+    "tests": 2461,
+    "skipped": 149,
+    "failures": 0,
+    "errors": 0,
+    "passed": 2312,
+    "lintAtFullRun": {
+      "errors": 0,
+      "warnings": 442,
+      "hints": 2
+    },
+    "boundaries": [
+      "Robolectric API33/36/37 for gate and event projection, real Room meeting tests API33 only",
+      "Root recovery is injected fake in gate tests; not physical Root or ColorOS verification",
+      "No APK exported; P01-P02 original exit not complete; source backups 2 of 3"
+    ],
+    "lintIssueFixedBeforeFinalRun": "EtaStateMessage ModifierParameter ordering; no runtime behavior change"
+  },
+  "boundaries": [
+    "Robolectric API33/36/37 for gate and event projection, real Room meeting tests API33 only",
+    "Root recovery is injected fake in gate tests; not physical Root or ColorOS verification",
+    "No APK exported; P01-P02 original exit not complete; source backups 2 of 3"
+  ]
+}

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="conversation_message_summary">汇总</string>
+    <string name="conversation_message_host">主持人</string>
+    <string name="conversation_message_system">系统</string>
+    <string name="conversation_message_expand">展开完整汇总</string>
+    <string name="conversation_message_collapse">收起汇总</string>
+</resources>

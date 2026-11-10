@@ -1,0 +1,13 @@
+<resources>
+    <string name="data_backup_phase_runtime">正在检查运行中的任务…</string>
+    <string name="data_backup_phase_databases">正在准备数据库…</string>
+    <string name="data_backup_phase_conversations">正在导出对话…</string>
+    <string name="data_backup_phase_files">正在归档文件…</string>
+    <string name="data_backup_phase_credentials">正在导出凭据…</string>
+    <string name="data_backup_phase_manifest">正在完成归档…</string>
+    <string name="data_backup_phase_saving">正在保存到所选位置…</string>
+    <string name="data_backup_archive_progress">已归档 %1$d 项 · 内容 %2$s</string>
+    <string name="data_backup_copy_progress">%1$s / %2$s</string>
+    <string name="data_backup_cancel_summary">离开此页也会取消导出。较大的 Linux 环境需要更长时间。</string>
+    <string name="data_backup_export_cancelled">导出已取消。若已开始保存，所选文件可能不完整，请重新导出。</string>
+</resources>

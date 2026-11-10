@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="recovery_title">Root accessibility recovery</string>
+    <string name="recovery_summary_off">When enabled, reconnects an already enabled Nexus service while the app is running. No LSPosed required; other services are preserved.</string>
+    <string name="recovery_summary_ready">Recovery is enabled. It checks the actual connection and stops after three failed attempts. Turning off system accessibility is respected.</string>
+    <string name="recovery_root_required">Requires existing Root authorization. Standard accessibility remains available without Root.</string>
+    <string name="recovery_not_configured">Enable Nexus in system accessibility settings first. Recovery will not turn on a service you disabled.</string>
+    <string name="recovery_in_progress">Reconnecting Nexus and waiting for the actual service connection. You can turn recovery off to stop further attempts.</string>
+    <string name="recovery_waiting">Waiting before the next attempt to avoid repeatedly restarting the service.</string>
+    <string name="recovery_exhausted">Automatic recovery stopped after three attempts. Check system accessibility settings, then retry if needed.</string>
+    <string name="recovery_unconfirmed">A previous repair was interrupted. Check and re-enable Nexus in system accessibility settings before continuing; automatic writes are paused.</string>
+    <string name="recovery_save_failed">Unable to save the recovery setting. Try again.</string>
+    <string name="recovery_failed">The service has not reconnected. Recovery may retry within its limit; check system settings if it continues to fail.</string>
+    <string name="recovery_retry">Retry recovery</string>
+    <string name="recovery_retry_summary">Resets the attempt limit. It does not grant Root or enable a disabled system service.</string>
+    <string name="recovery_manual_required">Nexus is the last enabled accessibility service. To avoid Android turning off accessibility during a rebind, re-enable Nexus in system settings.</string>
+</resources>

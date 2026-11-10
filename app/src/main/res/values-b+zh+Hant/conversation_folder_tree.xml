@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="folder_tree_manage">管理資料夾</string>
+    <string name="folder_tree_create_child">新增子資料夾</string>
+    <string name="folder_tree_move">移動資料夾</string>
+    <string name="folder_tree_delete">刪除資料夾</string>
+    <string name="folder_tree_root">頂層</string>
+    <string name="folder_tree_delete_message">刪除此資料夾？其直接子資料夾和對話（含封存對話）將移到上一層，對話內容會保留。如果出現同名衝突，請先重新命名或移動衝突的資料夾。</string>
+    <string name="folder_tree_invalid_name">名稱須為 1–80 個字元，不能包含斜線或控制字元。</string>
+    <string name="folder_tree_duplicate">目標位置已有同名資料夾，請先重新命名或移動。</string>
+    <string name="folder_tree_not_found">資料夾或對話已不存在，請關閉視窗後重試。</string>
+    <string name="folder_tree_depth_limit">資料夾最多支援 8 層，此操作會超出限制。</string>
+    <string name="folder_tree_cycle">不能將資料夾移入自身或其子資料夾。</string>
+    <string name="folder_tree_failed">儲存失敗，請重試。</string>
+    <string name="folder_tree_saving">正在儲存…</string>
+</resources>

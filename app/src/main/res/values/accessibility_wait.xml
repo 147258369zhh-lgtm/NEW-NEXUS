@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_wait_title">Waiting for accessibility</string>
+    <string name="accessibility_wait_detail">Screen actions are waiting for the accessibility service. Open settings to reconnect it. This task has a total recovery wait of up to five minutes; you can stop it at any time.</string>
+    <string name="accessibility_wait_restored">Accessibility reconnected. The old screen observation was cleared; the agent must observe again before acting.</string>
+    <string name="accessibility_wait_timeout">Recovery waiting timed out. No screen action was executed. Reconnect the service before continuing.</string>
+    <string name="accessibility_wait_cancelled">Recovery waiting ended. No pending screen action was replayed.</string>
+    <string name="accessibility_wait_permissions">Permission health</string>
+    <string name="accessibility_wait_settings">Accessibility settings</string>
+    <string name="accessibility_wait_stop">Stop task</string>
+    <string name="accessibility_wait_settings_failed">Unable to open settings. You can reconnect Nexus in the system accessibility settings.</string>
+</resources>

@@ -1,0 +1,320 @@
+{
+  "date": "2026-11-06",
+  "scope": "Shared HTTP LAN diagnostics, model no-retry, speech permission mapping, API33/36/37 audio lifecycle/selection regressions, all existing voice/MCP tests and previous Root accessibility/navigation/health regressions. No physical microphone, FGS eligibility, ColorOS, Root, OTA or APK validation.",
+  "log": "F:\\eta\\platform-network-audio-verification.log",
+  "suites": [
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.AccessibilityNodeIdentityTest",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.AccessibilityPlatformCompatibilityTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.AccessibilityRebindTransactionTest",
+      "tests": 17,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.AccessibilityRecoveryBudgetTest",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.AccessibilityRecoveryLeaseTest",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.AgentAccessibilityHealthTest",
+      "tests": 24,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.AgentAccessibilityKeeperTest",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.MainThreadCallGateTest",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.RootAccessibilityRecoveryTest",
+      "tests": 24,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.RootAccessibilitySettingsAccessTest",
+      "tests": 12,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.ScreenshotWindowPolicyTest",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.ScrollEventObservationGateTest",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.TextEditPlannerTest",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.device.LocalNetworkFailureInterceptorTest",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.device.RootAccessPolicyTest",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.mcp.McpProtocolValidationTest",
+      "tests": 12,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.mcp.McpRunContextTest",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.model.AgentHttpClientPermissionTest",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.model.AgentModelRetryTest",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.model.AgentPromptBuilderTest",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.tool.AgentLocalToolsPermissionTest",
+      "tests": 18,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.tool.AgentToolRequirementsTest",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.voice.CloudSpeechSynthesisTest",
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.voice.DoubaoTtsCodecTest",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.voice.EtaAssistantScreenContextTest",
+      "tests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.voice.EtaVoicePanelTouchTest",
+      "tests": 10,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.voice.EtaWaveShaderTest",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1
+    },
+    {
+      "name": "io.github.mangi.eta.agent.voice.OssSpeechSignerTest",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.voice.SpeechHttpTest",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.voice.SpeechLifecycleTest",
+      "tests": 30,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.voice.SpeechOssUploadTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.voice.SpeechPcmDecoderTest",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.voice.SpeechPcmOutputTest",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.voice.SpeechPlaybackTest",
+      "tests": 36,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.voice.SpeechProtocolTest",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.voice.SpeechSegmentFadeTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.voice.SpeechTextTest",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.voice.SpeechTranscriptRefinerTest",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.voice.SystemSpeechRecognizerTest",
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.ui.app.LocalNetworkPermissionTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.ui.app.PermissionHealthStateTest",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.ui.app.PermissionSettingsNavigationTest",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "total": {
+    "tests": 346.0,
+    "failures": 0.0,
+    "errors": 0.0,
+    "skipped": 1.0,
+    "passed": 345.0
+  },
+  "lint": {
+    "Error": 0,
+    "Warning": 422,
+    "Hint": 2
+  },
+  "skipped_details": [
+    {
+      "suite": "io.github.mangi.eta.agent.voice.EtaWaveShaderTest",
+      "test": "effectCompilesWithAndroidShaderCompiler",
+      "reason": "Existing assumption: Robolectric native runtime lacks child shader support. Shader compilation remains unverified."
+    }
+  ]
+}

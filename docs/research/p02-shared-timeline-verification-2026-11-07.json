@@ -1,0 +1,133 @@
+{
+  "Date": "2026-11-07",
+  "Scope": "Original P02.1 shared timeline/member identity/accessibility presentation; P02 remains incomplete",
+  "Command": ".\\gradlew.bat --offline --no-daemon --no-configuration-cache :app:testDebugUnitTest :app:lintDebug",
+  "Result": "BUILD SUCCESSFUL",
+  "Duration": "2m 32s",
+  "Log": "F:\\eta\\p02-shared-timeline-final-verification.log",
+  "LogSha256": "15B1D3FF88881A2594F38903E254E599037BD3922B205778EDED04817A8C8586",
+  "Tests": {
+    "Suites": 393,
+    "Tests": 2641,
+    "Passed": 2492,
+    "Skipped": 149,
+    "Failures": 0,
+    "Errors": 0
+  },
+  "NewTestsSinceSharedDrafts": 29,
+  "RelatedSuites": [
+    {
+      "Name": "io.github.mangi.eta.fork.meeting.MeetingAccessibilityWaitTest",
+      "Tests": 4,
+      "Skipped": 0,
+      "Failures": 0,
+      "Errors": 0,
+      "Passed": 4
+    },
+    {
+      "Name": "io.github.mangi.eta.ui.components.AgentChatTimelineEntriesTest",
+      "Tests": 6,
+      "Skipped": 0,
+      "Failures": 0,
+      "Errors": 0,
+      "Passed": 6
+    },
+    {
+      "Name": "io.github.mangi.eta.ui.components.ConversationMessagePresentationTest",
+      "Tests": 18,
+      "Skipped": 0,
+      "Failures": 0,
+      "Errors": 0,
+      "Passed": 18
+    },
+    {
+      "Name": "io.github.mangi.eta.ui.screens.meeting.MeetingConversationTimelineTest",
+      "Tests": 8,
+      "Skipped": 0,
+      "Failures": 0,
+      "Errors": 0,
+      "Passed": 8
+    }
+  ],
+  "Lint": {
+    "Errors": 0,
+    "Warnings": 441,
+    "Hints": 2,
+    "Report": "F:\\eta\\source\\app\\build\\reports\\lint-results-debug.txt",
+    "ReportSha256": "CEADF2E29742699001D87DE1E302B05CA1EBC4024713E76981146E194771A482"
+  },
+  "Resources": [
+    {
+      "Locale": "values",
+      "File": "conversation_messages.xml",
+      "Keys": [
+        "conversation_message_collapse",
+        "conversation_message_expand",
+        "conversation_message_host",
+        "conversation_message_summary",
+        "conversation_message_system"
+      ]
+    },
+    {
+      "Locale": "values-b+zh+Hans",
+      "File": "conversation_messages.xml",
+      "Keys": [
+        "conversation_message_collapse",
+        "conversation_message_expand",
+        "conversation_message_host",
+        "conversation_message_summary",
+        "conversation_message_system"
+      ]
+    },
+    {
+      "Locale": "values-b+zh+Hant",
+      "File": "conversation_messages.xml",
+      "Keys": [
+        "conversation_message_collapse",
+        "conversation_message_expand",
+        "conversation_message_host",
+        "conversation_message_summary",
+        "conversation_message_system"
+      ]
+    }
+  ],
+  "VisualChecks": [
+    {
+      "File": "F:\\eta\\source\\app\\build\\reports\\p02-shared-timeline\\classic-expanded-summary.png",
+      "Sha256": "E6C6DF9F58724BF6FF9FA904A5ECCD8F79EF042C02E74ED4F5252DB30F41BC4B",
+      "Renderer": "Robolectric Native Graphics API36; squircle drawing disabled in fixture"
+    },
+    {
+      "File": "F:\\eta\\source\\app\\build\\reports\\p02-shared-timeline\\omni-dark-narrow-large-text.png",
+      "Sha256": "2390A810522A849F189861361742990C051A419DE8C9A8B5781AB7ABBEC5C658",
+      "Renderer": "Robolectric Native Graphics API36; squircle drawing disabled in fixture"
+    }
+  ],
+  "Regressions": [
+    "Shared Compose row/timeline on API33/36/37: identity isolation, supported actions, independent participant results",
+    "Actual summary expand/collapse, Markdown rendering and full clipboard contents; 0-line preview remains expandable",
+    "320dp Omni dark layout at 200% font scale: attachment wrapping and action bounds; responsive name/metadata layout",
+    "Auto-follow disabled: initial latest-message position and preservation of reading position after incoming message",
+    "Latest typed Room wait phase projected without reading or guessing display text; previous/current rounds and malformed metadata",
+    "Separate parallel member/run work groups, stable entries and unique keys when attribution changes"
+  ],
+  "Limitations": [
+    "No physical device, ColorOS/Root/OTA, TalkBack, landscape or split-screen validation",
+    "Meeting Runtime tool/stream recording and full attachment entry/drafts still incomplete",
+    "P02 navigation, management parity, folder drag/undo and independent runtime control channels remain incomplete"
+  ],
+  "Delivery": {
+    "VersionName": "4.7.0",
+    "VersionCode": 2026110707,
+    "SourceBackupsUsed": 2,
+    "SourceBackupsLimit": 3,
+    "ApkBuilt": false,
+    "NextApkGate": "Original complete P01-P02 pair",
+    "CommitsOrPushes": false
+  },
+  "FixtureNotes": [
+    "Cold asynchronous Markdown parsing is awaited with a bounded frame loop; its first-load duration is not assumed to fit a fixed frame count",
+    "The existing 149 platform skips remain; all 29 added cases execute",
+    "Removed the obsolete meeting summary title resource in all three locales after the duplicated summary card was removed; final Lint returns to the prior 441-warning count"
+  ]
+}

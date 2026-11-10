@@ -1,0 +1,19 @@
+<resources>
+    <string name="capability_workspace_export_folder">Export folder as ZIP</string>
+    <string name="capability_workspace_export_folder_summary">Includes subfolders and empty folders. Links are unsupported. Up to 10,000 entries, 128 MiB per file, and 256 MiB total.</string>
+    <string name="capability_workspace_export_folder_limit">Folder exceeds the export limit. Export smaller subfolders separately.</string>
+    <string name="capability_workspace_export_folder_link">Folder contains links or unsupported entries. Export stopped to avoid an incomplete archive.</string>
+    <string name="capability_workspace_file_changed">Files changed during the operation. Try again after editing finishes.</string>
+    <string name="capability_workspace_search_subfolders">Search subfolders</string>
+    <string name="capability_workspace_search_scope">Search within the current folder and its subfolders</string>
+    <string name="capability_workspace_search_contents">Also search text contents</string>
+    <string name="capability_workspace_search_contents_summary">Search names and UTF-8 text files up to 1 MiB</string>
+    <string name="capability_workspace_search_running">Searching…</string>
+    <string name="capability_workspace_search_cancelled">Search cancelled</string>
+    <string name="capability_workspace_search_restart">Change the search or toggle subfolder search to try again</string>
+    <string name="capability_workspace_search_count">Results: %1$d · Checked: %2$d</string>
+    <string name="capability_workspace_search_limited">Partial results; skipped: %1$d. Narrow the search scope and try again.</string>
+    <string name="capability_workspace_search_skipped">Skipped: %1$d (unreadable, linked, oversized, or unsupported text files).</string>
+    <string name="capability_workspace_search_hit">%1$s · line %2$d\n%3$s</string>
+    <string name="capability_workspace_open_parent">Open containing folder</string>
+</resources>

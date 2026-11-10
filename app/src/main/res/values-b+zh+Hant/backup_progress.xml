@@ -1,0 +1,13 @@
+<resources>
+    <string name="data_backup_phase_runtime">正在檢查執行中的任務…</string>
+    <string name="data_backup_phase_databases">正在準備資料庫…</string>
+    <string name="data_backup_phase_conversations">正在匯出對話…</string>
+    <string name="data_backup_phase_files">正在封存檔案…</string>
+    <string name="data_backup_phase_credentials">正在匯出憑證…</string>
+    <string name="data_backup_phase_manifest">正在完成封存…</string>
+    <string name="data_backup_phase_saving">正在儲存至所選位置…</string>
+    <string name="data_backup_archive_progress">已封存 %1$d 項 · 內容 %2$s</string>
+    <string name="data_backup_copy_progress">%1$s / %2$s</string>
+    <string name="data_backup_cancel_summary">離開此頁也會取消匯出。較大的 Linux 環境需要更長時間。</string>
+    <string name="data_backup_export_cancelled">匯出已取消。若已開始儲存，所選檔案可能不完整，請重新匯出。</string>
+</resources>

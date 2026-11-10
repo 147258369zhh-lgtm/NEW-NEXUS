@@ -1,0 +1,259 @@
+[
+  {
+    "repository": "NousResearch/hermes-agent",
+    "url": "https://github.com/NousResearch/hermes-agent",
+    "read_at": "2026-11-06",
+    "scope": "README and repository metadata only; no runtime validation",
+    "commit": "90d6b98fd86d20981ee06ddd5b7d93e4320f26a4",
+    "headings": [
+      "# Hermes Agent ☤",
+      "## Quick Install",
+      "### Linux, macOS, WSL2",
+      "### Windows (native, PowerShell)",
+      "### Troubleshooting",
+      "#### Windows Defender or antivirus flags `uv.exe` as malware",
+      "# Install GitHub CLI if needed",
+      "# Login to GitHub",
+      "# Run verification",
+      "## Getting Started",
+      "## Skip the API-key collection — Nous Portal",
+      "## CLI vs Messaging Quick Reference",
+      "## Documentation",
+      "## Migrating from OpenClaw or another agent",
+      "## Contributing",
+      "## Community",
+      "## License"
+    ],
+    "excerpts": [
+      "<tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. <a href=\"https://github.com/plastic-labs/honcho\">Honcho</a> dialectic user modeling. Compatible with the <a href=\"https://agentskills.io\">agentskills.io</a> open standard.</td></tr>",
+      "| [Skills System](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)              | Procedural memory, Skills Hub, creating skills             |",
+      "| [Memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory)                     | Persistent memory, user profiles, best practices           |",
+      "- **Memories** — MEMORY.md and USER.md entries"
+    ]
+  },
+  {
+    "repository": "mem0ai/mem0",
+    "url": "https://github.com/mem0ai/mem0",
+    "read_at": "2026-11-06",
+    "scope": "README and repository metadata only; no runtime validation",
+    "commit": "d16b8df6f97bad5b2a1ae88fcbacd31db834652e",
+    "headings": [
+      "## New Memory Algorithm (April 2026)",
+      "## Research Highlights",
+      "# Introduction",
+      "### Key Features & Use Cases",
+      "## 🚀 Quickstart Guide <a name=\"quickstart\"></a>",
+      "### Sign up as an agent",
+      "# 1. Install",
+      "# 2. Sign up as an agent (replace `claude-code` with your name)",
+      "# 3. Add a memory",
+      "# 4. Search",
+      "### Library (pip / npm)",
+      "### Self-Hosted Server",
+      "# Recommended: one command — start the stack, create an admin, issue the first API key.",
+      "# Manual: start the stack and finish setup via the browser wizard.",
+      "### Cloud Platform",
+      "### CLI",
+      "### Agent Skills",
+      "### Basic Usage",
+      "## 🔗 Integrations & Demos",
+      "## 📚 Documentation & Support",
+      "## Citation",
+      "## ⚖️ License"
+    ],
+    "excerpts": [
+      "<img src=\"docs/images/banner-sm.png\" width=\"800px\" alt=\"Mem0 - The Memory Layer for Personalized AI\">",
+      "<a href=\"https://mem0.ai/research\"><strong>📄 Benchmarking Mem0's token-efficient memory algorithm →</strong></a>",
+      "## New Memory Algorithm (April 2026)",
+      "- **Temporal Reasoning** -- time-aware retrieval that ranks the right dated instance for queries about current state, past events, and upcoming plans.",
+      "title={Mem0: Building Production-Ready AI Agents with Scalable Long-Term Memory},"
+    ]
+  },
+  {
+    "repository": "letta-ai/letta",
+    "url": "https://github.com/letta-ai/letta",
+    "read_at": "2026-11-06",
+    "scope": "README and repository metadata only; no runtime validation",
+    "commit": "8816d3a8516893bfdc0fa14bfb1235226012e295",
+    "headings": [
+      "# Letta",
+      "## Get started",
+      "## Historical source"
+    ],
+    "excerpts": [
+      "Build stateful agents with memory that can learn and improve over time.",
+      "- [Letta Cloud](https://github.com/letta-ai/letta-code#letta-cloud) for keeping agent memory, identity, and conversations available across computers"
+    ]
+  },
+  {
+    "repository": "getzep/graphiti",
+    "url": "https://github.com/getzep/graphiti",
+    "read_at": "2026-11-06",
+    "scope": "README and repository metadata only; no runtime validation",
+    "commit": "747b480ec6b12ecb718f1e2bc588b20ee36ea9c2",
+    "headings": [
+      "## What is a Context Graph?",
+      "## Graphiti and Zep",
+      "## Zep vs Graphiti",
+      "### When to choose which",
+      "## Why Graphiti?",
+      "## Graphiti vs. GraphRAG",
+      "## Installation",
+      "### Installing with FalkorDB Support",
+      "# or with uv",
+      "# or embedded version (requires Python 3.12+)",
+      "# or with uv",
+      "### Installing with Kuzu Support",
+      "# or with uv",
+      "### Installing with Amazon Neptune Support",
+      "# or with uv",
+      "### You can also install optional LLM providers as extras:",
+      "# Install with Anthropic support",
+      "# Install with Groq support",
+      "# Install with Google Gemini support",
+      "# Install with multiple providers",
+      "# Install with FalkorDB and LLM providers",
+      "# Install with Amazon Neptune",
+      "## Default to Low Concurrency; LLM Provider 429 Rate Limit Errors",
+      "## Quick Start",
+      "### Running with Docker Compose",
+      "## Reference MCP and REST servers",
+      "### MCP Server",
+      "### REST Service",
+      "## Optional Environment Variables",
+      "### Database Configuration",
+      "#### Neo4j with Custom Database Name",
+      "# Create a Neo4j driver with custom database name",
+      "# Pass the driver to Graphiti",
+      "#### FalkorDB with Custom Database Name",
+      "# Create a FalkorDB driver with custom database name"
+    ],
+    "excerpts": [
+      "Teams use both to give agents memory. Neither is an agent memory product: Graphiti is a framework for building graphs,",
+      "<h2 align=\"center\">A Framework for Building Temporal Knowledge Graphs</h2>",
+      "Graphiti is a framework for building and querying temporal context graphs for AI agents. Unlike static knowledge graphs,",
+      "- Build temporal knowledge graphs that evolve with every interaction — tracking what's true now and what was true before."
+    ]
+  },
+  {
+    "repository": "langchain-ai/langgraph",
+    "url": "https://github.com/langchain-ai/langgraph",
+    "read_at": "2026-11-06",
+    "scope": "README and repository metadata only; no runtime validation",
+    "commit": "5847733bcb186c26b32da5cc822eaf8a89deffeb",
+    "headings": [
+      "## Why use LangGraph?",
+      "## LangGraph ecosystem",
+      "## Documentation",
+      "## Additional resources",
+      "## Acknowledgements"
+    ],
+    "excerpts": [
+      "- **[Comprehensive memory](https://docs.langchain.com/oss/python/langgraph/memory)** — Create truly stateful agents with both short-term working memory for ongoing reasoning and long-term persistent memory across sessions.",
+      "- **[Guides](https://docs.langchain.com/oss/python/learn)** – Quick, actionable code snippets for topics such as streaming, adding memory & persistence, and design patterns (e.g. branching, subgraphs, etc.)."
+    ]
+  },
+  {
+    "repository": "tencent-connect/openclaw-qqbot",
+    "url": "https://github.com/tencent-connect/openclaw-qqbot",
+    "read_at": "2026-11-06",
+    "scope": "README and repository metadata only; no runtime validation",
+    "commit": "89988812442583bf47c34b89f9abf5fd4b85df0b",
+    "headings": [
+      "# QQ Bot Channel Plugin for OpenClaw",
+      "### 🚀 Current Version: `v2.0.4`",
+      "## ✨ Features",
+      "## 📸 Feature Showcase",
+      "### 💬 Quoted Message Context",
+      "### 🎙️ Voice Messages (STT)",
+      "### 📄 File Understanding",
+      "### 🖼️ Image Understanding",
+      "### 🎨 Image Sending",
+      "### 🔊 Voice Sending",
+      "### ⏰ Scheduled Reminder (Proactive Message)",
+      "### 📎 File Sending",
+      "### 🔐 Command Execution Approval",
+      "### 🎬 Video Sending",
+      "### 🛠️ Slash Commands",
+      "#### `/bot-ping` — Latency Test",
+      "#### `/bot-version` — Version Info",
+      "#### `/bot-help` — Command List",
+      "#### `/bot-upgrade` — One-Click Hot Upgrade",
+      "#### `/bot-logs` — Log Export",
+      "#### Usage Help",
+      "#### `/bot-approve` — Approval Configuration",
+      "#### `/bot-clear-storage` — Clear files generated through QQBot conversations and downloaded resources (stored on the host running OpenClaw)",
+      "#### `/bot-group-always` — Group Response Mode Toggle",
+      "## 🚀 Getting Started",
+      "### Step 1 — Create a QQ Bot on the QQ Open Platform",
+      "### Step 2 — Install / Upgrade the Plugin",
+      "# Uninstall old plugins (skip if first install)",
+      "# Install latest",
+      "# Configure channel (pick one)",
+      "# Option 1: Scan QR code to log in",
+      "# or",
+      "# Option 2: Enter credentials manually",
+      "# Start / restart",
+      "### Step 3 — Test"
+    ],
+    "excerpts": [
+      "<img width=\"120\" src=\"https://img.shields.io/badge/🤖-QQ_Bot-blue?style=for-the-badge\" alt=\"QQ Bot\" />",
+      "# QQ Bot Channel Plugin for OpenClaw",
+      "**Connect your AI assistant to QQ — private chat, group chat, and rich media, all in one plugin.**"
+    ]
+  },
+  {
+    "repository": "AstrBotDevs/AstrBot",
+    "url": "https://github.com/AstrBotDevs/AstrBot",
+    "read_at": "2026-11-06",
+    "scope": "README and repository metadata only; no runtime validation",
+    "commit": "86c24e846c0de78830f6a0bc402049edb0f0c671",
+    "headings": [
+      "## Key Features",
+      "## Quick Start",
+      "### One-Click Cloud Deployment (RainYun)",
+      "### One-Click Deployment",
+      "### Docker Deployment",
+      "### Desktop Application Deployment",
+      "### Launcher Deployment",
+      "## ❤️ Sponsors",
+      "## Supported Messaging Platforms",
+      "## Supported Model Services",
+      "## ❤️ Contributing",
+      "### How to Contribute",
+      "### Development Environment",
+      "## 🌍 Community",
+      "### QQ Groups",
+      "### Discord Server",
+      "## ❤️ Special Thanks",
+      "## ⭐ Star History"
+    ],
+    "excerpts": [
+      "<a href=\"https://deepwiki.com/AstrBotDevs/AstrBot\"><img src=\"https://img.shields.io/badge/-Ask_DeepWiki-007ec6?logo=data%3Aimage%2Fpng%3Bbase64%2CiVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAACXBIWXMAAAPoAAAD6AG1e1JrAAACIUlEQVRYw%2B2XP2gUQRTGv7d3JhYWQawkIBaCVWzETos0gmAnVoKNTSoLK0E7EQQrC20sBVFBtLPQRgTBtBaKjYgIQUSxiJq7fT%2BLvCGPJZdNLt4dQj5Y3u7sznzfzLw%2Fs9IO%2FicANiniCujEfWdsQgBLxAbsbraPZcmBfcAt4DNwKQsZNfEUsAB8YRV12LfA6ZHuedg7AO7ed%2Fc%2BUBcbQhbiu%2B6wXIM6EnZWkszMJe2Ke0n6I2la0v51hFeSMLN6OwIK6jJwEBdUYb2MAxRSz6sY4geiahFgLe1Hwq6YWe3us8AN4FQQU4QM64SPY69Xyr43fADgNjAPXHb3peSsD4FDQ0VLEjAHvIhBPS6AHvA1bBO9JPAXcHFbIRtJ5yzwIQZ9CZwAusDJENIkLqsG8DpNyIZJwSUk9wLHgakcesC1JCCjiHm1kYDNOEjptCxpSVK%2F8f73OFLxPLAYM3oCzEX7MXf%2FlJbc%2F8kWpA4HgQdpYI9IWAbeh83whi84cHXL%2B58EPBoQhnmm94EzwE3gZ2p%2FDhzdbhg%2BTaRr01x7ftb4%2FjBwFzjXrCvDpmLW9crVLNeR9CaapoGemb2TdCERW1tNaBNQ8jktwmozqwtpqRNtdWAjARYk39IS12ZWRX7vmJmA71nQZgi36gN7gCvAj5xc3P0jcH7kx7Ik5IC73wsh14GZsZySow5002l4Jr0b6%2Bm4eSyvpAn8lEzsx2QHo8RfUrlN%2BuPq4ksAAAAASUVORK5CYII%3D&labelColor=000000\"></a>",
+      "4. 🌐 Multi-Platform: QQ, WeChat Work, Feishu, DingTalk, WeChat Official Accounts, Telegram, Slack, and [more](#supported-messaging-platforms).",
+      "| QQ | Official |"
+    ]
+  },
+  {
+    "repository": "NapNeko/NapCatQQ",
+    "url": "https://github.com/NapNeko/NapCatQQ",
+    "read_at": "2026-11-06",
+    "scope": "README and repository metadata only; no runtime validation",
+    "commit": "98d781d19815d1625b24d717ce280ecf0a4f6d0c",
+    "headings": [
+      "# NapCat",
+      "## New Framework ?",
+      "## Welcome",
+      "## Feature",
+      "## Quick Start",
+      "## Link",
+      "## Thanks",
+      "## License"
+    ],
+    "excerpts": [
+      "<img src=\"https://napneko.github.io/assets/newnewlogo.png\" width = \"305\" height = \"411\" alt=\"NapCat\" align=right />",
+      "# NapCat",
+      "_Modern protocol-side framework implemented based on NTQQ._"
+    ]
+  }
+]

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="meeting_tool_sensitive_hidden">Sensitive tool parameters and results are not stored.</string>
+    <string name="meeting_tool_interrupted">The tool did not report a result before this run ended.</string>
+    <string name="meeting_stream_preview_truncated">Live preview reached its limit. The complete answer will replace this preview when the run finishes.</string>
+    <string name="meeting_stream_interrupted">This output was interrupted. Partial text is preserved.</string>
+</resources>

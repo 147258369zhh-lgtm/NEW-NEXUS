@@ -1,0 +1,158 @@
+{
+  "date": "2026-11-06",
+  "scope": "Final independent Root accessibility recovery verification with SettingsProvider boundaries, last-service safeguard, journal/lease tests, API33/36/37, LAN/navigation regressions. No physical Root/su/app_process, ColorOS, OTA or APK verification.",
+  "log": "F:\\eta\\root-accessibility-recovery-final-verification.log",
+  "suites": [
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.AccessibilityNodeIdentityTest",
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.AccessibilityPlatformCompatibilityTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.AccessibilityRebindTransactionTest",
+      "tests": 17,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.AccessibilityRecoveryBudgetTest",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.AccessibilityRecoveryLeaseTest",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.AgentAccessibilityHealthTest",
+      "tests": 24,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.AgentAccessibilityKeeperTest",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.MainThreadCallGateTest",
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.RootAccessibilityRecoveryTest",
+      "tests": 24,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.RootAccessibilitySettingsAccessTest",
+      "tests": 12,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.ScreenshotWindowPolicyTest",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.ScrollEventObservationGateTest",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.accessibility.TextEditPlannerTest",
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.device.RootAccessPolicyTest",
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.model.AgentPromptBuilderTest",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.tool.AgentLocalToolsPermissionTest",
+      "tests": 18,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.agent.tool.AgentToolRequirementsTest",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.ui.app.LocalNetworkPermissionTest",
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.ui.app.PermissionHealthStateTest",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "io.github.mangi.eta.ui.app.PermissionSettingsNavigationTest",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "total": {
+    "tests": 167.0,
+    "failures": 0.0,
+    "errors": 0.0,
+    "skipped": 0.0
+  },
+  "lint": {
+    "Error": 0,
+    "Warning": 422,
+    "Hint": 2
+  }
+}

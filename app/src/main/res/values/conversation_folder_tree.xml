@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="folder_tree_manage">Manage folder</string>
+    <string name="folder_tree_create_child">New subfolder</string>
+    <string name="folder_tree_move">Move folder</string>
+    <string name="folder_tree_delete">Delete folder</string>
+    <string name="folder_tree_root">Top level</string>
+    <string name="folder_tree_delete_message">Delete this folder? Its direct subfolders and conversations, including archived conversations, will move to the parent level. Conversation content will be kept. If names conflict, rename or move the conflicting folder first.</string>
+    <string name="folder_tree_invalid_name">Use 1–80 characters without slashes or control characters.</string>
+    <string name="folder_tree_duplicate">A folder with this name already exists at the destination. Rename or move it first.</string>
+    <string name="folder_tree_not_found">The folder or conversation no longer exists. Close this dialog and try again.</string>
+    <string name="folder_tree_depth_limit">Folders support up to 8 levels. This would exceed the limit.</string>
+    <string name="folder_tree_cycle">A folder cannot be moved into itself or its descendants.</string>
+    <string name="folder_tree_failed">Could not save the change. Please try again.</string>
+    <string name="folder_tree_saving">Saving…</string>
+</resources>

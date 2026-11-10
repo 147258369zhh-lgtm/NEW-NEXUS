@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="folder_tree_manage">管理文件夹</string>
+    <string name="folder_tree_create_child">新建子文件夹</string>
+    <string name="folder_tree_move">移动文件夹</string>
+    <string name="folder_tree_delete">删除文件夹</string>
+    <string name="folder_tree_root">顶层</string>
+    <string name="folder_tree_delete_message">删除此文件夹？其直接子文件夹和会话（含归档会话）将移到上一层，会话内容会保留。如果出现同名冲突，请先重命名或移动冲突的文件夹。</string>
+    <string name="folder_tree_invalid_name">名称须为 1–80 个字符，不能包含斜杠或控制字符。</string>
+    <string name="folder_tree_duplicate">目标位置已有同名文件夹，请先重命名或移动。</string>
+    <string name="folder_tree_not_found">文件夹或会话已不存在，请关闭弹窗后重试。</string>
+    <string name="folder_tree_depth_limit">文件夹最多支持 8 层，此操作会超出限制。</string>
+    <string name="folder_tree_cycle">不能将文件夹移入自身或其子文件夹。</string>
+    <string name="folder_tree_failed">保存失败，请重试。</string>
+    <string name="folder_tree_saving">正在保存…</string>
+</resources>

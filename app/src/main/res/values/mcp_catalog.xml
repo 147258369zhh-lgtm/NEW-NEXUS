@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="mcp_catalog_timeout">The server did not finish within one minute. Please retry.</string>
+    <string name="mcp_catalog_server_missing">This server is no longer available. Return to the server list.</string>
+    <string name="mcp_catalog_list_limit">Only the first 128 items or 8 pages are shown. More items may be available on the server.</string>
+    <string name="mcp_catalog_preview_note">Resources and prompts are previewed here. Previewing does not run an Agent or change your chat.</string>
+    <string name="mcp_catalog_retry">Retry</string>
+    <string name="mcp_catalog_search">Search resources and prompts</string>
+    <string name="mcp_catalog_resources">Resources</string>
+    <string name="mcp_catalog_prompts">Prompt templates</string>
+    <string name="mcp_resources_unsupported">This server does not support resources.</string>
+    <string name="mcp_prompts_unsupported">This server does not support prompt templates.</string>
+    <string name="mcp_catalog_no_matches">No matching items.</string>
+    <string name="mcp_prompt_preview">Preview template</string>
+    <string name="mcp_preview_limits">Preview is limited to 128 KiB of text. %1$d non-text items omitted.</string>
+    <string name="mcp_preview_empty">No text content is available to preview.</string>
+</resources>

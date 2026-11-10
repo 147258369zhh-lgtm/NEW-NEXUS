@@ -1,0 +1,37 @@
+{
+  "phase": "P14_branch_prefix",
+  "fullVerification": {
+    "command": ".\\gradlew.bat --offline --no-daemon --no-configuration-cache :app:testDebugUnitTest :app:lintDebug",
+    "log": "F:/eta/branch-prefix-final-verification.log",
+    "logSha256": "EF198A342A0A989177ED938EF15669883A502942E85833069824AF52C2BEBA8F",
+    "result": "BUILD SUCCESSFUL",
+    "suites": 380,
+    "tests": 2404,
+    "passed": 2255,
+    "skipped": 149,
+    "failures": 0,
+    "errors": 0,
+    "countSource": "Observed XML aggregation before the subsequent focused test run replaced the Gradle test-results directory",
+    "lintErrors": 0,
+    "lintWarnings": 441,
+    "lintHints": 2
+  },
+  "fixtureCleanup": {
+    "log": "F:/eta/branch-prefix-fixture-cleanup.log",
+    "logSha256": "30E7A75AFBB6394583CFAC94427D99226DCE380B878E82BB0B5D3E5298CD1BDF",
+    "result": "BUILD SUCCESSFUL",
+    "tests": 10,
+    "skipped": 0,
+    "failures": 0,
+    "errors": 0
+  },
+  "limitations": [
+    "Device performance, peak memory and Android17/ColorOS17 OTA are not verified",
+    "Persistent chunked copying beyond the existing prefix budget and meeting forks remain incomplete"
+  ],
+  "delivery": {
+    "apkExported": false,
+    "sourceBackupsUsed": 2,
+    "batchComplete": false
+  }
+}

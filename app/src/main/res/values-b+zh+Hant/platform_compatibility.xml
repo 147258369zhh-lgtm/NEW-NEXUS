@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="compat_environment_title">系統與執行模式</string>
+    <string name="compat_os_version">Android %1$s · API %2$d</string>
+    <string name="compat_system_build">系統版本：%1$s</string>
+    <string name="compat_mode_root">Root 增強可用 · 應用程式目標 API %1$d</string>
+    <string name="compat_mode_standard">一般模式 · 應用程式目標 API %1$d · Root 為選用增強</string>
+    <string name="compat_optional_title">選用增強</string>
+    <string name="compat_accessibility_connected">服務已連線，可用於螢幕觀察和操作。</string>
+    <string name="compat_accessibility_disconnected">系統開關已開啟，但服務未連線。請進入無障礙設定，關閉再開啟 Nexus；重新連線前無法執行螢幕操作。</string>
+    <string name="compat_accessibility_disabled">請在系統無障礙設定中開啟 Nexus，以便觀察和操作螢幕。</string>
+    <string name="compat_accessibility_unknown">暫時無法讀取系統設定，請進入無障礙設定檢查 Nexus；螢幕操作需要服務實際連線。</string>
+    <string name="compat_microphone_title">麥克風</string>
+    <string name="compat_microphone_summary">用於語音輸入。授權後仍需遵守系統的背景錄音和電源管理限制。</string>
+    <string name="compat_settings_unavailable">無法開啟系統設定，請在系統設定中進入 Nexus 的應用程式資訊。</string>
+    <string name="compat_lan_connection_permission">區域網路服務連線失敗，且尚未獲得區域網路權限。請到「設定 → 權限健康」授權後重試；若仍失敗，再檢查服務位址和網路。</string>
+</resources>

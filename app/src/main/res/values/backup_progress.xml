@@ -1,0 +1,13 @@
+<resources>
+    <string name="data_backup_phase_runtime">Checking active tasks…</string>
+    <string name="data_backup_phase_databases">Preparing databases…</string>
+    <string name="data_backup_phase_conversations">Exporting conversations…</string>
+    <string name="data_backup_phase_files">Archiving files…</string>
+    <string name="data_backup_phase_credentials">Exporting credentials…</string>
+    <string name="data_backup_phase_manifest">Finishing archive…</string>
+    <string name="data_backup_phase_saving">Saving to selected location…</string>
+    <string name="data_backup_archive_progress">Files: %1$d · Content: %2$s</string>
+    <string name="data_backup_copy_progress">%1$s / %2$s</string>
+    <string name="data_backup_cancel_summary">Leaving this page also cancels export. Large Linux environments can take longer.</string>
+    <string name="data_backup_export_cancelled">Export cancelled. If saving had started, the selected file may be incomplete; export it again.</string>
+</resources>

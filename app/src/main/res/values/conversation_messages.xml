@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="conversation_message_summary">Summary</string>
+    <string name="conversation_message_host">Host</string>
+    <string name="conversation_message_system">System</string>
+    <string name="conversation_message_expand">Show full summary</string>
+    <string name="conversation_message_collapse">Collapse summary</string>
+</resources>

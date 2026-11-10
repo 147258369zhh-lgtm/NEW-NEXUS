@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="recovery_title">Root 無障礙恢復</string>
+    <string name="recovery_summary_off">開啟後，在應用程式執行期間恢復已啟用的 Nexus 無障礙連線。無需 LSPosed，保留其他無障礙服務。</string>
+    <string name="recovery_summary_ready">已開啟恢復。偵測實際連線，連續失敗三次後停止；尊重系統無障礙開關的關閉操作。</string>
+    <string name="recovery_root_required">需要已有 Root 授權。沒有 Root 時，仍可正常使用系統無障礙服務。</string>
+    <string name="recovery_not_configured">請先在系統無障礙設定中開啟 Nexus。恢復功能不會擅自開啟已關閉的系統服務。</string>
+    <string name="recovery_in_progress">正在重新繫結 Nexus 並等待服務實際連線。關閉恢復開關可停止後續嘗試。</string>
+    <string name="recovery_waiting">正在等待下一次嘗試，避免反覆重新啟動服務。</string>
+    <string name="recovery_exhausted">已嘗試三次，自動恢復已停止。請檢查系統無障礙設定，需要時再重試。</string>
+    <string name="recovery_unconfirmed">上次恢復被中斷，請到系統無障礙設定檢查並重新開啟 Nexus；自動寫入已暫停。</string>
+    <string name="recovery_save_failed">無法儲存恢復開關，請重試。</string>
+    <string name="recovery_failed">服務尚未重新連線，將在次數限制內重試；若持續失敗，請檢查系統設定。</string>
+    <string name="recovery_retry">重新嘗試恢復</string>
+    <string name="recovery_retry_summary">重設嘗試次數，不會申請 Root 或開啟已關閉的系統服務。</string>
+    <string name="recovery_manual_required">Nexus 是目前最後一個已啟用的無障礙服務。為避免重新繫結時系統關閉無障礙，請到系統設定重新開啟 Nexus。</string>
+</resources>

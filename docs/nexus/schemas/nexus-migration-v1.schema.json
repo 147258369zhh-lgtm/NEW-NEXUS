@@ -1,0 +1,255 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/147258369zhh-lgtm/NEW-NEXUS/schemas/nexus-migration-v1.schema.json",
+  "title": "Nexus migration manifest v1",
+  "description": "Portable manifest for importing an encrypted or unencrypted Eta export into Nexus through Android SAF.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "migrationId",
+    "createdAtEpochMs",
+    "source",
+    "target",
+    "encryption",
+    "categories",
+    "entries",
+    "largePackages",
+    "integrity"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "migrationId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$"
+    },
+    "createdAtEpochMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["applicationId", "versionName", "versionCode", "databaseVersions"],
+      "properties": {
+        "applicationId": {
+          "const": "fuck.andes"
+        },
+        "versionName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "versionCode": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "databaseVersions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["applicationId", "minimumDataSchemaVersion"],
+      "properties": {
+        "applicationId": {
+          "const": "io.github.zhh_lgtm.nexus"
+        },
+        "minimumDataSchemaVersion": {
+          "const": 1
+        }
+      }
+    },
+    "encryption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "algorithm", "keyDerivation", "payloadNonceBase64"],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "algorithm": {
+          "enum": ["none", "AES-256-GCM"]
+        },
+        "keyDerivation": {
+          "enum": ["none", "PBKDF2-HMAC-SHA256"]
+        },
+        "iterations": {
+          "type": "integer",
+          "minimum": 210000,
+          "maximum": 2000000
+        },
+        "saltBase64": {
+          "type": "string",
+          "contentEncoding": "base64"
+        },
+        "payloadNonceBase64": {
+          "type": "string",
+          "contentEncoding": "base64"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"enabled": {"const": true}}
+          },
+          "then": {
+            "required": ["iterations", "saltBase64"],
+            "properties": {
+              "algorithm": {"const": "AES-256-GCM"},
+              "keyDerivation": {"const": "PBKDF2-HMAC-SHA256"}
+            }
+          },
+          "else": {
+            "properties": {
+              "algorithm": {"const": "none"},
+              "keyDerivation": {"const": "none"}
+            }
+          }
+        }
+      ]
+    },
+    "categories": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "settings",
+        "conversations",
+        "meetings",
+        "projects",
+        "memory",
+        "learning",
+        "tasks",
+        "skills",
+        "connectors",
+        "credentials",
+        "workspaceFiles",
+        "models",
+        "linuxHost",
+        "dshHost"
+      ],
+      "properties": {
+        "settings": {"$ref": "#/$defs/categorySummary"},
+        "conversations": {"$ref": "#/$defs/categorySummary"},
+        "meetings": {"$ref": "#/$defs/categorySummary"},
+        "projects": {"$ref": "#/$defs/categorySummary"},
+        "memory": {"$ref": "#/$defs/categorySummary"},
+        "learning": {"$ref": "#/$defs/categorySummary"},
+        "tasks": {"$ref": "#/$defs/categorySummary"},
+        "skills": {"$ref": "#/$defs/categorySummary"},
+        "connectors": {"$ref": "#/$defs/categorySummary"},
+        "credentials": {"$ref": "#/$defs/categorySummary"},
+        "workspaceFiles": {"$ref": "#/$defs/categorySummary"},
+        "models": {"$ref": "#/$defs/categorySummary"},
+        "linuxHost": {"$ref": "#/$defs/categorySummary"},
+        "dshHost": {"$ref": "#/$defs/categorySummary"}
+      }
+    },
+    "entries": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/entry"},
+      "uniqueItems": true
+    },
+    "largePackages": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/largePackage"},
+      "uniqueItems": true
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifestSha256", "entryCount", "totalBytes"],
+      "properties": {
+        "manifestSha256": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{64}$"
+        },
+        "entryCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "totalBytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "$defs": {
+    "categorySummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["included", "entryCount", "bytes"],
+      "properties": {
+        "included": {"type": "boolean"},
+        "entryCount": {"type": "integer", "minimum": 0},
+        "bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "category", "role", "bytes", "sha256", "sensitive"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^(?!.*(?:^|/)\\.\\.?(?:/|$))[^/].*$"
+        },
+        "category": {
+          "enum": [
+            "settings",
+            "conversations",
+            "meetings",
+            "projects",
+            "memory",
+            "learning",
+            "tasks",
+            "skills",
+            "connectors",
+            "credentials",
+            "workspaceFiles",
+            "models",
+            "linuxHost",
+            "dshHost"
+          ]
+        },
+        "role": {
+          "enum": ["database", "preferences", "document", "media", "binary", "credentialEnvelope", "index"]
+        },
+        "mediaType": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "bytes": {"type": "integer", "minimum": 0},
+        "sha256": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"},
+        "sensitive": {"type": "boolean"},
+        "plaintextSha256": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"}
+      }
+    },
+    "largePackage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "included", "bytes", "sha256"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "kind": {"enum": ["localModels", "linuxEnvironment", "dshRuntime", "pluginBinaries"]},
+        "included": {"type": "boolean"},
+        "path": {"type": "string", "maxLength": 512},
+        "bytes": {"type": "integer", "minimum": 0},
+        "sha256": {"type": "string", "pattern": "^[a-fA-F0-9]{64}$"}
+      }
+    }
+  }
+}

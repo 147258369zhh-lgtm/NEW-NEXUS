@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="meeting_tool_sensitive_hidden">不儲存此敏感工具的參數和結果。</string>
+    <string name="meeting_tool_interrupted">本輪結束前，工具未回報執行結果。</string>
+    <string name="meeting_stream_preview_truncated">即時預覽已達到長度上限，執行結束後會替換為完整答覆。</string>
+    <string name="meeting_stream_interrupted">此次輸出已中斷，已保留收到的部分文字。</string>
+</resources>

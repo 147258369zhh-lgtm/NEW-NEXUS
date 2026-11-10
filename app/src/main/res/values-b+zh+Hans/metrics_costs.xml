@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="metrics_prices_title">模型 Token 单价</string>
+    <string name="metrics_prices_note">分别设置供应商和模型的手动单价。使用你指定的币种，不同币种分别显示。</string>
+    <string name="metrics_prices_history_note">模型尝试开始时保存当时单价；修改或移除配置只影响后续尝试。</string>
+    <string name="metrics_prices_search">搜索模型或供应商</string>
+    <string name="metrics_prices_empty">没有匹配的模型，请先在供应商设置中添加模型。</string>
+    <string name="metrics_prices_unset">未设置单价 · 费用保留未知</string>
+    <string name="metrics_prices_rates">%1$s · 输入 %2$s / 输出 %3$s，每百万 Token</string>
+    <string name="metrics_prices_cache_rates">当时缓存单价 · 读取 %1$s / 写入 %2$s，每百万 Token</string>
+    <string name="metrics_prices_edit">编辑 Token 单价</string>
+    <string name="metrics_prices_unit">每 1,000,000 Token 的单价</string>
+    <string name="metrics_prices_rules">使用小数点，最多 8 位小数，范围 0 至 1,000,000。输入和输出必填；缓存单价留空表示未知，填 0 表示免费。</string>
+    <string name="metrics_prices_currency">币种代码（如 USD、CNY）</string>
+    <string name="metrics_prices_input">未缓存输入 · 必填</string>
+    <string name="metrics_prices_output">输出 · 必填</string>
+    <string name="metrics_prices_read">缓存读取 · 可选</string>
+    <string name="metrics_prices_write">缓存写入 · 可选</string>
+    <string name="metrics_prices_save">保存单价</string>
+    <string name="metrics_prices_saving">正在保存…</string>
+    <string name="metrics_prices_invalid">请检查币种代码和单价。不能使用负数、科学计数法或千位分隔符。</string>
+    <string name="metrics_prices_failed">保存失败，已保留填写内容，请重试。</string>
+    <string name="metrics_prices_remove">移除单价配置</string>
+    <string name="metrics_prices_remove_note">后续尝试的费用将保留未知。已有费用估算和当时单价会继续保留。</string>
+    <string name="metrics_cost_title">Token 费用估算</string>
+    <string name="metrics_cost_unknown">费用未知 · 缺少单价或上报用量</string>
+    <string name="metrics_cost_estimate">%1$s %2$s · Token 估算</string>
+    <string name="metrics_cost_partial">%1$s %2$s · 仅已知部分</string>
+    <string name="metrics_cost_coverage">Token 估算完整的模型尝试：%1$d / %2$d</string>
+    <string name="metrics_cost_scope">按手动单价估算已登记的主运行、子 Agent 和压缩请求。缺失用量、无法逐次对账的重试及非 Token 服务费会影响完整性，当前不是完整任务账单。</string>
+    <string name="metrics_children_title">独立模型请求</string>
+    <string name="metrics_child_compaction">上下文摘要</string>
+    <string name="metrics_child_subagent">子 Agent</string>
+    <string name="metrics_child_relation">请求组 %1$d · 上级：%2$s</string>
+    <string name="metrics_child_parent_root">主运行</string>
+    <string name="metrics_child_start">独立请求开始</string>
+    <string name="metrics_child_finish">独立请求结束</string>
+</resources>
