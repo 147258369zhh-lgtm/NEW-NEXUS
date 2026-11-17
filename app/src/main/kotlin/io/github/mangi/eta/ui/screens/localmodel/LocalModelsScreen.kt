@@ -60,6 +60,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -78,14 +79,10 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.device.LocalNetworkPermission
-import io.github.mangi.eta.agent.voice.LocalSpeechRuntime
 import io.github.mangi.eta.agent.voice.LocalSpeechRuntimePhase
 import io.github.mangi.eta.agent.voice.LocalSpeechRuntimeSnapshot
 import io.github.mangi.eta.agent.voice.localSpeechKind
-import io.github.mangi.eta.agent.model.LiteRtLmRuntimeManager
-import io.github.mangi.eta.agent.model.LlamaCppRuntimeManager
-import io.github.mangi.eta.agent.model.MnnRuntimeManager
-import io.github.mangi.eta.agent.model.NativeLaunchKind
+import io.github.mangi.eta.agent.model.LocalModelApplicationService
 import io.github.mangi.eta.agent.model.NpuModelTargeting
 import io.github.mangi.eta.agent.model.QualcommNpuRuntimeManager
 import io.github.mangi.eta.agent.model.QualcommNpuRuntimeState
@@ -123,23 +120,26 @@ import io.github.mangi.eta.ui.pages.providers.ProviderSection
 import io.github.mangi.eta.ui.pages.providers.TagChip
 import io.github.mangi.eta.ui.pages.providers.TagChipTone
 import java.text.DecimalFormat
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
-import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.basic.TabRow
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle as SmallTitle
+import io.github.mangi.eta.ui.components.NexusSettingsTabs
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.preference.ArrowPreference
-import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
-import top.yukonga.miuix.kmp.preference.SwitchPreference
+import io.github.mangi.eta.ui.components.NexusSettingsArrowPreference as ArrowPreference
+import io.github.mangi.eta.ui.components.NexusSettingsDropdownPreference as OverlayDropdownPreference
+import io.github.mangi.eta.ui.components.NexusSettingsSwitchPreference as SwitchPreference
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
@@ -166,12 +166,14 @@ internal fun LocalModelsScreen(
 ) {
     val context = LocalContext.current.applicationContext
     val scope = rememberCoroutineScope()
-    LocalModelRepository.init(context)
+    LocalModelRepository.bind(context)
     val models by LocalModelRepository.models.collectAsState()
-    val speechSettings by SpeechSettingsRepository.settingsFlow().collectAsState(initial = SpeechSettings())
+    val speechSettings by remember { SpeechSettingsRepository.settingsFlow() }.collectAsState(initial = SpeechSettings())
     val download by LocalModelRepository.download.collectAsState()
     val runtime by LocalModelRepository.runtime.collectAsState()
-    val speechRuntime by LocalSpeechRuntime.states.collectAsState()
+    val modelService = remember { LocalModelApplicationService() }
+    val speechRuntime by modelService.speechStates.collectAsState()
+    val embeddingRuntime by modelService.embeddingState.collectAsState()
     var tab by rememberSaveable { mutableStateOf(TAB_OVERVIEW) }
     var downloadUrl by rememberSaveable { mutableStateOf(LocalModelRepository.defaultDownloadUrl(context)) }
     var notice by remember { mutableStateOf<String?>(null) }
@@ -190,9 +192,10 @@ internal fun LocalModelsScreen(
     var runtimeBusy by remember { mutableStateOf(false) }
     var selectedRuntimeId by rememberSaveable { mutableStateOf<String?>(null) }
     var sourceExpanded by rememberSaveable { mutableStateOf(false) }
+    var externalServiceExpanded by rememberSaveable { mutableStateOf(false) }
     var startAfterRecommendationDownload by rememberSaveable { mutableStateOf(false) }
     var performanceSnapshot by remember {
-        mutableStateOf(LocalModelPerformanceMonitor.capture(context))
+        mutableStateOf(LocalModelPerformanceMonitor.bestAvailableSnapshot())
     }
 
     LocalDevicePerformanceEffects(context = context) {
@@ -271,15 +274,7 @@ internal fun LocalModelsScreen(
         runtimeBusy = true
         scope.launch {
             try {
-                when (localModelType(record)) {
-                    LocalModelTypeFilter.TTS, LocalModelTypeFilter.ASR -> LocalSpeechRuntime.stop(record.id)
-                    else -> when (record.format) {
-                        LocalModelFormat.LITERT_LM -> LiteRtLmRuntimeManager.stop(record.id)
-                        LocalModelFormat.GGUF -> LlamaCppRuntimeManager.stop(record.id)
-                        LocalModelFormat.MNN -> MnnRuntimeManager.stop(record.id)
-                        else -> Unit
-                    }
-                }
+                modelService.stop(record)
                 noticeOf(context.getString(R.string.local_models_runtime_stopped), LocalModelNoticeTone.INFO)
             } catch (failure: Exception) {
                 noticeOf(
@@ -321,23 +316,16 @@ internal fun LocalModelsScreen(
     }
 
     fun bindSpeechRecord(record: LocalModelRecord, speech: Boolean) {
-        if (record.format != LocalModelFormat.LITERT_LM) {
-            noticeOf("当前本地语音适配器仅支持 LiteRT-LM 语音包", LocalModelNoticeTone.ERROR)
+        if (record.format !in setOf(LocalModelFormat.LITERT_LM, LocalModelFormat.ONNX)) {
+            noticeOf("请选择完整的 LiteRT-LM 或 ONNX 语音包", LocalModelNoticeTone.ERROR)
             return
         }
         runtimeBusy = true
         selectedRuntimeId = record.id
         scope.launch {
             try {
-                val current = SpeechSettingsRepository.settings()
-                val next = if (speech) {
-                    current.copy(tts = TtsProvider.LOCAL, localTtsModelId = record.id)
-                } else {
-                    current.copy(asr = AsrProvider.LOCAL, localAsrModelId = record.id)
-                }
-                SpeechSettingsRepository.save(next)
-                LocalSpeechRuntime.warmUp(next, localSpeechKind(record) ?: error("不是本地语音模型"))
-                val snapshot = LocalSpeechRuntime.states.value[localSpeechKind(record)]
+                modelService.startSpeech(record)
+                val snapshot = modelService.speechStates.value[localSpeechKind(record)]
                 val device = snapshot?.activeBackend?.takeIf(String::isNotBlank)?.let { " · $it" }.orEmpty()
                 noticeOf(
                     if (speech) "已启动 ${record.displayName}$device"
@@ -357,7 +345,31 @@ internal fun LocalModelsScreen(
 
     fun startRecord(record: LocalModelRecord, automatic: Boolean = false) {
         if (runtimeBusy) return
+        if (record.outputModalities.any { it in setOf("keyword", "speaker_embedding") }) {
+            val wake = io.github.mangi.eta.agent.voice.WakeWordStore(context)
+            val value = wake.read()
+            wake.write(if ("keyword" in record.outputModalities) value.copy(modelId = record.id) else
+                value.copy(speakerModelId = record.id, voiceprintEnabled = false))
+            onOpenSpeechRecognition()
+            return
+        }
         when (localModelType(record)) {
+            LocalModelTypeFilter.EMBEDDING -> {
+                runtimeBusy = true
+                selectedRuntimeId = record.id
+                scope.launch {
+                    try {
+                        modelService.startEmbedding(record)
+                        val result = modelService.embed(record.id, "请检查这是一条本地向量推理测试。")
+                        noticeOf("向量推理成功：${result.dimension} 维 · ${result.elapsedMs} ms · ${result.backend}", LocalModelNoticeTone.SUCCESS)
+                    } catch (failure: Exception) {
+                        noticeOf("向量模型启动或推理失败：${failure.message ?: failure.javaClass.simpleName}", LocalModelNoticeTone.ERROR)
+                    } finally {
+                        runtimeBusy = false
+                    }
+                }
+                return
+            }
             LocalModelTypeFilter.TTS -> {
                 bindSpeechRecord(record, speech = true)
                 return
@@ -381,25 +393,7 @@ internal fun LocalModelsScreen(
         selectedRuntimeId = record.id
         scope.launch {
             try {
-                // Re-register on every start. A generated provider may have been removed from
-                // model settings; this also repairs a stale binding without touching selection.
-                LocalModelRepository.activateBuiltInRuntime(record.id)
-                when (record.format) {
-                    LocalModelFormat.LITERT_LM -> LiteRtLmRuntimeManager.warmUp(
-                        record.id,
-                        if (automatic) NativeLaunchKind.AUTOMATIC else NativeLaunchKind.USER,
-                    )
-                    LocalModelFormat.GGUF -> LlamaCppRuntimeManager.warmUp(
-                        record.id,
-                        if (automatic) NativeLaunchKind.AUTOMATIC else NativeLaunchKind.USER,
-                    )
-                    LocalModelFormat.MNN -> MnnRuntimeManager.warmUp(
-                        record.id,
-                        if (automatic) NativeLaunchKind.AUTOMATIC else NativeLaunchKind.USER,
-                    )
-                    else -> Unit
-                }
-                LocalModelRepository.selectBuiltInRuntime(record.id)
+                modelService.startText(record, automatic)
                 noticeOf(
                     context.getString(R.string.local_models_runtime_started, record.displayName),
                     LocalModelNoticeTone.SUCCESS,
@@ -496,7 +490,10 @@ internal fun LocalModelsScreen(
         }
     }
 
-    LaunchedEffect(Unit) { LocalModelRepository.refresh() }
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) { LocalModelRepository.init(context) }
+        LocalModelRepository.refresh()
+    }
     LaunchedEffect(models, runtime.recordId) {
         val current = selectedRuntimeId
         if (current == null || models.none { it.id == current }) {
@@ -517,7 +514,9 @@ internal fun LocalModelsScreen(
                     noticeOf(context.getString(R.string.local_models_download_complete), LocalModelNoticeTone.SUCCESS)
                 } else {
                     selectedRuntimeId = completed.id
-                    when (localModelLaunchDecision(
+                    if (startAfterRecommendationDownload && localSpeechKind(completed) != null) {
+                        startRecord(completed, automatic = true)
+                    } else when (localModelLaunchDecision(
                         startAfterDownload = startAfterRecommendationDownload,
                         format = completed.format,
                         settings = completed.runtimeSettings,
@@ -673,9 +672,11 @@ internal fun LocalModelsScreen(
         LocalModelRuntimeState.GENERATING,
     )
     val parameterModels = models.filter {
-        localModelType(it) in setOf(LocalModelTypeFilter.TEXT, LocalModelTypeFilter.VISION)
+        localModelType(it) in setOf(LocalModelTypeFilter.TEXT, LocalModelTypeFilter.VISION) ||
+            it.format == LocalModelFormat.ONNX && ("audio" in it.inputModalities || "audio" in it.outputModalities)
     }
-    val runtimeParameterRecord = parameterModels.firstOrNull { it.id == selectedRuntimeId }
+    val runtimeParameterRecord = (parameterModels + models.filter { localModelType(it) == LocalModelTypeFilter.EMBEDDING })
+        .firstOrNull { it.id == selectedRuntimeId }
         ?: parameterModels.firstOrNull { it.id == runtime.recordId }
     val overviewRecord = runtimeRecord
         ?: models.firstOrNull { candidate ->
@@ -684,6 +685,7 @@ internal fun LocalModelsScreen(
                 speechRuntime[kind]?.phase in setOf(
                     LocalSpeechRuntimePhase.STARTING,
                     LocalSpeechRuntimePhase.READY,
+                    LocalSpeechRuntimePhase.STOPPING,
                     LocalSpeechRuntimePhase.FAILED,
                 )
         }
@@ -692,12 +694,17 @@ internal fun LocalModelsScreen(
         ?: models.firstOrNull {
             localModelType(it) in setOf(LocalModelTypeFilter.TEXT, LocalModelTypeFilter.VISION)
         }
-        ?: models.firstOrNull {
-            it.format in setOf(LocalModelFormat.LITERT_LM, LocalModelFormat.GGUF, LocalModelFormat.MNN)
-        }
         ?: models.firstOrNull()
 
+    val overviewListState = androidx.compose.foundation.lazy.rememberLazyListState()
+    val modelsListState = androidx.compose.foundation.lazy.rememberLazyListState()
+    val runtimeListState = androidx.compose.foundation.lazy.rememberLazyListState()
     MiuixScaffoldPage(
+        listState = listOf(overviewListState, modelsListState, runtimeListState)[tab],
+        aboveContent = { NexusSettingsTabs(listOf(
+            stringResource(R.string.local_models_tab_overview), stringResource(R.string.local_models_tab_models),
+            stringResource(R.string.local_models_tab_runtime),
+        ), tab, { tab = it }) },
         title = stringResource(R.string.local_models_title),
         onBack = onBack,
         actions = {
@@ -706,18 +713,6 @@ internal fun LocalModelsScreen(
             }
         },
     ) {
-        item(key = "local_model_tabs") {
-            TabRow(
-                tabs = listOf(
-                    stringResource(R.string.local_models_tab_overview),
-                    stringResource(R.string.local_models_tab_models),
-                    stringResource(R.string.local_models_tab_runtime),
-                ),
-                selectedTabIndex = tab,
-                onTabSelected = { tab = it },
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            )
-        }
         notice?.let { message ->
             item(key = "local_model_notice") {
                 LocalModelNotice(
@@ -819,7 +814,7 @@ internal fun LocalModelsScreen(
                 }
                 if (visibleModels.isEmpty()) {
                     item(key = "local_models_empty") {
-                        Card(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+                        Card(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
                             BasicComponent(
                                 title = stringResource(R.string.local_models_empty),
                                 summary = stringResource(R.string.local_models_empty_summary),
@@ -833,6 +828,7 @@ internal fun LocalModelsScreen(
                         LocalModelRecordCard(
                             record = record,
                             running = runtime.recordId == record.id && runtimeRunning,
+                            embeddingSnapshot = embeddingRuntime.takeIf { it.recordId == record.id },
                             speechBound = when (localModelType(record)) {
                                 LocalModelTypeFilter.TTS -> speechSettings.localTtsModelId == record.id
                                 LocalModelTypeFilter.ASR -> speechSettings.localAsrModelId == record.id
@@ -844,8 +840,11 @@ internal fun LocalModelsScreen(
                                 else -> null
                             },
                             busy = runtimeBusy && selectedRuntimeId == record.id,
+                            benchmarking = benchmarkingId != null,
                             onStart = { startRecord(record) },
                             onStop = { stopRecord(record) },
+                            onBenchmark = { benchmark(record) },
+                            onDelete = { deletingRecordId = record.id },
                         )
                     }
                 }
@@ -896,6 +895,13 @@ internal fun LocalModelsScreen(
                         },
                     )
                 }
+                item(key = "external_service") {
+                    LocalExternalServiceCard(
+                        expanded = externalServiceExpanded,
+                        onToggle = { externalServiceExpanded = !externalServiceExpanded },
+                        onOpenLocalService = onOpenLocalService,
+                    )
+                }
             }
             TAB_RUNTIME -> {
                 item(key = "advanced_runtime_header") {
@@ -910,12 +916,19 @@ internal fun LocalModelsScreen(
                 }
                 runtimeParameterRecord?.let { record ->
                     item(key = "runtime_parameters") {
-                        LocalRuntimeParametersCard(
-                            record = record,
-                            onSettings = { transform -> saveRuntimeSettings(record, transform) },
-                        )
+                        if (localModelType(record) == LocalModelTypeFilter.EMBEDDING) {
+                            LocalEmbeddingRuntimeSettingsCard(
+                                record = record,
+                                onSettings = { transform -> saveRuntimeSettings(record, transform) },
+                            )
+                        } else {
+                            LocalRuntimeParametersCard(
+                                record = record,
+                                onSettings = { transform -> saveRuntimeSettings(record, transform) },
+                            )
+                        }
                     }
-                    item(key = "runtime_policy") {
+                    if (localModelType(record) != LocalModelTypeFilter.EMBEDDING && localSpeechKind(record) == null && record.outputModalities.none { it in setOf("keyword", "speaker_embedding") }) item(key = "runtime_policy") {
                         LocalRuntimePolicyCard(
                             record = record,
                             snapshot = performanceSnapshot,
@@ -943,26 +956,7 @@ internal fun LocalModelsScreen(
                     deletingRecordId = null
                     scope.launch {
                         try {
-                            when (record.format) {
-                                LocalModelFormat.LITERT_LM -> LiteRtLmRuntimeManager.stop(record.id)
-                                LocalModelFormat.GGUF -> LlamaCppRuntimeManager.stop(record.id)
-                                LocalModelFormat.MNN -> MnnRuntimeManager.stop(record.id)
-                                else -> Unit
-                            }
-                            LocalSpeechRuntime.release(record.id)
-                            val speech = SpeechSettingsRepository.settings()
-                            if (speech.localTtsModelId == record.id || speech.localAsrModelId == record.id) {
-                                val removingAsr = speech.localAsrModelId == record.id
-                                SpeechSettingsRepository.save(
-                                    speech.copy(
-                                        tts = if (speech.localTtsModelId == record.id) TtsProvider.NONE else speech.tts,
-                                        recognitionEnabled = if (removingAsr) false else speech.recognitionEnabled,
-                                        localTtsModelId = if (speech.localTtsModelId == record.id) "" else speech.localTtsModelId,
-                                        localAsrModelId = if (removingAsr) "" else speech.localAsrModelId,
-                                    ),
-                                )
-                            }
-                            withContext(Dispatchers.IO) { LocalModelRepository.delete(context, record.id) }
+                            modelService.delete(context, record)
                             noticeOf(context.getString(R.string.local_models_delete_success), LocalModelNoticeTone.SUCCESS)
                         } catch (failure: Exception) {
                             noticeOf(
@@ -1037,6 +1031,7 @@ private fun LocalModelLaunchCard(
     val speechState = when (speechSnapshot?.phase) {
         LocalSpeechRuntimePhase.STARTING -> LocalModelRuntimeState.STARTING
         LocalSpeechRuntimePhase.READY -> LocalModelRuntimeState.READY
+        LocalSpeechRuntimePhase.STOPPING -> LocalModelRuntimeState.STARTING
         LocalSpeechRuntimePhase.FAILED -> LocalModelRuntimeState.FAILED
         else -> LocalModelRuntimeState.STOPPED
     }
@@ -1058,6 +1053,7 @@ private fun LocalModelLaunchCard(
     val npuCompatible = npuModel && NpuModelTargeting.matches(npuTarget, Build.SOC_MODEL)
     val backendOptions = when {
         record == null -> emptyList()
+        record.format == LocalModelFormat.ONNX && ("audio" in record.inputModalities || "audio" in record.outputModalities) -> listOf(LocalRuntimeBackendPolicy.CPU)
         speechKind != null -> listOf(
             LocalRuntimeBackendPolicy.AUTO,
             LocalRuntimeBackendPolicy.CPU,
@@ -1083,11 +1079,11 @@ private fun LocalModelLaunchCard(
             LocalRuntimeBackendPolicy.NPU -> npuLabel
         }
     }
-    val limited = snapshot.thermalStatus >= 2 ||
+    val limited = snapshot.measured && (snapshot.thermalStatus >= 2 ||
         snapshot.powerSaveMode ||
-        snapshot.availableRamBytes < 2L * 1024 * 1024 * 1024
+        snapshot.availableRamBytes < 2L * 1024 * 1024 * 1024)
 
-    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+    Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
         Column(
             modifier = Modifier.fillMaxWidth().padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -1113,6 +1109,7 @@ private fun LocalModelLaunchCard(
                     state = visibleRuntimeState,
                     running = active,
                     hasModel = record != null,
+                    stopping = speechSnapshot?.phase == LocalSpeechRuntimePhase.STOPPING,
                 )
             }
 
@@ -1138,7 +1135,7 @@ private fun LocalModelLaunchCard(
                 )
                 Box(Modifier.size(width = 1.dp, height = 34.dp).background(MiuixTheme.colorScheme.outline.copy(alpha = .10f)))
                 LocalLaunchMetric(
-                    value = formatLocalModelBytes(snapshot.availableRamBytes),
+                    value = if (snapshot.measured) formatLocalModelBytes(snapshot.availableRamBytes) else "—",
                     label = stringResource(R.string.local_models_metric_available_memory),
                     icon = Icons.Rounded.Speed,
                     modifier = Modifier.weight(1f),
@@ -1218,10 +1215,12 @@ private fun LocalModelLaunchCard(
                         )
                     } else {
                         LocalCompactAction(
-                            icon = if (record == null) Icons.Rounded.CloudDownload else Icons.Rounded.PlayArrow,
+                            icon = if (record == null) Icons.Rounded.CloudDownload else if (record.outputModalities.any { it in setOf("keyword", "speaker_embedding") }) Icons.Rounded.Settings else Icons.Rounded.PlayArrow,
                             description = when {
                                 busy -> stringResource(R.string.local_models_runtime_starting)
                                 record == null -> stringResource(R.string.local_models_download_and_start)
+                                "keyword" in record.outputModalities -> "配置唤醒"
+                                "speaker_embedding" in record.outputModalities -> "配置声纹"
                                 else -> stringResource(R.string.local_models_start_now)
                             },
                             enabled = !busy,
@@ -1295,6 +1294,7 @@ private fun LocalRuntimeStatusBadge(
     state: LocalModelRuntimeState,
     running: Boolean,
     hasModel: Boolean,
+    stopping: Boolean = false,
 ) {
     val color = when {
         running -> StatusSuccess
@@ -1303,6 +1303,7 @@ private fun LocalRuntimeStatusBadge(
         else -> MiuixTheme.colorScheme.onSurfaceVariantSummary
     }
     val label = when {
+        stopping -> stringResource(R.string.local_models_runtime_stopping)
         state == LocalModelRuntimeState.STARTING -> stringResource(R.string.local_models_runtime_state_starting)
         state == LocalModelRuntimeState.GENERATING -> stringResource(R.string.local_models_runtime_state_generating)
         state == LocalModelRuntimeState.FAILED -> stringResource(R.string.local_models_runtime_state_failed)
@@ -1389,7 +1390,7 @@ private fun LocalModelLibraryIntro(
     selectedType: LocalModelTypeFilter,
     onSelectType: (LocalModelTypeFilter) -> Unit,
 ) {
-    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+    Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
         Column(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -1504,7 +1505,7 @@ private fun LocalModelNotice(
         LocalModelNoticeTone.SUCCESS -> Icons.Rounded.CheckCircle to MiuixTheme.colorScheme.primary
         LocalModelNoticeTone.ERROR -> Icons.Rounded.WarningAmber to MiuixTheme.colorScheme.error
     }
-    Card(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+    Card(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1542,7 +1543,7 @@ private fun LocalModelDownloadCard(
         LocalModelDownloadStage.DOWNLOADING,
         LocalModelDownloadStage.VERIFYING,
     )
-    Card(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+    Card(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Icon(
@@ -1635,18 +1636,27 @@ private fun LocalModelDownloadCard(
 private fun LocalModelRecordCard(
     record: LocalModelRecord,
     running: Boolean,
+    embeddingSnapshot: io.github.mangi.eta.agent.model.LocalEmbeddingRuntimeSnapshot? = null,
     speechBound: Boolean,
     speechRuntime: LocalSpeechRuntimeSnapshot?,
     busy: Boolean,
+    benchmarking: Boolean,
     onStart: () -> Unit,
     onStop: () -> Unit,
+    onBenchmark: () -> Unit,
+    onDelete: () -> Unit,
 ) {
+    val scope = rememberCoroutineScope()
     val builtIn = record.format in setOf(LocalModelFormat.LITERT_LM, LocalModelFormat.GGUF, LocalModelFormat.MNN)
     val modelType = localModelType(record)
     val chatCapable = modelType == LocalModelTypeFilter.TEXT || modelType == LocalModelTypeFilter.VISION
     val speechRunning = speechRuntime?.recordId == record.id &&
         speechRuntime.phase in setOf(LocalSpeechRuntimePhase.READY, LocalSpeechRuntimePhase.STARTING)
-    val active = running || speechRunning
+    val embeddingRunning = embeddingSnapshot?.phase in setOf(
+        io.github.mangi.eta.agent.model.LocalEmbeddingRuntimePhase.STARTING,
+        io.github.mangi.eta.agent.model.LocalEmbeddingRuntimePhase.READY,
+    )
+    val active = running || speechRunning || embeddingRunning
     val typeIcon = when (modelType) {
         LocalModelTypeFilter.VISION -> Icons.Rounded.Image
         LocalModelTypeFilter.TTS -> Icons.Rounded.GraphicEq
@@ -1654,7 +1664,7 @@ private fun LocalModelRecordCard(
         LocalModelTypeFilter.EMBEDDING -> Icons.Rounded.Hub
         LocalModelTypeFilter.TEXT -> Icons.Rounded.Memory
     }
-    Card(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+    Card(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
         Column(
             Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(7.dp),
@@ -1695,10 +1705,9 @@ private fun LocalModelRecordCard(
                         if (active) LocalModelRuntimeState.READY else LocalModelRuntimeState.STOPPED,
                     )
                     Text(
-                        stringResource(
+                        if (embeddingRunning) "向量引擎已就绪" else stringResource(
                             when {
-                                running -> R.string.local_models_runtime_running
-                                speechRunning -> R.string.local_models_runtime_running
+                                running || speechRunning -> R.string.local_models_runtime_running
                                 speechBound -> R.string.local_models_speech_bound
                                 else -> R.string.local_models_badge_installed
                             },
@@ -1739,15 +1748,34 @@ private fun LocalModelRecordCard(
                 horizontalArrangement = Arrangement.End,
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
+                if (chatCapable && !builtIn) {
+                    LocalCompactAction(
+                        icon = Icons.Rounded.Speed,
+                        description = stringResource(R.string.local_models_benchmark_action),
+                        enabled = !busy && !benchmarking,
+                        onClick = onBenchmark,
+                    )
+                }
+                LocalCompactAction(
+                    icon = Icons.Rounded.DeleteOutline,
+                    description = stringResource(R.string.local_models_delete),
+                    enabled = !busy && !benchmarking,
+                    danger = true,
+                    onClick = onDelete,
+                )
                 LocalCompactAction(
                     icon = when {
-                        running || speechRunning -> Icons.Rounded.Stop
+                        running || speechRunning || embeddingRunning -> Icons.Rounded.Stop
+                        modelType == LocalModelTypeFilter.TTS || modelType == LocalModelTypeFilter.ASR -> Icons.Rounded.PlayArrow
                         chatCapable && builtIn -> Icons.Rounded.PlayArrow
                         chatCapable -> Icons.Rounded.Dns
                         else -> Icons.Rounded.Settings
                     },
                     description = when {
                         busy -> stringResource(R.string.local_models_runtime_starting)
+                        "keyword" in record.outputModalities -> "配置唤醒"
+                        "speaker_embedding" in record.outputModalities -> "配置声纹"
+                        embeddingRunning -> "停止向量引擎"
                         running || speechRunning -> stringResource(R.string.local_models_runtime_stop)
                         speechBound && modelType == LocalModelTypeFilter.TTS -> "已设为播报模型"
                         speechBound && modelType == LocalModelTypeFilter.ASR -> "已设为识别模型"
@@ -1758,9 +1786,10 @@ private fun LocalModelRecordCard(
                         else -> localModelTypeLabel(modelType)
                     },
                     enabled = !busy,
-                    prominent = !running && !speechRunning && !speechBound,
+                    prominent = !running && !speechRunning && !speechBound && !embeddingRunning,
                     danger = running || speechRunning,
                     onClick = when {
+                        embeddingRunning -> onStop
                         running || speechRunning -> onStop
                         modelType == LocalModelTypeFilter.TTS || modelType == LocalModelTypeFilter.ASR -> onStart
                         chatCapable && builtIn -> onStart
@@ -1791,8 +1820,8 @@ private fun LocalAddModelsSection(
             onClick = onImport,
         )
         ArrowPreference(
-            title = "导入 MNN 目录",
-            summary = if (importingMnnFolder) stringResource(R.string.local_models_importing_mnn) else "MNN 模型包",
+            title = "导入模型目录",
+            summary = if (importingMnnFolder) stringResource(R.string.local_models_importing_mnn) else "MNN · ONNX 语音包",
             enabled = !importingMnnFolder,
             startAction = {
                 if (importingMnnFolder) InfiniteProgressIndicator(size = 22.dp)
@@ -1883,6 +1912,7 @@ private fun LocalCatalogModelRow(
     val size = preset.expectedSizeBytes?.let(::formatLocalModelBytes) ?: "—"
     val type = localPresetType(preset)
     val downloading = activeDownloadPresetId == preset.id
+    val embeddingPreset = type == LocalModelTypeFilter.EMBEDDING
     val action = if (installedRecord != null) onStart else { _: LocalModelRecord -> onDownload() }
     val enabled = !downloading && !busy && (installedRecord != null || !downloadInProgress)
     val icon = when (type) {
@@ -1921,8 +1951,8 @@ private fun LocalCatalogModelRow(
                     InfiniteProgressIndicator(size = 18.dp)
                 }
                 installedRecord != null -> LocalCompactAction(
-                    icon = Icons.Rounded.PlayArrow,
-                    description = stringResource(R.string.local_models_runtime_start),
+                    icon = Icons.Rounded.Hub,
+                    description = if (embeddingPreset) "启动并检查" else stringResource(R.string.local_models_runtime_start),
                     enabled = enabled,
                     onClick = { action(installedRecord) },
                 )
@@ -2007,7 +2037,7 @@ private fun localPresetMatchesType(
     return when (type) {
         LocalModelTypeFilter.TEXT -> "text" in input && "text" in output
         LocalModelTypeFilter.TTS -> "text" in input && "audio" in output
-        LocalModelTypeFilter.ASR -> "audio" in input && "text" in output
+        LocalModelTypeFilter.ASR -> "audio" in input && output.any { it in setOf("text", "keyword", "speaker_embedding") }
         LocalModelTypeFilter.VISION -> "image" in input
         LocalModelTypeFilter.EMBEDDING -> "embedding" in output
     }
@@ -2067,7 +2097,7 @@ private fun localModelMatchesType(
     return when (type) {
         LocalModelTypeFilter.TEXT -> "text" in input && "text" in output
         LocalModelTypeFilter.TTS -> "text" in input && "audio" in output
-        LocalModelTypeFilter.ASR -> "audio" in input && "text" in output
+        LocalModelTypeFilter.ASR -> "audio" in input && output.any { it in setOf("text", "keyword", "speaker_embedding") }
         LocalModelTypeFilter.VISION -> "image" in input
         LocalModelTypeFilter.EMBEDDING -> "embedding" in output
     }
@@ -2082,6 +2112,7 @@ private fun localModelCapabilityStatus(record: LocalModelRecord): Int = when {
         ) -> R.string.local_models_status_supported
 
     localModelMatchesType(record, LocalModelTypeFilter.TEXT) -> R.string.local_models_status_experimental
+    localModelMatchesType(record, LocalModelTypeFilter.EMBEDDING) -> R.string.local_models_status_supported
     else -> R.string.local_models_status_reserved
 }
 
@@ -2113,6 +2144,38 @@ private fun LocalRuntimeParametersCard(
     record: LocalModelRecord,
     onSettings: (((LocalModelRuntimeSettings) -> LocalModelRuntimeSettings)) -> Unit,
 ) {
+    if (record.format == LocalModelFormat.LITERT_LM && localSpeechKind(record) != null) {
+        val backends = listOf(LocalRuntimeBackendPolicy.AUTO, LocalRuntimeBackendPolicy.CPU,
+            LocalRuntimeBackendPolicy.GPU, LocalRuntimeBackendPolicy.NPU)
+        val labels = listOf(R.string.local_models_runtime_backend_auto, R.string.local_models_runtime_backend_cpu,
+            R.string.local_models_runtime_backend_gpu, R.string.local_models_runtime_backend_npu).map { stringResource(it) }
+        ProviderSection(title = stringResource(R.string.local_models_runtime_compute_group)) {
+            OverlayDropdownPreference(
+                title = stringResource(R.string.local_models_launch_backend),
+                summary = stringResource(R.string.local_models_speech_litert_parameters),
+                items = labels,
+                selectedIndex = backends.indexOf(record.runtimeSettings.backend).coerceAtLeast(0),
+                onSelectedIndexChange = { index -> backends.getOrNull(index)?.let { backend ->
+                    onSettings { it.copy(backend = backend) }
+                } },
+            )
+            LocalSpeechIdlePreference(record, onSettings)
+        }
+        return
+    }
+    if (record.format == LocalModelFormat.ONNX && ("audio" in record.inputModalities || "audio" in record.outputModalities)) {
+        val threadLimit = when { "keyword" in record.outputModalities -> 2; "speaker_embedding" in record.outputModalities -> 4; else -> 8 }
+        ProviderSection(title = stringResource(R.string.local_models_runtime_compute_group)) {
+            OverlayDropdownPreference(
+                title = stringResource(R.string.local_models_runtime_threads),
+                items = (1..threadLimit).map(Int::toString),
+                selectedIndex = (record.runtimeSettings.threads - 1).coerceIn(0, threadLimit - 1),
+                onSelectedIndexChange = { index -> onSettings { it.copy(threads = (index + 1).coerceIn(1, threadLimit)) } },
+            )
+            if (localSpeechKind(record) != null) LocalSpeechIdlePreference(record, onSettings)
+        }
+        return
+    }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val settings = record.runtimeSettings
@@ -2295,6 +2358,62 @@ private fun LocalRuntimeParametersCard(
 }
 
 @Composable
+private fun LocalEmbeddingRuntimeSettingsCard(
+    record: LocalModelRecord,
+    onSettings: (((LocalModelRuntimeSettings) -> LocalModelRuntimeSettings)) -> Unit,
+) {
+    val settings = record.runtimeSettings
+    val threadChoices = (1..8).toList()
+    val backends = listOf(
+        LocalRuntimeBackendPolicy.AUTO,
+        LocalRuntimeBackendPolicy.GPU,
+        LocalRuntimeBackendPolicy.CPU,
+    )
+    val autoLabel = stringResource(R.string.local_models_runtime_backend_auto)
+    val gpuLabel = stringResource(R.string.local_models_runtime_backend_gpu)
+    val cpuLabel = stringResource(R.string.local_models_runtime_backend_cpu)
+    val backendLabels = backends.map {
+        when (it) {
+            LocalRuntimeBackendPolicy.AUTO -> autoLabel
+            LocalRuntimeBackendPolicy.GPU -> gpuLabel
+            else -> cpuLabel
+        }
+    }
+    ProviderSection(title = stringResource(R.string.local_models_runtime_compute_group)) {
+        OverlayDropdownPreference(
+            title = "向量推理后端",
+            items = backendLabels,
+            selectedIndex = backends.indexOf(settings.backend).coerceAtLeast(0),
+            onSelectedIndexChange = { index -> backends.getOrNull(index)?.let { backend ->
+                onSettings { it.copy(backend = backend) }
+            } },
+        )
+        OverlayDropdownPreference(
+            title = stringResource(R.string.local_models_runtime_threads),
+            items = threadChoices.map(Int::toString),
+            selectedIndex = threadChoices.indexOf(settings.threads).coerceAtLeast(0),
+            onSelectedIndexChange = { index -> threadChoices.getOrNull(index)?.let { threads ->
+                onSettings { it.copy(threads = threads) }
+            } },
+        )
+    }
+}
+
+@Composable
+private fun LocalSpeechIdlePreference(record: LocalModelRecord,
+    onSettings: (((LocalModelRuntimeSettings) -> LocalModelRuntimeSettings)) -> Unit) {
+    val choices = (listOf(1, 5, 10, 15, 30, 60) + record.runtimeSettings.idleUnloadMinutes).distinct().sorted()
+    OverlayDropdownPreference(
+        title = stringResource(R.string.local_models_runtime_idle),
+        items = choices.map { stringResource(R.string.local_models_runtime_idle_value, it) },
+        selectedIndex = choices.indexOf(record.runtimeSettings.idleUnloadMinutes).coerceAtLeast(0),
+        onSelectedIndexChange = { index -> choices.getOrNull(index)?.let { minutes ->
+            onSettings { it.copy(idleUnloadMinutes = minutes) }
+        } },
+    )
+}
+
+@Composable
 private fun LocalRuntimePolicyCard(
     record: LocalModelRecord,
     snapshot: LocalDevicePerformanceSnapshot,
@@ -2405,7 +2524,7 @@ private fun LocalCustomSourceCard(
     onSaveAddress: () -> Unit,
     onDownload: () -> Unit,
 ) {
-    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+    Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
         Column(Modifier.fillMaxWidth()) {
             ArrowPreference(
                 title = stringResource(R.string.local_models_section_source),
@@ -2430,7 +2549,7 @@ private fun LocalCustomSourceCard(
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
                     )
                     FlowRow(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         TextButton(
@@ -2462,7 +2581,7 @@ private fun LocalExternalServiceCard(
     onToggle: () -> Unit,
     onOpenLocalService: () -> Unit,
 ) {
-    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+    Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
         Column(Modifier.fillMaxWidth()) {
             ArrowPreference(
                 title = stringResource(R.string.local_models_sources_service_title),
@@ -2511,6 +2630,15 @@ private fun LocalModelBindingScreen(
             else performance.contextWindow.toString(),
         )
     }
+    var contextWindowInitialized by rememberSaveable(record.id) {
+        mutableStateOf(record.boundModelSelectionId != null || snapshot.measured)
+    }
+    LaunchedEffect(record.id, snapshot.measured, performance.contextWindow) {
+        if (!contextWindowInitialized && snapshot.measured) {
+            contextWindow = performance.contextWindow.toString()
+            contextWindowInitialized = true
+        }
+    }
     var supportsTools by rememberSaveable(record.id) { mutableStateOf(record.supportsTools) }
     var supportsVision by rememberSaveable(record.id) { mutableStateOf(record.supportsVision) }
     var formError by rememberSaveable(record.id) { mutableStateOf<String?>(null) }
@@ -2533,7 +2661,7 @@ private fun LocalModelBindingScreen(
         onBack = onBack,
     ) {
         item(key = "bind_summary") {
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Card(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                 Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         record.displayName,
@@ -2575,7 +2703,10 @@ private fun LocalModelBindingScreen(
                     )
                     TextButton(
                         text = stringResource(R.string.local_models_apply_device_profile),
-                        onClick = { contextWindow = performance.contextWindow.toString() },
+                        onClick = {
+                            contextWindow = performance.contextWindow.toString()
+                            contextWindowInitialized = true
+                        },
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
@@ -2590,7 +2721,7 @@ private fun LocalModelBindingScreen(
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
                 )
                 FlowRow(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
@@ -2631,7 +2762,7 @@ private fun LocalModelBindingScreen(
                     )
                     TextButton(
                         text = stringResource(R.string.local_models_grant_local_network),
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                         onClick = {
                             localNetworkPermissionLauncher.launch(Manifest.permission.ACCESS_LOCAL_NETWORK)
                         },
@@ -2645,7 +2776,7 @@ private fun LocalModelBindingScreen(
                             localNetworkAccess != LocalNetworkPermission.AccessState.DENIED
                         ),
                     colors = ButtonDefaults.textButtonColorsPrimary(),
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
                     onClick = {
                         val normalized = runCatching {
                             LocalModelRepository.validateServiceEndpoint(endpoint)
@@ -2696,7 +2827,7 @@ private fun LocalModelBindingScreen(
                 }
                 if (discoveredModelIds.isNotEmpty()) {
                     FlowRow(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
@@ -2725,6 +2856,7 @@ private fun LocalModelBindingScreen(
                     value = contextWindow,
                     onValueChange = {
                         contextWindow = it.filter(Char::isDigit).take(7)
+                        contextWindowInitialized = true
                         formError = null
                     },
                     label = stringResource(R.string.local_models_context_window),
@@ -2796,41 +2928,46 @@ private fun LocalDevicePerformanceEffects(
     onChanged: (LocalDevicePerformanceSnapshot) -> Unit,
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(context, lifecycleOwner) {
-        fun refresh() {
-            runCatching { LocalModelPerformanceMonitor.capture(context) }
-                .onSuccess(onChanged)
-        }
-
-        val power = context.getSystemService(PowerManager::class.java)
-        val thermalListener = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            PowerManager.OnThermalStatusChangedListener { refresh() }.also { listener ->
-                power.addThermalStatusListener(ContextCompat.getMainExecutor(context), listener)
-            }
-        } else {
-            null
-        }
+    val latestOnChanged by rememberUpdatedState(onChanged)
+    LaunchedEffect(context, lifecycleOwner) {
+        val requests = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.CONFLATED)
+        fun refresh() { requests.trySend(Unit) }
+        val power = withContext(Dispatchers.IO) { context.getSystemService(PowerManager::class.java) }
+        val thermalListener = PowerManager.OnThermalStatusChangedListener { refresh() }
         val powerSaveReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 refresh()
             }
         }
-        ContextCompat.registerReceiver(
-            context,
-            powerSaveReceiver,
-            IntentFilter(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED),
-            ContextCompat.RECEIVER_NOT_EXPORTED,
-        )
         val lifecycleObserver = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) refresh()
         }
         lifecycleOwner.lifecycle.addObserver(lifecycleObserver)
-
-        onDispose {
+        var thermalRegistered = false
+        var receiverRegistered = false
+        try {
+            // Registration can itself make Binder calls. Do it off the transition frame.
+            withContext(Dispatchers.IO) {
+                power.addThermalStatusListener(ContextCompat.getMainExecutor(context), thermalListener)
+                thermalRegistered = true
+                ContextCompat.registerReceiver(context, powerSaveReceiver,
+                    IntentFilter(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED)
+                receiverRegistered = true
+            }
+            refresh()
+            for (request in requests) {
+                if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                    try { latestOnChanged(LocalModelPerformanceMonitor.captureDeferred(context)) }
+                    catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                    catch (_: Exception) { /* Keep the last complete sample; retry on the next event. */ }
+                }
+            }
+        } finally {
+            requests.close()
             lifecycleOwner.lifecycle.removeObserver(lifecycleObserver)
-            runCatching { context.unregisterReceiver(powerSaveReceiver) }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                thermalListener?.let(power::removeThermalStatusListener)
+            withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
+                if (receiverRegistered) runCatching { context.unregisterReceiver(powerSaveReceiver) }
+                if (thermalRegistered) runCatching { power.removeThermalStatusListener(thermalListener) }
             }
         }
     }

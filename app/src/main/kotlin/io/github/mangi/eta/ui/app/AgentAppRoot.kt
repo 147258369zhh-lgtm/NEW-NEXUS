@@ -15,8 +15,12 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
@@ -24,6 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -58,6 +63,9 @@ import io.github.mangi.eta.agent.control.EtaAppControlEvent
 import io.github.mangi.eta.agent.control.EtaAppControlEvents
 import io.github.mangi.eta.agent.runtime.AgentRuntimeService
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
+import io.github.mangi.eta.data.repository.ProviderRepository
+import io.github.mangi.eta.data.model.ModelRoleBinding
+import io.github.mangi.eta.data.model.hasUsableConnection
 import io.github.mangi.eta.fork.meeting.MeetingRepository
 import io.github.mangi.eta.fork.meeting.MeetingRoomEntity
 import io.github.mangi.eta.fork.meeting.MeetingRoomStatus
@@ -68,6 +76,7 @@ import io.github.mangi.eta.ui.ConversationArchiveSettingsScreen
 import io.github.mangi.eta.ui.IncomingShareRequest
 import io.github.mangi.eta.ui.MeetingSettingsScreen
 import io.github.mangi.eta.ui.SettingsScreen
+import io.github.mangi.eta.ui.components.NexusSettingsTheme
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.model.AgentHomeAction
 import io.github.mangi.eta.ui.model.AgentMemoryAction
@@ -76,6 +85,7 @@ import io.github.mangi.eta.ui.model.AgentSystemEnhanceAction
 import io.github.mangi.eta.ui.model.AgentToolsAction
 import io.github.mangi.eta.ui.components.ConversationFolderDialogs
 import io.github.mangi.eta.ui.components.ConversationFolderDialogRequest
+import io.github.mangi.eta.ui.components.ConversationInsightsPaneScaffold
 import io.github.mangi.eta.ui.components.HomeSwipeGestureAction
 import io.github.mangi.eta.ui.components.HomeSwipeGesturePolicy
 import io.github.mangi.eta.ui.model.ConversationSummaryUi
@@ -122,6 +132,7 @@ import io.github.mangi.eta.ui.screens.a2a.A2ASettingsScreen
 import io.github.mangi.eta.ui.screens.learning.LearningSettingsScreen
 import io.github.mangi.eta.ui.screens.localmodel.LocalModelsScreen
 import io.github.mangi.eta.ui.screens.tasks.AgentTaskCenterScreen
+import io.github.mangi.eta.ui.screens.tasks.AutomationConversationDraft
 import io.github.mangi.eta.ui.screens.permissions.PermissionHealthScreen
 import io.github.mangi.eta.ui.screens.prompt.PromptInjectionScreen
 import io.github.mangi.eta.ui.screens.skills.AgentSkillsScreen
@@ -144,6 +155,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.basic.Text
@@ -153,10 +165,31 @@ import top.yukonga.miuix.kmp.layout.DialogDefaults
 import top.yukonga.miuix.kmp.nav.core.NavDisplay
 import top.yukonga.miuix.kmp.nav.core.NavDisplayEffects
 import top.yukonga.miuix.kmp.nav.core.rememberNavBackStack
-import top.yukonga.miuix.kmp.nav.core.rememberNavSystemCornerRadius
 import top.yukonga.miuix.kmp.nav.transition.NavSwipeDirection
+import top.yukonga.miuix.kmp.nav.transition.NavMotion
+import top.yukonga.miuix.kmp.nav.transition.NavSettleSpec
+import top.yukonga.miuix.kmp.nav.transition.navGraphicsTransition
 import top.yukonga.miuix.kmp.window.WindowDialog
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+
+/**
+ * Use the same full-width geometry for interactive back and programmatic navigation. A small
+ * decorative offset leaves the outgoing page covering its destination until disposal, producing
+ * an apparent freeze followed by a jump. Layer reads keep gesture frames out of composition.
+ */
+private val SettingsNavMotion = NavMotion(
+    commit = NavSettleSpec.Spring(dampingRatio = 1f, stiffness = 900f),
+    cancel = NavSettleSpec.Spring(dampingRatio = 1f, stiffness = 900f),
+    programmatic = NavSettleSpec.Tween(240, FastOutSlowInEasing),
+)
+
+private val SettingsNavTransition = navGraphicsTransition(motion = SettingsNavMotion) { scope ->
+    if (scope.relativeDepth <= 0f) {
+        val progress = (-scope.relativeDepth).coerceIn(0f, 1f)
+        val direction = if (scope.layoutDirection == LayoutDirection.Rtl) -1f else 1f
+        translationX = kotlin.math.round(direction * progress * scope.layoutSize.width)
+    }
+}
 
 /**
  * Agent App 根组件：持有本地导航栈，并把 Screen actions 交给 [AgentAppState]。
@@ -179,6 +212,7 @@ fun AgentAppRoot(
     val context = LocalContext.current
     val resources = LocalResources.current
     val uiScope = rememberCoroutineScope()
+    val panePlacementMutex = remember { kotlinx.coroutines.sync.Mutex() }
     val backStack = rememberNavBackStack<AppRoute>(AppRoute.Home)
     LaunchedEffect(openSpeechSettings) {
         if (openSpeechSettings) {
@@ -196,11 +230,26 @@ fun AgentAppRoot(
     var navigationResetKey by rememberSaveable { mutableIntStateOf(0) }
     val appViewModel = viewModel<AgentAppViewModel>()
     val agentState = appViewModel.state
+    if (agentState == null) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            if (appViewModel.startupFailed) {
+                TextButton(text = "会话加载失败，点击重试", onClick = appViewModel::loadConversations)
+            } else {
+                Text("正在加载会话…")
+            }
+        }
+        return
+    }
     var activeMeetingRoomId by rememberSaveable { mutableStateOf<String?>(null) }
+    var projectTaskToOpen by rememberSaveable { mutableStateOf<String?>(null) }
+    var automationConversationDraft by remember { mutableStateOf<AutomationConversationDraft?>(null) }
+    var preparingConversationTask by remember { mutableStateOf(false) }
+    var projectMemoryScopeToOpen by rememberSaveable { mutableStateOf<String?>(null) }
     var conversationPaneShowsMeetings by rememberSaveable {
         mutableStateOf(activeMeetingRoomId != null)
     }
     var meetingArchiveViewOpen by rememberSaveable { mutableStateOf(false) }
+    var homeNotepadOpen by rememberSaveable { mutableStateOf(false) }
     var createMeetingRoomDialogOpen by rememberSaveable { mutableStateOf(false) }
     val activeMeetingRoomFlow = remember(activeMeetingRoomId, context.applicationContext) {
         activeMeetingRoomId?.let { roomId ->
@@ -208,12 +257,13 @@ fun AgentAppRoot(
         } ?: flowOf<MeetingRoomEntity?>(null)
     }
     val activeMeetingRoom by activeMeetingRoomFlow.collectAsState(initial = null)
+    val chatStreaming by remember(agentState) { derivedStateOf { agentState.homeState.isStreaming } }
     val runtimeActive by AgentRuntimeService.keepScreenOn.collectAsState()
     val view = LocalView.current
     val homeWorkActive = if (activeMeetingRoomId != null) {
         activeMeetingRoom?.status == MeetingRoomStatus.RUNNING
     } else {
-        agentState.homeState.isStreaming
+        chatStreaming
     }
     val keepScreenOn = backStack.lastOrNull() == AppRoute.Home && homeWorkActive && runtimeActive
     DisposableEffect(view, keepScreenOn) {
@@ -406,10 +456,14 @@ fun AgentAppRoot(
         conversationPaneOpen = false
     }
 
-    fun selectHomeMode(showMeetings: Boolean, preferredMeetingRoomId: String? = null) {
+    fun selectHomeMode(
+        showMeetings: Boolean,
+        preferredMeetingRoomId: String? = null,
+        closePane: Boolean = true,
+    ) {
         focusManager.clearFocus()
         navigator.popToHome()
-        conversationPaneOpen = false
+        if (closePane) conversationPaneOpen = false
         conversationPaneShowsMeetings = showMeetings
         meetingArchiveViewOpen = false
         if (!showMeetings) {
@@ -457,11 +511,12 @@ fun AgentAppRoot(
     @Composable
     fun RoutedShell(
         route: AppRoute,
+        homeGesturesEnabled: Boolean = true,
         content: @Composable () -> Unit,
     ) {
         AgentAppShell(
             currentRoute = route,
-            isCurrentRoute = backStack.lastOrNull() == route,
+            isCurrentRoute = backStack.lastOrNull() == route && homeGesturesEnabled,
             conversationPaneState = agentState.conversationPaneState,
             isConversationPaneOpen = conversationPaneOpen,
             onBack = { popRoute() },
@@ -469,7 +524,7 @@ fun AgentAppRoot(
             onDismissConversationPane = { conversationPaneOpen = false },
             onSearchConversations = { query -> agentState.updateSearchQuery(query) },
             onConversationPaneModeChange = { showMeetings, meetingRoomId ->
-                selectHomeMode(showMeetings, meetingRoomId)
+                selectHomeMode(showMeetings, meetingRoomId, closePane = false)
             },
             onOpenTerminal = { pushRoute(AppRoute.Terminal) },
             onOpenBranches = { pushRoute(AppRoute.ConversationBranches(agentState.conversationPaneState.selectedConversationId)) },
@@ -527,6 +582,34 @@ fun AgentAppRoot(
             },
             onConversationDropToFolder = { conversationId, folderId ->
                 uiScope.launch { agentState.moveConversationToFolder(conversationId, folderId) }
+            },
+            onPanePlacement = { placement ->
+                uiScope.launch {
+                    panePlacementMutex.withLock {
+                    runCatching {
+                        if (placement.subject.kind == io.github.mangi.eta.data.model.ConversationSubject.Kind.MEETING) {
+                            io.github.mangi.eta.fork.conversations.ConversationPaneOrganizationStore.validateMeetingFolder(context, placement.folderId)
+                        } else check(placement.folderId == null || agentState.conversationPaneState.folders.any { it.id == placement.folderId }) {
+                            "文件夹已不存在，请重试"
+                        }
+                        when (placement.subject.kind) {
+                            io.github.mangi.eta.data.model.ConversationSubject.Kind.CHAT -> {
+                                val row = agentState.conversationPaneState.unfilteredConversations.firstOrNull { it.id == placement.subject.id }
+                                    ?: error("会话已不存在")
+                                // UI snapshots can lag behind the preceding placement command.
+                                // Pinning preserves the latest folder, including queued moves.
+                                if (!placement.pinned) agentState.moveConversationToFolder(row.id, placement.folderId)
+                                check(agentState.setConversationPinned(row.id, placement.pinned)?.await() != false) { "置顶状态保存失败" }
+                            }
+                            io.github.mangi.eta.data.model.ConversationSubject.Kind.MEETING -> withContext(Dispatchers.IO) {
+                                MeetingRepository.setRoomPinned(context, placement.subject.id, placement.pinned)
+                            }
+                            else -> error("无法移动此条目")
+                        }
+                        io.github.mangi.eta.fork.conversations.ConversationPaneOrganizationStore.savePlacement(context, placement)
+                    }.onFailure { error -> Toast.makeText(context, "移动未完成：${error.message ?: "请重试"}", Toast.LENGTH_LONG).show() }
+                    }
+                }
             },
             onOpenMeetingRoom = { roomId ->
                 focusManager.clearFocus()
@@ -614,6 +697,11 @@ fun AgentAppRoot(
             onOpenCharacter = {
                 agentState.homeState.roleplay?.let { pushRoute(AppRoute.CharacterDetail(it.characterId)) }
             },
+            onOpenNotepad = if (activeMeetingRoomId == null) {
+                { homeNotepadOpen = true }
+            } else {
+                null
+            },
         ) { padding ->
             Box(
                 modifier = Modifier
@@ -637,16 +725,50 @@ fun AgentAppRoot(
         NavDisplay(
             backStack = backStack,
             onBack = { popRoute() },
+            transition = SettingsNavTransition,
             effects = NavDisplayEffects(
-                cornerClipRadius = rememberNavSystemCornerRadius(),
+                enableCornerClip = false,
+                dimAmount = 0f,
             ),
         ) {
             // 首页拥有自己的中央模式切换与右侧详情手势，导航返回滑动不能参与竞争。
             entry<AppRoute.Home>() {
-                RoutedShell(route = AppRoute.Home) {
-                    val insightSwipeThreshold = with(androidx.compose.ui.platform.LocalDensity.current) { 56.dp.toPx() }
+                val insightMeetingRoomId = activeMeetingRoomId.orEmpty()
+                val insightConversationId = agentState.conversationPaneState.selectedConversationId.orEmpty()
+                var insightArtifactPreview by remember(insightConversationId, insightMeetingRoomId) { mutableStateOf<String?>(null) }
+                insightArtifactPreview?.let { id -> io.github.mangi.eta.ui.components.SubjectArtifactPreview(id) { insightArtifactPreview = null } }
+                ConversationInsightsPaneScaffold(
+                    subjectKey = if (insightMeetingRoomId.isNotBlank()) "meeting:$insightMeetingRoomId" else "chat:$insightConversationId",
+                    enabled = backStack.lastOrNull() == AppRoute.Home && !conversationPaneOpen &&
+                        (insightMeetingRoomId.isNotBlank() || insightConversationId.isNotBlank()),
+                    paneContent = { dismiss ->
+                        ConversationInsightsScreen(
+                            conversationId = insightConversationId,
+                            meetingRoomId = insightMeetingRoomId,
+                            onBack = dismiss,
+                            onRunClick = { pushRoute(AppRoute.AgentMetricDetail(it)) },
+                            onArtifactClick = { insightArtifactPreview = it },
+                            onDshCommand = { name, args ->
+                                if (args.isNotBlank()) false
+                                else if (insightMeetingRoomId.isNotBlank()) {
+                                    if (name == "stop") { io.github.mangi.eta.fork.meeting.MeetingRunCoordinator.stop(insightMeetingRoomId); true } else false
+                                } else when (name) {
+                                    "stop" -> { agentState.stopCurrentRun(); true }
+                                    "compact" -> { agentState.compactCurrentContext(); true }
+                                    else -> false
+                                }
+                            },
+                        )
+                    },
+                ) { insightPaneActive ->
+                    val homeGestureAppearance = LocalAppearanceSettings.current.normalized()
+                    val homeModeSwipeEnabled = homeGestureAppearance.homeModeSwipeEnabled
+                    val insightSwipeThreshold = with(androidx.compose.ui.platform.LocalDensity.current) {
+                        homeGestureAppearance.homeModeSwipeThresholdDp.dp.toPx()
+                    }
                     BackHandler(
-                        enabled = activeMeetingRoomId != null && !conversationPaneOpen,
+                        enabled = activeMeetingRoomId != null && !conversationPaneOpen && !insightPaneActive &&
+                            backStack.lastOrNull() == AppRoute.Home,
                     ) {
                         activeMeetingRoomId = null
                         conversationPaneShowsMeetings = false
@@ -654,22 +776,25 @@ fun AgentAppRoot(
                     Box(
                         Modifier
                             .fillMaxSize()
-                            .pointerInput(activeMeetingRoomId, conversationPaneOpen, insightSwipeThreshold) {
-                                if (conversationPaneOpen) return@pointerInput
+                            .pointerInput(activeMeetingRoomId, conversationPaneOpen, insightPaneActive, insightSwipeThreshold, homeModeSwipeEnabled) {
+                                if (!homeModeSwipeEnabled || conversationPaneOpen || insightPaneActive || backStack.lastOrNull() != AppRoute.Home) return@pointerInput
                                 awaitEachGesture {
                                     val down = awaitFirstDown(requireUnconsumed = false)
-                                    // 左侧抽屉边缘由 SidePaneScaffold 独占，不在这里消费。
-                                    if (down.position.x < size.width * 0.18f) return@awaitEachGesture
                                     val gestureStartX = down.position.x
                                     val gestureStartY = down.position.y
+                                    // Lower gestures belong exclusively to the two continuous side panes.
+                                    if (gestureStartY >= size.height * 0.40f) return@awaitEachGesture
                                     var gestureDistance = 0f
                                     val active = awaitHorizontalTouchSlopOrCancellation(down.id) { change, overSlop ->
                                         gestureDistance = overSlop
                                         change.consume()
                                     } ?: return@awaitEachGesture
+                                    if (!active.isConsumed) return@awaitEachGesture
+                                    var cancelled = false
                                     while (active.pressed) {
                                         val event = awaitPointerEvent()
                                         val change = event.changes.firstOrNull { it.id == active.id } ?: break
+                                        if (change.isConsumed) { cancelled = true; break }
                                         val delta = change.positionChange().x
                                         if (delta != 0f) {
                                             gestureDistance += delta
@@ -677,6 +802,7 @@ fun AgentAppRoot(
                                         }
                                         if (!change.pressed) break
                                     }
+                                    if (cancelled) return@awaitEachGesture
                                     when (HomeSwipeGesturePolicy.classify(
                                         startX = gestureStartX,
                                         width = size.width.toFloat(),
@@ -685,108 +811,133 @@ fun AgentAppRoot(
                                         startY = gestureStartY,
                                         height = size.height.toFloat(),
                                     )) {
-                                        HomeSwipeGestureAction.OpenInsights -> {
-                                            val meetingRoomId = activeMeetingRoomId
-                                            if (meetingRoomId != null) {
-                                                pushRoute(AppRoute.ConversationInsights(meetingRoomId = meetingRoomId))
-                                            } else {
-                                                agentState.conversationPaneState.selectedConversationId?.let { id ->
-                                                    pushRoute(AppRoute.ConversationInsights(conversationId = id))
-                                                }
-                                            }
-                                        }
                                         HomeSwipeGestureAction.SwitchConversationMeeting -> {
                                             selectHomeMode(showMeetings = activeMeetingRoomId == null)
                                         }
-                                        HomeSwipeGestureAction.None -> Unit
+                                        else -> Unit
                                     }
                                 }
                             },
                     ) {
-                        if (activeMeetingRoomId != null) {
-                            MeetingRoomConversationStage(
-                                roomId = requireNotNull(activeMeetingRoomId),
-                                onDeleted = {
-                                    activeMeetingRoomId = null
-                                    conversationPaneShowsMeetings = false
-                                },
-                                onArchived = {
-                                    activeMeetingRoomId = null
-                                    conversationPaneShowsMeetings = true
-                                    meetingArchiveViewOpen = true
-                                },
-                                onOpenSettings = { pushRoute(AppRoute.MeetingSettings) },
-                                modifier = Modifier.fillMaxSize(),
-                            )
-                        } else {
-                            AgentHomeScreen(
-                                state = agentState.homeState,
-                                modelPickerState = agentState.modelPickerState,
-                                conversationKey = agentState.conversationPaneState.selectedConversationId,
-                                onNewConversation = { createConversation() },
-                                onAction = { action ->
-                                    when (action) {
-                                    is AgentHomeAction.ReasoningEffortChanged ->
-                                        agentState.updateReasoningEffort(action.effort)
-                                    is AgentHomeAction.WorkflowModeChanged ->
-                                        agentState.updateWorkflowMode(action.mode)
-                                    AgentHomeAction.CompactContext -> agentState.compactCurrentContext()
-                                    AgentHomeAction.ConfigureContextBudget -> {
-                                        contextBudgetConversationId = agentState.conversationPaneState.selectedConversationId
-                                    }
-                                    AgentHomeAction.LoadEarlierMessages -> agentState.loadEarlierMessages()
-                                    is AgentHomeAction.ForkMessage -> agentState.createConversationBranch(action.id)
-                                    is AgentHomeAction.HistoryViewportChanged -> agentState.updateHistoryViewport(action.atLatest)
-                                    AgentHomeAction.RetryConversationLoad -> agentState.retryConversationLoad()
-                                    is AgentHomeAction.ModelSelected -> agentState.selectModel(action.modelId)
-                                    is AgentHomeAction.InputSyncApplied -> agentState.consumeInputSync(action.conversationId, action.version, action.text)
-                                    is AgentHomeAction.SubmitMessage -> { requestExecutionNotifications(); agentState.sendCurrentMessage(action.text) }
-                                    is AgentHomeAction.InterruptAndSubmitMessage -> { requestExecutionNotifications(); agentState.interruptAndSendCurrentMessage(action.text) }
-                                    is AgentHomeAction.SteerQueuedMessage -> { requestExecutionNotifications(); agentState.steerQueuedMessage(action.id) }
-                                    is AgentHomeAction.RecallQueuedMessage -> agentState.recallQueuedMessage(action.id, action.currentDraftText)
-                                    is AgentHomeAction.RemoveQueuedMessage -> agentState.removeQueuedMessage(action.id)
-                                    AgentHomeAction.StopRun -> agentState.stopCurrentRun()
-                                    is AgentHomeAction.ImageAttached -> agentState.attachImage(action.uri)
-                                    is AgentHomeAction.RemoveImage -> agentState.removePendingImage(action.id)
-                                    is AgentHomeAction.FilesAttached -> agentState.attachFiles(action.uris)
-                                    is AgentHomeAction.FolderAttached -> agentState.attachFolder(action.uri)
-                                    is AgentHomeAction.FilePathAttached -> agentState.attachFilePath(action.path)
-                                    is AgentHomeAction.RemoveFileReference ->
-                                        agentState.removePendingFileReference(action.id)
-                                    is AgentHomeAction.EditMessage -> agentState.beginMessageEdit(action.id)
-                                    AgentHomeAction.CancelMessageEdit -> agentState.cancelMessageEdit()
-                                    is AgentHomeAction.DeleteMessage -> {
-                                        agentState.messageRevisionImpact(action.id)?.let { impact ->
-                                            messageDeleteTarget = MessageMutationTarget(action.id, impact.laterTurnCount)
+                        RoutedShell(route = AppRoute.Home, homeGesturesEnabled = !insightPaneActive) {
+                            if (activeMeetingRoomId != null) {
+                                MeetingRoomConversationStage(
+                                    roomId = requireNotNull(activeMeetingRoomId),
+                                    onDeleted = {
+                                        activeMeetingRoomId = null
+                                        conversationPaneShowsMeetings = false
+                                    },
+                                    onArchived = {
+                                        activeMeetingRoomId = null
+                                        conversationPaneShowsMeetings = true
+                                        meetingArchiveViewOpen = true
+                                    },
+                                    onOpenSettings = { pushRoute(AppRoute.MeetingSettings) },
+                                    modifier = Modifier.fillMaxSize(),
+                                )
+                            } else {
+                                AgentHomeScreen(
+                                    state = agentState.homeState,
+                                    modelPickerState = agentState.modelPickerState,
+                                    conversationKey = agentState.conversationPaneState.selectedConversationId,
+                                    onNewConversation = { createConversation() },
+                                    onOpenMcp = { pushRoute(AppRoute.McpServers) },
+                                    onOpenTools = { pushRoute(AppRoute.Tools) },
+                                    notepadOpen = homeNotepadOpen,
+                                    onNotepadOpenChange = { homeNotepadOpen = it },
+                                    onAction = { action ->
+                                        when (action) {
+                                        is AgentHomeAction.ReasoningEffortChanged ->
+                                            agentState.updateReasoningEffort(action.effort)
+                                        is AgentHomeAction.WorkflowModeChanged ->
+                                            agentState.updateWorkflowMode(action.mode)
+                                        is AgentHomeAction.SelectedSkillIdsChanged ->
+                                            agentState.updateSelectedSkillIds(action.skillIds)
+                                        AgentHomeAction.CompactContext -> agentState.compactCurrentContext()
+                                        AgentHomeAction.ConfigureContextBudget -> {
+                                            contextBudgetConversationId = agentState.conversationPaneState.selectedConversationId
                                         }
-                                    }
-                                    is AgentHomeAction.RegenerateMessage -> {
-                                        val impact = agentState.messageRevisionImpact(action.id)
-                                        if (agentState.homeState.roleplay != null || impact?.laterTurnCount == 0) {
-                                            agentState.regenerateMessage(action.id)
-                                        } else if (impact != null) {
-                                            messageRegenerateTarget = MessageMutationTarget(action.id, impact.laterTurnCount)
+                                        AgentHomeAction.LoadEarlierMessages -> agentState.loadEarlierMessages()
+                                        is AgentHomeAction.ForkMessage -> agentState.createConversationBranch(action.id)
+                                        is AgentHomeAction.CreateTaskFromMessage -> {
+                                            val conversationId = agentState.conversationPaneState.selectedConversationId
+                                            val message = agentState.homeState.messages.filterIsInstance<io.github.mangi.eta.ui.model.UserMessageUi>()
+                                                .firstOrNull { it.id == action.id }
+                                            if (!preparingConversationTask && conversationId != null && message != null && !agentState.homeState.isStreaming) {
+                                                val parsed = io.github.mangi.eta.agent.model.AgentFileReferencePromptCodec.parse(message.content)
+                                                if (parsed.request.isNotBlank()) {
+                                                    preparingConversationTask = true
+                                                    uiScope.launch {
+                                                        try {
+                                                            val binding = io.github.mangi.eta.fork.projects.ProjectRepository.bindingForSubject(
+                                                                context, io.github.mangi.eta.fork.projects.ProjectSubjectType.CONVERSATION, conversationId)
+                                                            automationConversationDraft = AutomationConversationDraft(parsed.request, binding?.projectId,
+                                                                message.images.isNotEmpty() || parsed.references.isNotEmpty())
+                                                            projectTaskToOpen = null
+                                                            pushRoute(AppRoute.TaskCenter)
+                                                        } catch (cancelled: CancellationException) {
+                                                            throw cancelled
+                                                        } catch (_: Exception) {
+                                                            Toast.makeText(context, R.string.chat_create_automation_failed, Toast.LENGTH_SHORT).show()
+                                                        } finally {
+                                                            preparingConversationTask = false
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
-                                    }
-                                    is AgentHomeAction.SelectReplyCandidate -> agentState.selectReplyCandidate(action.id, action.index)
-                                    AgentHomeAction.OpenTools -> pushRoute(AppRoute.Tools)
-                                    AgentHomeAction.OpenSkills -> pushRoute(AppRoute.CapabilityCenter)
-                                    AgentHomeAction.OpenPermissions -> pushRoute(AppRoute.Permissions)
-                                    AgentHomeAction.OpenSystemEnhance -> pushRoute(AppRoute.SystemEnhance)
-                                    AgentHomeAction.OpenSettings -> pushRoute(AppRoute.Settings)
-                                    AgentHomeAction.OpenBrowser -> openConversationBrowser()
-                                    AgentHomeAction.ExpandRunTrace -> Unit
-                                    }
-                                },
-                                isLoadingConversation = agentState.isLoadingConversation,
-                                onSubmitMessage = { text, interrupt ->
-                                    requestExecutionNotifications()
-                                    if (interrupt) agentState.interruptAndSendCurrentMessage(text)
-                                    else agentState.sendCurrentMessage(text)
-                                },
-                                conversationLoadFailed = agentState.conversationLoadFailed,
-                                historyLoadState = agentState.historyLoadState,
-                            )
+                                        is AgentHomeAction.HistoryViewportChanged -> agentState.updateHistoryViewport(action.atLatest)
+                                        AgentHomeAction.RetryConversationLoad -> agentState.retryConversationLoad()
+                                        is AgentHomeAction.ModelSelected -> agentState.selectModel(action.modelId)
+                                        is AgentHomeAction.InputSyncApplied -> agentState.consumeInputSync(action.conversationId, action.version, action.text)
+                                        is AgentHomeAction.SubmitMessage -> { requestExecutionNotifications(); agentState.sendCurrentMessage(action.text) }
+                                        is AgentHomeAction.InterruptAndSubmitMessage -> { requestExecutionNotifications(); agentState.interruptAndSendCurrentMessage(action.text) }
+                                        is AgentHomeAction.SteerQueuedMessage -> { requestExecutionNotifications(); agentState.steerQueuedMessage(action.id) }
+                                        is AgentHomeAction.RecallQueuedMessage -> agentState.recallQueuedMessage(action.id, action.currentDraftText)
+                                        is AgentHomeAction.RemoveQueuedMessage -> agentState.removeQueuedMessage(action.id)
+                                        AgentHomeAction.StopRun -> agentState.stopCurrentRun()
+                                        is AgentHomeAction.ImageAttached -> agentState.attachImage(action.uri)
+                                        is AgentHomeAction.RemoveImage -> agentState.removePendingImage(action.id)
+                                        is AgentHomeAction.FilesAttached -> agentState.attachFiles(action.uris)
+                                        is AgentHomeAction.FolderAttached -> agentState.attachFolder(action.uri)
+                                        is AgentHomeAction.FilePathAttached -> agentState.attachFilePath(action.path)
+                                        is AgentHomeAction.RemoveFileReference ->
+                                            agentState.removePendingFileReference(action.id)
+                                        is AgentHomeAction.EditMessage -> agentState.beginMessageEdit(action.id)
+                                        AgentHomeAction.CancelMessageEdit -> agentState.cancelMessageEdit()
+                                        is AgentHomeAction.DeleteMessage -> {
+                                            agentState.messageRevisionImpact(action.id)?.let { impact ->
+                                                messageDeleteTarget = MessageMutationTarget(action.id, impact.laterTurnCount)
+                                            }
+                                        }
+                                        is AgentHomeAction.RegenerateMessage -> {
+                                            val impact = agentState.messageRevisionImpact(action.id)
+                                            if (agentState.homeState.roleplay != null || impact?.laterTurnCount == 0) {
+                                                agentState.regenerateMessage(action.id)
+                                            } else if (impact != null) {
+                                                messageRegenerateTarget = MessageMutationTarget(action.id, impact.laterTurnCount)
+                                            }
+                                        }
+                                        is AgentHomeAction.SelectReplyCandidate -> agentState.selectReplyCandidate(action.id, action.index)
+                                        AgentHomeAction.OpenTools -> pushRoute(AppRoute.Tools)
+                                        AgentHomeAction.OpenSkills -> pushRoute(AppRoute.CapabilityCenter)
+                                        AgentHomeAction.OpenPermissions -> pushRoute(AppRoute.Permissions)
+                                        AgentHomeAction.OpenSystemEnhance -> pushRoute(AppRoute.SystemEnhance)
+                                        AgentHomeAction.OpenSettings -> pushRoute(AppRoute.Settings)
+                                        AgentHomeAction.OpenBrowser -> openConversationBrowser()
+                                        AgentHomeAction.ExpandRunTrace -> Unit
+                                        }
+                                    },
+                                    isLoadingConversation = agentState.isLoadingConversation,
+                                    onSubmitMessage = { text, interrupt ->
+                                        requestExecutionNotifications()
+                                        if (interrupt) agentState.interruptAndSendCurrentMessage(text)
+                                        else agentState.sendCurrentMessage(text)
+                                    },
+                                    conversationLoadFailed = agentState.conversationLoadFailed,
+                                    historyLoadState = agentState.historyLoadState,
+                                )
+                            }
                         }
                     }
                 }
@@ -806,110 +957,172 @@ fun AgentAppRoot(
                         terminalStore = appViewModel.terminalStore,
                         consoleStore = appViewModel.consoleStore,
                         onOpenEnvironment = { pushRoute(AppRoute.LinuxEnvironment) },
+                        isVisible = backStack.lastOrNull() == AppRoute.Terminal,
                     )
                 }
             }
-            entry<AppRoute.Tools>(swipeDismiss = swipeDismiss) {
-                AgentToolsScreen(
-                    state = toolsState,
-                    onAction = { action ->
-                        when (action) {
-                            AgentToolsAction.NavigateBack -> popRoute()
-                            AgentToolsAction.OpenBrowser -> openConversationBrowser()
-                            AgentToolsAction.OpenWebToolsSettings -> pushRoute(AppRoute.WebToolsSettings)
-                            AgentToolsAction.OpenEnhancements -> pushRoute(AppRoute.SystemEnhance)
-                            AgentToolsAction.OpenPermissions -> pushRoute(AppRoute.Permissions)
-                        }
-                    },
-                )
-            }
-            entry<AppRoute.AppControlCenter>(swipeDismiss = swipeDismiss) {
-                AppControlScreen(
-                    onBack = ::popRoute,
-                    onNavigate = { route -> pushRoute(route) },
-                )
-            }
-            entry<AppRoute.WebToolsSettings>(swipeDismiss = swipeDismiss) {
-                WebToolsSettingsScreen(onBack = ::popRoute)
-            }
-            entry<AppRoute.Subagents>(swipeDismiss = swipeDismiss) {
-                SubagentSettingsScreen(onBack = ::popRoute)
-            }
-            entry<AppRoute.TaskCenter>(swipeDismiss = swipeDismiss) {
-                AgentTaskCenterScreen(onBack = ::popRoute)
-            }
-            entry<AppRoute.A2AAgents>(swipeDismiss = swipeDismiss) {
-                A2ASettingsScreen(onBack = ::popRoute)
-            }
-            entry<AppRoute.SelfLearning>(swipeDismiss = swipeDismiss) {
-                LearningSettingsScreen(onBack = ::popRoute)
-            }
-            entry<AppRoute.Skills>(swipeDismiss = swipeDismiss) {
-                LaunchedEffect(Unit) {
-                    skills.refreshSkills()
+            entry<AppRoute.Tools>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    AgentToolsScreen(
+                        state = toolsState,
+                        onAction = { action ->
+                            when (action) {
+                                AgentToolsAction.NavigateBack -> popRoute()
+                                AgentToolsAction.OpenBrowser -> openConversationBrowser()
+                                AgentToolsAction.OpenWebToolsSettings -> pushRoute(AppRoute.WebToolsSettings)
+                                AgentToolsAction.OpenEnhancements -> pushRoute(AppRoute.SystemEnhance)
+                                AgentToolsAction.OpenPermissions -> pushRoute(AppRoute.Permissions)
+                            }
+                        },
+                    )
                 }
-                AgentSkillsScreen(
-                    state = skills.skillsState,
-                    onAction = { action ->
-                        when (action) {
-                            AgentSkillsAction.NavigateBack -> popRoute()
-                            AgentSkillsAction.Refresh -> skills.refreshSkills()
-                            is AgentSkillsAction.ImportZip -> skills.importSkillZip(action.uri)
-                            AgentSkillsAction.ConfirmZipReplacement -> skills.confirmSkillZipReplacement()
-                            AgentSkillsAction.CancelZipReplacement -> skills.cancelSkillZipReplacement()
-                            AgentSkillsAction.DismissNotice -> skills.dismissSkillNotice()
-                            is AgentSkillsAction.ToggleSkill -> skills.toggleSkill(action.skillId, action.enabled)
-                            is AgentSkillsAction.DeleteSkill -> skills.deleteSkill(action.skillId)
-                            is AgentSkillsAction.ReinstallBuiltin -> skills.reinstallBuiltin(action.skillId)
-                            is AgentSkillsAction.RestoreSkillVersion ->
-                                skills.restoreSkillVersion(action.skillId, action.backupId)
-                        }
-                    },
-                )
+            }
+            entry<AppRoute.AppControlCenter>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    AppControlScreen(
+                        onBack = ::popRoute,
+                        onNavigate = { route -> pushRoute(route) },
+                    )
+                }
+            }
+            entry<AppRoute.ToolsAndDevices>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    io.github.mangi.eta.ui.ToolsAndDevicesSettingsScreen(
+                        onBack = ::popRoute,
+                        onNavigate = { pushRoute(it) },
+                    )
+                }
+            }
+            entry<AppRoute.WebToolsSettings>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    WebToolsSettingsScreen(onBack = ::popRoute)
+                }
+            }
+            entry<AppRoute.CloudToolsSettings>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    io.github.mangi.eta.ui.screens.tools.CloudToolsSettingsScreen(
+                        onBack = ::popRoute, onNavigate = { pushRoute(it) })
+                }
+            }
+            entry<AppRoute.Subagents>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    SubagentSettingsScreen(onBack = ::popRoute)
+                }
+            }
+            entry<AppRoute.TaskCenter>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    val requestedTask = projectTaskToOpen
+                    AgentTaskCenterScreen(onBack = { projectTaskToOpen = null; automationConversationDraft = null; popRoute() },
+                        initialTaskId = requestedTask, initialDraft = automationConversationDraft)
+                }
+            }
+            entry<AppRoute.A2AAgents>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    A2ASettingsScreen(onBack = ::popRoute)
+                }
+            }
+            entry<AppRoute.SelfLearning>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    LearningSettingsScreen(onBack = ::popRoute)
+                }
+            }
+            entry<AppRoute.Skills>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    LaunchedEffect(Unit) {
+                        skills.refreshSkills()
+                    }
+                    AgentSkillsScreen(
+                        state = skills.skillsState,
+                        onAction = { action ->
+                            when (action) {
+                                AgentSkillsAction.NavigateBack -> popRoute()
+                                AgentSkillsAction.Refresh -> skills.refreshSkills()
+                                is AgentSkillsAction.ImportZip -> skills.importSkillZip(action.uri)
+                                AgentSkillsAction.ConfirmZipReplacement -> skills.confirmSkillZipReplacement()
+                                AgentSkillsAction.CancelZipReplacement -> skills.cancelSkillZipReplacement()
+                                AgentSkillsAction.DismissNotice -> skills.dismissSkillNotice()
+                                is AgentSkillsAction.ToggleSkill -> skills.toggleSkill(action.skillId, action.enabled)
+                                is AgentSkillsAction.DeleteSkill -> skills.deleteSkill(action.skillId)
+                                is AgentSkillsAction.ReinstallBuiltin -> skills.reinstallBuiltin(action.skillId)
+                                is AgentSkillsAction.OpenEditor -> skills.openEditor(action.skillId)
+                                is AgentSkillsAction.SaveEditor -> skills.saveEditor(action.skillId, action.name, action.body, action.revision)
+                                AgentSkillsAction.CloseEditor -> skills.closeEditor()
+                                is AgentSkillsAction.RestoreSkillVersion ->
+                                    skills.restoreSkillVersion(action.skillId, action.backupId)
+                            }
+                        },
+                    )
+                }
             }
             entry<AppRoute.PromptInjection>(swipeDismiss = swipeDismiss) {
-                PromptInjectionScreen(onBack = ::popRoute)
-            }
-            entry<AppRoute.CapabilityCenter>(swipeDismiss = swipeDismiss) {
-                CapabilityCenterScreen(
-                    onBack = ::popRoute,
-                    onOpenSkills = { pushRoute(AppRoute.Skills) },
-                    onOpenMcp = { pushRoute(AppRoute.McpServers) },
-                    onOpenApiConnectors = { pushRoute(AppRoute.ApiConnectors) },
-                    onOpenA2A = { pushRoute(AppRoute.A2AAgents) },
-                    onOpenConnectorCenter = { pushRoute(AppRoute.ConnectorCenter) },
-                    onOpenPermissions = { pushRoute(AppRoute.Permissions) },
-                    onOpenPromptInjection = { pushRoute(AppRoute.Characters) },
-                    onOpenLocalModels = { pushRoute(AppRoute.LocalModels) },
-                    onOpenSpeechRecognition = { pushRoute(AppRoute.SpeechRecognition) },
-                    onOpenSpeechSynthesis = { pushRoute(AppRoute.SpeechSynthesis) },
-                )
-            }
-            entry<AppRoute.ApiConnectors>(swipeDismiss = swipeDismiss) {
-                ApiConnectorsScreen(onBack = ::popRoute)
-            }
-            entry<AppRoute.ConnectorCenter>(swipeDismiss = swipeDismiss) {
-                ConnectorCenterScreen(
-                    onBack = ::popRoute,
-                    onOpenA2A = { pushRoute(AppRoute.A2AAgents) },
-                    onOpenMcp = { pushRoute(AppRoute.McpServers) },
-                    onOpenRest = { pushRoute(AppRoute.ApiConnectors) },
-                )
-            }
-            entry<AppRoute.Characters>(swipeDismiss = swipeDismiss) {
-                LaunchedEffect(backStack.lastOrNull() == AppRoute.Characters) {
-                    if (backStack.lastOrNull() == AppRoute.Characters) characterStore.loadLibrary()
+                NexusSettingsTheme {
+                    LaunchedEffect(Unit) { characterStore.loadLibrary() }
+                    CharacterLibraryScreen(
+                        store = characterStore,
+                        onNavigate = { if (navigator.current() == AppRoute.PromptInjection) pushRoute(it) },
+                        onOpenInstructions = {},
+                        onBack = ::popRoute,
+                    )
                 }
-                CharacterLibraryScreen(
-                    store = characterStore,
-                    onNavigate = { if (navigator.current() == AppRoute.Characters) pushRoute(it) },
-                    onOpenInstructions = {
-                        if (navigator.current() == AppRoute.Characters) pushRoute(AppRoute.PromptInjection)
-                    },
-                    onBack = ::popRoute,
-                )
             }
-            entry<AppRoute.CharacterDetail>(swipeDismiss = swipeDismiss) { route ->
+            entry<AppRoute.CapabilityCenter>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    val dshConversation = remember { agentState.conversationPaneState.selectedConversationId }
+                    CapabilityCenterScreen(
+                        onBack = ::popRoute,
+                        onOpenSkills = { pushRoute(AppRoute.Skills) },
+                        onOpenMcp = { pushRoute(AppRoute.McpServers) },
+                        onOpenApiConnectors = { pushRoute(AppRoute.ApiConnectors) },
+                        onOpenA2A = { pushRoute(AppRoute.A2AAgents) },
+                        onOpenConnectorCenter = { pushRoute(AppRoute.ConnectorCenter) },
+                        onOpenPermissions = { pushRoute(AppRoute.Permissions) },
+                        onOpenPromptInjection = { pushRoute(AppRoute.Characters) },
+                        onOpenLocalModels = { pushRoute(AppRoute.LocalModels) },
+                        onOpenSpeechRecognition = { pushRoute(AppRoute.SpeechRecognition) },
+                        onOpenSpeechSynthesis = { pushRoute(AppRoute.SpeechSynthesis) },
+                        onDshInsert = { text -> agentState.insertPluginDraft(dshConversation, text) },
+                        dshDraft = { agentState.pluginDraft(dshConversation) },
+                        onDshCommand = { name, args ->
+                            if (args.isNotBlank() || agentState.conversationPaneState.selectedConversationId != dshConversation) false else when (name) {
+                                "compact" -> { agentState.compactCurrentContext(); true }
+                                "stop" -> { agentState.stopCurrentRun(); true }
+                                else -> false
+                            }
+                        },
+                    )
+                }
+            }
+            entry<AppRoute.ApiConnectors>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    ApiConnectorsScreen(onBack = ::popRoute)
+                }
+            }
+            entry<AppRoute.ConnectorCenter>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    ConnectorCenterScreen(
+                        onBack = ::popRoute,
+                        onOpenA2A = { pushRoute(AppRoute.A2AAgents) },
+                        onOpenMcp = { pushRoute(AppRoute.McpServers) },
+                        onOpenRest = { pushRoute(AppRoute.ApiConnectors) },
+                    )
+                }
+            }
+            entry<AppRoute.Characters>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    LaunchedEffect(backStack.lastOrNull() == AppRoute.Characters) {
+                        if (backStack.lastOrNull() == AppRoute.Characters) characterStore.loadLibrary()
+                    }
+                    CharacterLibraryScreen(
+                        store = characterStore,
+                        onNavigate = { if (navigator.current() == AppRoute.Characters) pushRoute(it) },
+                        onOpenInstructions = {
+                            if (navigator.current() == AppRoute.Characters) pushRoute(AppRoute.PromptInjection)
+                        },
+                        onBack = ::popRoute,
+                    )
+                }
+            }
+            entry<AppRoute.CharacterDetail>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) { route ->
                 LaunchedEffect(route.characterId, backStack.lastOrNull() == route) {
                     if (backStack.lastOrNull() == route) characterStore.loadDetail(route.characterId)
                 }
@@ -923,7 +1136,7 @@ fun AgentAppRoot(
                     }
                 }
             }
-            entry<AppRoute.CharacterEditor>(swipeDismiss = swipeDismiss) { route ->
+            entry<AppRoute.CharacterEditor>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) { route ->
                 LaunchedEffect(route.characterId, backStack.lastOrNull() == route) {
                     if (backStack.lastOrNull() == route) characterStore.loadEditor(route.characterId)
                 }
@@ -931,188 +1144,263 @@ fun AgentAppRoot(
                     if (navigator.current() == route) navigator.replace(AppRoute.CharacterDetail(id))
                 }
             }
-            entry<AppRoute.CharacterPersona>(swipeDismiss = swipeDismiss) {
-                LaunchedEffect(backStack.lastOrNull() == AppRoute.CharacterPersona) {
-                    if (backStack.lastOrNull() == AppRoute.CharacterPersona) characterStore.loadPersona()
-                }
-                CharacterPersonaScreen(characterStore) {
-                    if (navigator.current() == AppRoute.CharacterPersona) popRoute()
+            entry<AppRoute.CharacterPersona>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    LaunchedEffect(backStack.lastOrNull() == AppRoute.CharacterPersona) {
+                        if (backStack.lastOrNull() == AppRoute.CharacterPersona) characterStore.loadPersona()
+                    }
+                    CharacterPersonaScreen(characterStore) {
+                        if (navigator.current() == AppRoute.CharacterPersona) popRoute()
+                    }
                 }
             }
-            entry<AppRoute.CharacterMemory>(swipeDismiss = swipeDismiss) { route ->
+            entry<AppRoute.CharacterMemory>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) { route ->
                 LaunchedEffect(route.characterId, backStack.lastOrNull() == route) {
                     if (backStack.lastOrNull() == route) characterStore.loadMemory(route.characterId)
                 }
                 CharacterMemoryScreen(route.characterId, characterStore, ::popRoute)
             }
-            entry<AppRoute.Permissions>(swipeDismiss = swipeDismiss) {
-                LaunchedEffect(Unit) {
-                    permissionHealth.refreshPermissionHealth()
-                }
-                PermissionHealthScreen(
-                    state = permissionHealth.permissionHealthState,
-                    onAction = { action ->
-                        when (action) {
-                            PermissionHealthAction.NavigateBack -> popRoute()
-                            is PermissionHealthAction.SetRootAccessibilityRecovery ->
-                                permissionHealth.setRootAccessibilityRecovery(action.enabled)
-                            PermissionHealthAction.RetryRootAccessibilityRecovery ->
-                                permissionHealth.retryRootAccessibilityRecovery()
-                            is PermissionHealthAction.OpenItemAction -> {
-                                when (action.itemId) {
-                                    LOCAL_NETWORK_PERMISSION_ITEM_ID -> requestLocalNetworkPermission()
-                                    "calendar" -> permissionRequestLauncher.launch(io.github.mangi.eta.agent.device.CalendarPermissions.requested)
-                                    "notification_policy" -> context.startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
-                                    "accessibility" -> {
-                                        runCatching {
-                                            context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            entry<AppRoute.Permissions>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    LaunchedEffect(Unit) {
+                        permissionHealth.refreshPermissionHealth()
+                    }
+                    PermissionHealthScreen(
+                        state = permissionHealth.permissionHealthState,
+                        onAction = { action ->
+                            when (action) {
+                                PermissionHealthAction.NavigateBack -> popRoute()
+                                is PermissionHealthAction.SetRootAccessibilityRecovery ->
+                                    permissionHealth.setRootAccessibilityRecovery(action.enabled)
+                                PermissionHealthAction.RetryRootAccessibilityRecovery ->
+                                    permissionHealth.retryRootAccessibilityRecovery()
+                                is PermissionHealthAction.SetAgentPermissionMode ->
+                                    permissionHealth.setAgentPermissionMode(action.mode)
+                                is PermissionHealthAction.OpenItemAction -> {
+                                    when (action.itemId) {
+                                        LOCAL_NETWORK_PERMISSION_ITEM_ID -> requestLocalNetworkPermission()
+                                        "calendar" -> permissionRequestLauncher.launch(io.github.mangi.eta.agent.device.CalendarPermissions.requested)
+                                        "notification_policy" -> context.startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+                                        "accessibility" -> {
+                                            runCatching {
+                                                context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                                            }
                                         }
-                                    }
-                                    "microphone" -> {
-                                        val microphoneGranted = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
-                                            android.content.pm.PackageManager.PERMISSION_GRANTED
-                                        val canRequestAgain = (context as? Activity)?.shouldShowRequestPermissionRationale(
-                                            Manifest.permission.RECORD_AUDIO,
-                                        ) == true
-                                        if (microphoneGranted || (microphonePermissionRequested && !canRequestAgain)) {
-                                            openFirstAvailableSettings(context, listOf(Intent(
-                                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                                "package:${context.packageName}".toUri(),
-                                            )))
-                                        } else {
-                                            microphonePermissionRequested = true
-                                            permissionRequestLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
-                                        }
-                                    }
-                                    "overlay" -> {
-                                        runCatching {
-                                            context.startActivity(
-                                                Intent(
-                                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                                    Uri.parse("package:${context.packageName}")
-                                                )
-                                            )
-                                        }
-                                    }
-                                    "background" -> {
-                                        uiScope.launch {
-                                            openBackgroundPermissionSettings(context)
-                                        }
-                                    }
-                                    "app_list" -> {
-                                        runCatching {
-                                            context.startActivity(
-                                                Intent(
+                                        "microphone" -> {
+                                            val microphoneGranted = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+                                                android.content.pm.PackageManager.PERMISSION_GRANTED
+                                            val canRequestAgain = (context as? Activity)?.shouldShowRequestPermissionRationale(
+                                                Manifest.permission.RECORD_AUDIO,
+                                            ) == true
+                                            if (microphoneGranted || (microphonePermissionRequested && !canRequestAgain)) {
+                                                openFirstAvailableSettings(context, listOf(Intent(
                                                     Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                                    Uri.parse("package:${context.packageName}")
-                                                )
-                                            )
+                                                    "package:${context.packageName}".toUri(),
+                                                )))
+                                            } else {
+                                                microphonePermissionRequested = true
+                                                permissionRequestLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+                                            }
                                         }
-                                    }
-                                    "location" -> {
-                                        when (DeviceLocationProvider.accessState(context)) {
-                                            DeviceLocationProvider.AccessState.DENIED -> {
-                                                permissionRequestLauncher.launch(
-                                                    arrayOf(
-                                                        Manifest.permission.ACCESS_COARSE_LOCATION,
-                                                        Manifest.permission.ACCESS_FINE_LOCATION,
+                                        "overlay" -> {
+                                            runCatching {
+                                                context.startActivity(
+                                                    Intent(
+                                                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                                        Uri.parse("package:${context.packageName}")
                                                     )
                                                 )
                                             }
-                                            DeviceLocationProvider.AccessState.FOREGROUND_ONLY -> {
-                                                runCatching {
-                                                    context.startActivity(
-                                                        Intent(
-                                                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                                            Uri.parse("package:${context.packageName}")
+                                        }
+                                        "background" -> {
+                                            uiScope.launch {
+                                                openBackgroundPermissionSettings(context)
+                                            }
+                                        }
+                                        "app_list" -> {
+                                            runCatching {
+                                                context.startActivity(
+                                                    Intent(
+                                                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                                        Uri.parse("package:${context.packageName}")
+                                                    )
+                                                )
+                                            }
+                                        }
+                                        "location" -> {
+                                            when (DeviceLocationProvider.accessState(context)) {
+                                                DeviceLocationProvider.AccessState.DENIED -> {
+                                                    permissionRequestLauncher.launch(
+                                                        arrayOf(
+                                                            Manifest.permission.ACCESS_COARSE_LOCATION,
+                                                            Manifest.permission.ACCESS_FINE_LOCATION,
                                                         )
                                                     )
                                                 }
-                                            }
-                                            DeviceLocationProvider.AccessState.DISABLED -> {
-                                                runCatching {
-                                                    context.startActivity(
-                                                        Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
-                                                    )
+                                                DeviceLocationProvider.AccessState.FOREGROUND_ONLY -> {
+                                                    runCatching {
+                                                        context.startActivity(
+                                                            Intent(
+                                                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                                                Uri.parse("package:${context.packageName}")
+                                                            )
+                                                        )
+                                                    }
+                                                }
+                                                DeviceLocationProvider.AccessState.DISABLED -> {
+                                                    runCatching {
+                                                        context.startActivity(
+                                                            Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+                                                        )
+                                                    }
+                                                }
+                                                DeviceLocationProvider.AccessState.AVAILABLE -> {
+                                                    permissionHealth.refreshPermissionHealth()
                                                 }
                                             }
-                                            DeviceLocationProvider.AccessState.AVAILABLE -> {
-                                                permissionHealth.refreshPermissionHealth()
+                                        }
+                                        "notification_history" -> {
+                                            runCatching {
+                                                context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
                                             }
                                         }
-                                    }
-                                    "notification_history" -> {
-                                        runCatching {
-                                            context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                                        "usage_access" -> {
+                                            runCatching {
+                                                context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+                                            }
                                         }
-                                    }
-                                    "usage_access" -> {
-                                        runCatching {
-                                            context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+                                        "notifications" -> {
+                                            context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                                .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName))
                                         }
+                                        "root" -> pushRoute(AppRoute.SystemEnhance)
                                     }
-                                    "notifications" -> {
-                                        context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                                            .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName))
-                                    }
-                                    "root" -> pushRoute(AppRoute.SystemEnhance)
                                 }
                             }
-                        }
+                        },
+                    )
+                }
+            }
+            entry<AppRoute.SystemEnhance>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    SystemEnhanceScreen(
+                        onAction = { action ->
+                            when (action) {
+                                AgentSystemEnhanceAction.NavigateBack -> popRoute()
+                                AgentSystemEnhanceAction.RequestRoot -> { RootAccess.request(context) }
+                                AgentSystemEnhanceAction.RefreshRoot -> { RootAccess.refresh(context) }
+                            }
+                        },
+                    )
+                }
+            }
+            entry<AppRoute.Workspace>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                io.github.mangi.eta.ui.screens.projects.ProjectsWorkspaceScreen(
+                    onBack = ::popRoute,
+                    initialFiles = true,
+                    onOpenSubject = { subject ->
+                        if (subject.type == io.github.mangi.eta.fork.projects.ProjectSubjectType.MEETING) {
+                            selectHomeMode(showMeetings = true, preferredMeetingRoomId = subject.id)
+                        } else selectConversation(subject.id)
                     },
+                    onOpenTask = { taskId -> projectTaskToOpen = taskId; pushRoute(AppRoute.TaskCenter) },
+                    onOpenMemory = { projectId -> projectMemoryScopeToOpen = "project:$projectId"; pushRoute(AppRoute.Memory) },
                 )
             }
-            entry<AppRoute.SystemEnhance>(swipeDismiss = swipeDismiss) {
-                SystemEnhanceScreen(
-                    onAction = { action ->
-                        when (action) {
-                            AgentSystemEnhanceAction.NavigateBack -> popRoute()
-                            AgentSystemEnhanceAction.RequestRoot -> { RootAccess.request(context) }
-                            AgentSystemEnhanceAction.RefreshRoot -> { RootAccess.refresh(context) }
-                        }
-                    },
-                )
+            entry<AppRoute.Projects>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                io.github.mangi.eta.ui.screens.projects.ProjectsWorkspaceScreen(onBack = ::popRoute, onOpenSubject = { subject ->
+                    if (subject.type == io.github.mangi.eta.fork.projects.ProjectSubjectType.MEETING) {
+                        selectHomeMode(showMeetings = true, preferredMeetingRoomId = subject.id)
+                    } else {
+                        selectConversation(subject.id)
+                    }
+                }, onOpenTask = { taskId ->
+                    projectTaskToOpen = taskId
+                    pushRoute(AppRoute.TaskCenter)
+                }, onOpenMemory = { projectId ->
+                    projectMemoryScopeToOpen = "project:$projectId"
+                    pushRoute(AppRoute.Memory)
+                })
             }
-            entry<AppRoute.Workspace>(swipeDismiss = swipeDismiss) {
-                WorkspaceScreen(onBack = ::popRoute)
+            entry<AppRoute.Settings>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    SettingsScreen(
+                        context = context,
+                        onNavigate = { route -> pushRoute(route) },
+                        onBack = ::popRoute
+                    )
+                }
             }
-            entry<AppRoute.Projects>(swipeDismiss = swipeDismiss) {
-                ProjectsScreen(onBack = ::popRoute)
+            entry<AppRoute.DigitalAssistantSettings>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    io.github.mangi.eta.ui.DigitalAssistantSettingsScreen(
+                        onBack = ::popRoute, onNavigate = { pushRoute(it) },
+                    )
+                }
             }
-            entry<AppRoute.Settings>(swipeDismiss = swipeDismiss) {
-                SettingsScreen(
-                    context = context,
-                    onNavigate = { route -> pushRoute(route) },
-                    onBack = ::popRoute
-                )
+            entry<AppRoute.SearchGestureSettings>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    io.github.mangi.eta.ui.SearchGestureSettingsScreen(
+                        onBack = ::popRoute, onNavigate = { pushRoute(it) },
+                    )
+                }
             }
-            entry<AppRoute.SpeechSettings>(swipeDismiss = swipeDismiss) {
-                SpeechSettingsScreen(
-                    onBack = ::popRoute,
-                    onNavigate = { route -> pushRoute(route) },
-                )
+            entry<AppRoute.SpeechSettings>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    SpeechSettingsScreen(
+                        onBack = ::popRoute,
+                        onNavigate = { route -> pushRoute(route) },
+                    )
+                }
             }
-            entry<AppRoute.SpeechRecognition>(swipeDismiss = swipeDismiss) {
-                SpeechRecognitionScreen(
-                    onBack = ::popRoute,
-                    onOpenOss = { pushRoute(AppRoute.SpeechOss) },
-                    onOpenLocalModels = { pushRoute(AppRoute.LocalModels) },
-                )
+            entry<AppRoute.SpeechRecognition>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    SpeechRecognitionScreen(
+                        onBack = ::popRoute,
+                        onOpenOss = { pushRoute(AppRoute.SpeechOss) },
+                        onOpenLocalModels = { pushRoute(AppRoute.LocalModels) },
+                    )
+                }
             }
-            entry<AppRoute.SpeechSynthesis>(swipeDismiss = swipeDismiss) {
-                SpeechSynthesisScreen(
-                    onBack = ::popRoute,
-                    onOpenLocalModels = { pushRoute(AppRoute.LocalModels) },
-                )
+            entry<AppRoute.SpeechSynthesis>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    SpeechSynthesisScreen(
+                        onBack = ::popRoute,
+                        onOpenLocalModels = { pushRoute(AppRoute.LocalModels) },
+                    )
+                }
             }
-            entry<AppRoute.SpeechOss>(swipeDismiss = swipeDismiss) {
-                SpeechOssScreen(onBack = ::popRoute)
+            entry<AppRoute.SpeechOss>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    SpeechOssScreen(onBack = ::popRoute)
+                }
             }
-            entry<AppRoute.AppearanceSettings>(swipeDismiss = swipeDismiss) {
-                AppearanceSettingsScreen(onBack = ::popRoute)
+            entry<AppRoute.AppearanceSettings>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    AppearanceSettingsScreen(onBack = ::popRoute,
+                        onOpenMessageTypography = { pushRoute(AppRoute.MessageTypography) })
+                }
             }
-            entry<AppRoute.ConversationArchiveSettings>(swipeDismiss = swipeDismiss) {
-                ConversationArchiveSettingsScreen(onBack = ::popRoute)
+            entry<AppRoute.MessageTypography>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    io.github.mangi.eta.ui.MessageTypographyScreen(onBack = ::popRoute)
+                }
+            }
+            entry<AppRoute.ConversationArchiveSettings>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    ConversationArchiveSettingsScreen(
+                        onBack = ::popRoute,
+                        onOpenConversation = { id -> selectConversation(id) },
+                        onOpenMeeting = { id ->
+                            focusManager.clearFocus()
+                            activeMeetingRoomId = id
+                            conversationPaneShowsMeetings = true
+                            meetingArchiveViewOpen = true
+                            conversationPaneOpen = false
+                            navigator.popToHome()
+                        },
+                    )
+                }
             }
             entry<AppRoute.MeetingRooms>(swipeDismiss = swipeDismiss) { route ->
                 MeetingRoomsScreen(
@@ -1126,8 +1414,10 @@ fun AgentAppRoot(
                     openCreateOnStart = route.openCreateOnStart,
                 )
             }
-            entry<AppRoute.MeetingSettings>(swipeDismiss = swipeDismiss) {
-                MeetingSettingsScreen(onBack = ::popRoute)
+            entry<AppRoute.MeetingSettings>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    MeetingSettingsScreen(onBack = ::popRoute)
+                }
             }
             entry<AppRoute.MeetingRoom>(swipeDismiss = swipeDismiss) { route ->
                 MeetingRoomScreen(
@@ -1136,103 +1426,129 @@ fun AgentAppRoot(
                     onOpenSettings = { pushRoute(AppRoute.MeetingSettings) },
                 )
             }
-            entry<AppRoute.DataBackup>(swipeDismiss = swipeDismiss) {
-                DataBackupScreen(
-                    context = context,
-                    onBack = ::popRoute,
-                    onExport = agentState::exportBackup,
-                    onImport = agentState::importBackup,
-                )
-            }
-            entry<AppRoute.Memory>(swipeDismiss = swipeDismiss) {
-                LaunchedEffect(Unit) {
-                    memory.refreshMemory()
+            entry<AppRoute.DataBackup>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    DataBackupScreen(
+                        context = context,
+                        onBack = ::popRoute,
+                        onExport = agentState::exportBackup,
+                        onImport = agentState::importBackup,
+                    )
                 }
-                AgentMemoryScreen(
-                    state = memory.memoryState,
-                    onAction = { action ->
-                        when (action) {
-                            AgentMemoryAction.NavigateBack -> popRoute()
-                            is AgentMemoryAction.ToggleEnabled -> memory.setMemoryEnabled(action.enabled)
-                            is AgentMemoryAction.DraftChanged -> memory.updateMemoryDraft(action.content)
-                            AgentMemoryAction.Save -> memory.saveMemory()
-                            AgentMemoryAction.Clear -> memory.clearMemory()
-                            AgentMemoryAction.DismissNotice -> memory.dismissMemoryNotice()
-                            is AgentMemoryAction.ScopeSelected -> memory.selectScope(action.scope)
-                        }
-                    },
-                )
             }
-            entry<AppRoute.LinuxEnvironment>(swipeDismiss = swipeDismiss) {
-                LinuxEnvironmentScreen(
-                    context = context,
-                    onNavigate = { route -> pushRoute(route) },
-                    onBack = ::popRoute,
-                )
+            entry<AppRoute.Memory>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    LaunchedEffect(Unit) {
+                        memory.refreshMemory()
+                    }
+                    AgentMemoryScreen(
+                        state = memory.memoryState,
+                        initialScope = projectMemoryScopeToOpen,
+                        onOpenCharacterMemory = { characterId -> pushRoute(AppRoute.CharacterMemory(characterId)) },
+                        onAction = { action ->
+                            when (action) {
+                                AgentMemoryAction.NavigateBack -> { projectMemoryScopeToOpen = null; popRoute() }
+                                is AgentMemoryAction.ToggleEnabled -> memory.setMemoryEnabled(action.enabled)
+                                is AgentMemoryAction.DraftChanged -> memory.updateMemoryDraft(action.content)
+                                AgentMemoryAction.Save -> memory.saveMemory()
+                                AgentMemoryAction.Clear -> memory.clearMemory()
+                                AgentMemoryAction.DismissNotice -> memory.dismissMemoryNotice()
+                                is AgentMemoryAction.ScopeSelected -> memory.selectScope(action.scope)
+                            }
+                        },
+                    )
+                }
             }
-            entry<AppRoute.SharedFolders>(swipeDismiss = swipeDismiss) {
-                SharedFoldersScreen(
-                    context = context,
-                    onBack = ::popRoute,
-                )
+            entry<AppRoute.LinuxEnvironment>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    LinuxEnvironmentScreen(
+                        context = context,
+                        onNavigate = { route -> pushRoute(route) },
+                        onBack = ::popRoute,
+                    )
+                }
             }
-            entry<AppRoute.LinuxFiles>(swipeDismiss = swipeDismiss) { route ->
+            entry<AppRoute.SharedFolders>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    SharedFoldersScreen(
+                        context = context,
+                        onBack = ::popRoute,
+                    )
+                }
+            }
+            entry<AppRoute.LinuxFiles>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) { route ->
                 LinuxFilesScreen(
                     context = context,
                     distribution = route.distribution,
                     onBack = ::popRoute,
                 )
             }
-            entry<AppRoute.ModelProviders>(swipeDismiss = swipeDismiss) {
-                ModelProviderListScreen(
-                    onNavigate = { route -> pushRoute(route) },
-                    onBack = ::popRoute
-                )
+            entry<AppRoute.ModelProviders>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    ModelProviderListScreen(
+                        onNavigate = { route -> pushRoute(route) },
+                        onBack = ::popRoute
+                    )
+                }
             }
-            entry<AppRoute.LocalModels>(swipeDismiss = swipeDismiss) {
-                LocalModelsScreen(
-                    onBack = ::popRoute,
-                    onOpenSpeechRecognition = { pushRoute(AppRoute.SpeechRecognition) },
-                    onOpenSpeechSynthesis = { pushRoute(AppRoute.SpeechSynthesis) },
-                    onOpenLocalService = {
-                        pushRoute(AppRoute.ModelProviderNew(NewProviderType.LocalRuntime))
-                    },
-                )
+            entry<AppRoute.LocalModels>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    LocalModelsScreen(
+                        onBack = ::popRoute,
+                        onOpenSpeechRecognition = { pushRoute(AppRoute.SpeechRecognition) },
+                        onOpenSpeechSynthesis = { pushRoute(AppRoute.SpeechSynthesis) },
+                        onOpenLocalService = {
+                            pushRoute(AppRoute.ModelProviderNew(NewProviderType.LocalRuntime))
+                        },
+                    )
+                }
             }
-            entry<AppRoute.CommunityCatalog>(swipeDismiss = swipeDismiss) {
-                CommunityCatalogScreen(
-                    store = communityCatalogStore,
-                    onNavigate = { route -> pushRoute(route) },
-                    onBack = ::popRoute,
-                )
+            entry<AppRoute.CommunityCatalog>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    CommunityCatalogScreen(
+                        store = communityCatalogStore,
+                        onNavigate = { route -> pushRoute(route) },
+                        onBack = ::popRoute,
+                    )
+                }
             }
-            entry<AppRoute.CommunityCatalogProvider>(swipeDismiss = swipeDismiss) { route ->
-                CommunityCatalogProviderScreen(
-                    catalogId = route.catalogId,
-                    store = communityCatalogStore,
-                    onImported = { providerId -> navigator.replace(AppRoute.ModelProviderDetail(providerId)) },
-                    onBack = ::popRoute,
-                )
+            entry<AppRoute.CommunityCatalogProvider>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) { route ->
+                NexusSettingsTheme {
+                    CommunityCatalogProviderScreen(
+                        catalogId = route.catalogId,
+                        store = communityCatalogStore,
+                        onImported = { providerId -> navigator.replace(AppRoute.ModelProviderDetail(providerId)) },
+                        onBack = ::popRoute,
+                    )
+                }
             }
-            entry<AppRoute.McpServers>(swipeDismiss = swipeDismiss) {
-                McpServersScreen(
-                    onNavigate = { route -> pushRoute(route) },
-                    onBack = ::popRoute,
-                )
+            entry<AppRoute.McpServers>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    McpServersScreen(
+                        onNavigate = { route -> pushRoute(route) },
+                        onBack = ::popRoute,
+                    )
+                }
             }
-            entry<AppRoute.McpServerDetail>(swipeDismiss = swipeDismiss) { route ->
-                McpServerDetailScreen(
-                    serverId = route.serverId,
-                    onBack = ::popRoute,
-                    onOpenCatalog = { pushRoute(AppRoute.McpCatalog(route.serverId)) },
-                )
+            entry<AppRoute.McpServerDetail>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) { route ->
+                NexusSettingsTheme {
+                    McpServerDetailScreen(
+                        serverId = route.serverId,
+                        onBack = ::popRoute,
+                        onOpenCatalog = { pushRoute(AppRoute.McpCatalog(route.serverId)) },
+                    )
+                }
             }
-            entry<AppRoute.McpCatalog>(swipeDismiss = swipeDismiss) { route ->
-                McpCatalogScreen(serverId = route.serverId, onBack = ::popRoute)
+            entry<AppRoute.McpCatalog>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) { route ->
+                NexusSettingsTheme {
+                    McpCatalogScreen(serverId = route.serverId, onBack = ::popRoute)
+                }
             }
-            entry<AppRoute.AgentMetrics>(swipeDismiss = swipeDismiss) {
-                AgentMetricsScreen(onBack = ::popRoute, onOpenRun = { pushRoute(AppRoute.AgentMetricDetail(it)) },
-                    onOpenPrices = { pushRoute(AppRoute.AgentTokenPricing) })
+            entry<AppRoute.AgentMetrics>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    AgentMetricsScreen(onBack = ::popRoute, onOpenRun = { pushRoute(AppRoute.AgentMetricDetail(it)) },
+                        onOpenPrices = { pushRoute(AppRoute.AgentTokenPricing) })
+                }
             }
             entry<AppRoute.ConversationBranches>(swipeDismiss = swipeDismiss) { route ->
                 io.github.mangi.eta.ui.screens.conversations.ConversationBranchesScreen(
@@ -1243,39 +1559,64 @@ fun AgentAppRoot(
                     onOpenRun = { pushRoute(AppRoute.AgentMetricDetail(it)) })
             }
             entry<AppRoute.ConversationInsights>(swipeDismiss = swipeDismiss) { route ->
+                var insightArtifactPreview by remember(route.conversationId, route.meetingRoomId) { mutableStateOf<String?>(null) }
+                insightArtifactPreview?.let { id -> io.github.mangi.eta.ui.components.SubjectArtifactPreview(id) { insightArtifactPreview = null } }
                 ConversationInsightsScreen(
                     conversationId = route.conversationId,
                     meetingRoomId = route.meetingRoomId,
                     onBack = ::popRoute,
+                    onRunClick = { pushRoute(AppRoute.AgentMetricDetail(it)) },
+                    onArtifactClick = { insightArtifactPreview = it },
+                    onDshCommand = { name, args ->
+                        if (args.isNotBlank()) false
+                        else if (route.meetingRoomId.isNotBlank()) {
+                            if (name == "stop") { io.github.mangi.eta.fork.meeting.MeetingRunCoordinator.stop(route.meetingRoomId); true } else false
+                        } else if (agentState.conversationPaneState.selectedConversationId != route.conversationId) false
+                        else when (name) {
+                            "stop" -> { agentState.stopCurrentRun(); true }
+                            "compact" -> { agentState.compactCurrentContext(); true }
+                            else -> false
+                        }
+                    },
                 )
             }
-            entry<AppRoute.AgentTokenPricing>(swipeDismiss = swipeDismiss) {
-                io.github.mangi.eta.ui.screens.metrics.AgentTokenPricingScreen(onBack = ::popRoute,
-                    onEdit = { provider, model -> pushRoute(AppRoute.AgentTokenPriceEditor(provider, model)) })
+            entry<AppRoute.AgentTokenPricing>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) {
+                NexusSettingsTheme {
+                    io.github.mangi.eta.ui.screens.metrics.AgentTokenPricingScreen(onBack = ::popRoute,
+                        onEdit = { provider, model -> pushRoute(AppRoute.AgentTokenPriceEditor(provider, model)) })
+                }
             }
-            entry<AppRoute.AgentTokenPriceEditor>(swipeDismiss = swipeDismiss) { route ->
-                io.github.mangi.eta.ui.screens.metrics.AgentTokenPriceEditorScreen(route.providerId, route.modelId, onBack = ::popRoute)
+            entry<AppRoute.AgentTokenPriceEditor>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) { route ->
+                NexusSettingsTheme {
+                    io.github.mangi.eta.ui.screens.metrics.AgentTokenPriceEditorScreen(route.providerId, route.modelId, onBack = ::popRoute)
+                }
             }
-            entry<AppRoute.AgentMetricDetail>(swipeDismiss = swipeDismiss) { route ->
-                io.github.mangi.eta.ui.screens.metrics.AgentMetricDetailScreen(
-                    recordId = route.recordId,
-                    onBack = ::popRoute,
-                    onOpenConversation = ::selectConversation,
-                    onOpenMeeting = { pushRoute(AppRoute.MeetingRoom(it)) },
-                    onOpenTasks = { pushRoute(AppRoute.TaskCenter) },
-                )
+            entry<AppRoute.AgentMetricDetail>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) { route ->
+                NexusSettingsTheme {
+                    io.github.mangi.eta.ui.screens.metrics.AgentMetricDetailScreen(
+                        recordId = route.recordId,
+                        onBack = ::popRoute,
+                        onOpenConversation = ::selectConversation,
+                        onOpenMeeting = { pushRoute(AppRoute.MeetingRoom(it)) },
+                        onOpenTasks = { pushRoute(AppRoute.TaskCenter) },
+                    )
+                }
             }
-            entry<AppRoute.ModelProviderDetail>(swipeDismiss = swipeDismiss) { route ->
-                ModelProviderDetailScreen(
-                    providerId = route.providerId,
-                    onBack = ::popRoute
-                )
+            entry<AppRoute.ModelProviderDetail>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) { route ->
+                NexusSettingsTheme {
+                    ModelProviderDetailScreen(
+                        providerId = route.providerId,
+                        onBack = ::popRoute
+                    )
+                }
             }
-            entry<AppRoute.ModelProviderNew>(swipeDismiss = swipeDismiss) { route ->
-                ModelProviderDetailScreen(
-                    newType = route.providerType,
-                    onBack = ::popRoute
-                )
+            entry<AppRoute.ModelProviderNew>(swipeDismiss = swipeDismiss, transition = SettingsNavTransition) { route ->
+                NexusSettingsTheme {
+                    ModelProviderDetailScreen(
+                        newType = route.providerType,
+                        onBack = ::popRoute
+                    )
+                }
             }
         }
     }
@@ -1389,6 +1730,7 @@ fun AgentAppRoot(
         onRename = agentState::renameConversationFolder,
         onMoveFolder = agentState::moveConversationFolder,
         onMoveConversation = agentState::moveConversationToFolder,
+        onSetFolderPinned = agentState::setConversationFolderPinned,
         onDelete = agentState::deleteConversationFolder,
     )
 
@@ -1472,6 +1814,11 @@ fun AgentAppRoot(
     }
 
     EtaAppControlConfirmationHost()
+    io.github.mangi.eta.ui.screens.control.RunUserInputHost(
+        onRecoveredAnswer = { request, answer -> agentState.resumeRecoveredRunInput(request, answer) },
+        conversationId = agentState.conversationPaneState.selectedConversationId,
+        meetingRoomId = activeMeetingRoomId,
+    )
 }
 
 @Composable
@@ -1488,9 +1835,33 @@ private fun ConversationContextBudgetDialog(
     var loaded by remember(conversationId) { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
     var rangeText by rememberSaveable(conversationId) { mutableStateOf("") }
+    var compactionBinding by remember(conversationId) { mutableStateOf<ModelRoleBinding?>(null) }
+    var choosingCompaction by rememberSaveable(conversationId) { mutableStateOf(false) }
+    var chooserProviderId by rememberSaveable(conversationId) { mutableStateOf<String?>(null) }
+    val providers by ProviderRepository.providersFlow().collectAsState(initial = emptyList())
+    val compactionProviders = remember(providers) {
+        providers.filter { provider ->
+            provider.isEnabled && provider.hasUsableConnection() && provider.models.any { it.isEnabled }
+        }
+    }
+    val selectedCompaction = remember(compactionProviders, compactionBinding) {
+        compactionBinding?.let { binding ->
+            compactionProviders.firstNotNullOfOrNull { provider ->
+                if (binding.providerId != null && provider.id != binding.providerId) return@firstNotNullOfOrNull null
+                provider.models.firstOrNull { it.id == binding.modelId && it.isEnabled }
+                    ?.let { model -> provider to model }
+            }
+        }
+    }
+    val compactionLabel = when {
+        compactionBinding == null -> "跟随全局"
+        selectedCompaction == null -> "覆盖不可用，正在跟随全局"
+        else -> "${selectedCompaction.second.displayName} · ${selectedCompaction.first.name}"
+    }
     val presets = listOf<Int?>(null, 128_000, 256_000, 512_000, 1_000_000)
     LaunchedEffect(conversationId) {
         selected = ConversationExtensionRepository.contextWindowOverride(context, conversationId)
+        compactionBinding = ConversationExtensionRepository.compactionBinding(context, conversationId)
         customText = selected?.toString().orEmpty()
         loaded = true
     }
@@ -1529,6 +1900,61 @@ private fun ConversationContextBudgetDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                TextButton(
+                    text = "本会话压缩模型：$compactionLabel",
+                    onClick = {
+                        choosingCompaction = !choosingCompaction
+                        if (!choosingCompaction) chooserProviderId = null
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (choosingCompaction) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 300.dp)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        TextButton(
+                            text = "跟随全局",
+                            onClick = {
+                                compactionBinding = null
+                                chooserProviderId = null
+                                choosingCompaction = false
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        val activeProvider = chooserProviderId?.let { id ->
+                            compactionProviders.firstOrNull { it.id == id }
+                        }
+                        if (activeProvider == null) {
+                            compactionProviders.forEach { provider ->
+                                TextButton(
+                                    text = "${provider.name} · ${provider.models.count { it.isEnabled }} 个模型",
+                                    onClick = { chooserProviderId = provider.id },
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+                        } else {
+                            TextButton(
+                                text = "← ${activeProvider.name}",
+                                onClick = { chooserProviderId = null },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            activeProvider.models.filter { it.isEnabled }.forEach { model ->
+                                TextButton(
+                                    text = model.displayName,
+                                    onClick = {
+                                        compactionBinding = ModelRoleBinding(model.id, activeProvider.id)
+                                        chooserProviderId = null
+                                        choosingCompaction = false
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+                        }
+                    }
+                }
                 Text("可选历史消息：0–${(historySize - 1).coerceAtLeast(0)}。系统提示和未完成工具链会自动保护。", color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
             }
             MiuixDialogActions(
@@ -1548,6 +1974,11 @@ private fun ConversationContextBudgetDialog(
                                 context,
                                 conversationId,
                                 selected,
+                            )
+                            ConversationExtensionRepository.setCompactionBinding(
+                                context,
+                                conversationId,
+                                compactionBinding,
                             )
                         }.onSuccess {
                             val selection = rangeText.trim().takeIf { it.isNotBlank() }?.let { raw ->

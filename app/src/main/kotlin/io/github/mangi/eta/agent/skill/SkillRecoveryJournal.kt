@@ -20,6 +20,7 @@ internal data class SkillRecoveryRecord(
         skillId = id,
         entryExisted = false,
     ),
+    val dependencySnapshot: SkillDependencyRecoverySnapshot? = null,
 )
 
 internal data class SkillRegistryRecoverySnapshot(
@@ -33,7 +34,31 @@ internal data class SkillRegistryRecoverySnapshot(
 internal data class RecoveredSkillOperation(
     val operationDirectory: File,
     val records: List<SkillRecoveryRecord>,
-)
+    val journalFileName: String = JOURNAL_FILE_NAME,
+    val dependencyOwnerSnapshots: List<SkillDependencyRecoverySnapshot> =
+        records.mapNotNull(SkillRecoveryRecord::dependencySnapshot),
+    val committedRootIds: Set<String> = emptySet(),
+    val parentOperationDirectory: File? = null,
+    val isParentDependencyTransaction: Boolean = false,
+) {
+    val dependencySnapshots: List<SkillDependencyRecoverySnapshot>
+        get() = dependencyOwnerSnapshots
+    val committedWithoutRollback: Boolean
+        get() = records.isEmpty() && dependencyOwnerSnapshots.isEmpty()
+    val associatedRootIds: Set<String>
+        get() = committedRootIds + records.map(SkillRecoveryRecord::id)
+}
+
+/** 文件与 registry 恢复完成后，在同一锁内复原依赖所有权；空快照保持旧版行为。 */
+internal fun applyRecoveredDependencyOwners(
+    recovered: List<RecoveredSkillOperation>,
+    restore: (List<SkillDependencyRecoverySnapshot>) -> Unit,
+) {
+    val snapshots = recovered
+        .flatMap(RecoveredSkillOperation::dependencySnapshots)
+        .distinctBy(SkillDependencyRecoverySnapshot::ownerId)
+    if (snapshots.isNotEmpty()) restore(snapshots)
+}
 
 internal class PendingSkillRecoveryJournal private constructor(
     private val operationDirectory: File,
@@ -91,6 +116,7 @@ internal class SkillRecoveryRequiredException(
 internal fun recoverPendingSkillOperations(
     skillsRoot: File,
     directoryMover: SkillDirectoryMover = AtomicSkillDirectoryMover,
+    excludedOperationDirectories: Set<File> = emptySet(),
 ): List<RecoveredSkillOperation> {
     val workRoot = skillInstallerWorkRoot(skillsRoot)
     if (!Files.exists(workRoot.toPath(), LinkOption.NOFOLLOW_LINKS)) return emptyList()
@@ -98,13 +124,49 @@ internal fun recoverPendingSkillOperations(
         throw SkillRecoveryRequiredException("Skill 恢复目录不安全")
     }
     val operations = workRoot.listFiles()
-        ?.filter { it.name.startsWith(OPERATION_PREFIX) }
+        ?.filter { it.name.startsWith(OPERATION_PREFIX) || it.name.startsWith("dependency-operation-") }
         ?.sortedBy { it.name }
         ?: throw SkillRecoveryRequiredException("无法读取 Skill 恢复目录")
-    val recovered = operations.mapNotNull { operation ->
+    val excludedOperations = excludedOperationDirectories
+        .mapTo(mutableSetOf()) { operation -> operation.canonicalFile }
+    val committedParents = operations.mapNotNull { operation ->
+        if (!operation.name.startsWith("dependency-operation-")) return@mapNotNull null
         val journalFile = File(operation, JOURNAL_FILE_NAME)
         if (!Files.exists(journalFile.toPath(), LinkOption.NOFOLLOW_LINKS)) return@mapNotNull null
-        recoverOperation(skillsRoot, operation, journalFile, directoryMover)
+        validateOperationDirectory(skillsRoot, operation)
+        SkillDependencyTransactionJournal.committedRootId(skillsRoot, operation, journalFile)
+            ?.let { rootId -> rootId to operation }
+    }.toMap()
+    val committedDependencyParents = buildMap {
+        operations.forEach { operation ->
+            if (!operation.name.startsWith("dependency-operation-")) return@forEach
+            val journalFile = File(operation, JOURNAL_FILE_NAME)
+            if (!Files.exists(journalFile.toPath(), LinkOption.NOFOLLOW_LINKS)) return@forEach
+            validateOperationDirectory(skillsRoot, operation)
+            SkillDependencyTransactionJournal.committedDependencyIds(skillsRoot, journalFile)
+                .forEach { skillId -> put(skillId, operation) }
+        }
+    }
+    val committedRootIds = committedParents.keys
+    val committedChildIds = committedRootIds + committedDependencyParents.keys
+    val recovered = operations.mapNotNull { operation ->
+        if (operation.canonicalFile in excludedOperations) return@mapNotNull null
+        val journalFile = File(operation, JOURNAL_FILE_NAME)
+        if (!Files.exists(journalFile.toPath(), LinkOption.NOFOLLOW_LINKS)) return@mapNotNull null
+        if (operation.name.startsWith("dependency-operation-")) {
+            SkillDependencyTransactionJournal.recover(skillsRoot, operation, journalFile)
+        } else {
+            recoverOperation(
+                skillsRoot,
+                operation,
+                journalFile,
+                directoryMover,
+                committedRootIds,
+                committedParents,
+                committedChildIds,
+                committedDependencyParents,
+            )
+        }
     }
     val duplicateIds = recovered
         .flatMap { it.records }
@@ -122,6 +184,10 @@ private fun recoverOperation(
     operation: File,
     journalFile: File,
     directoryMover: SkillDirectoryMover,
+    committedRootIds: Set<String>,
+    committedParents: Map<String, File>,
+    committedChildIds: Set<String>,
+    committedDependencyParents: Map<String, File>,
 ): RecoveredSkillOperation {
     try {
         validateOperationDirectory(skillsRoot, operation)
@@ -131,7 +197,22 @@ private fun recoverOperation(
         if (journalFile.length() !in 1..MAX_JOURNAL_BYTES) {
             recoveryFailure("Skill 恢复日志大小无效")
         }
-        val records = parseJournal(journalFile)
+        val journalRecords = parseJournal(journalFile)
+        val records = journalRecords.filterNot { it.id in committedChildIds }
+        if (records.isEmpty()) {
+            val roots = committedRootIds.intersect(journalRecords.mapTo(mutableSetOf()) { it.id })
+            val dependencies = committedDependencyParents.keys.intersect(
+                journalRecords.mapTo(mutableSetOf()) { it.id },
+            )
+            return RecoveredSkillOperation(
+                operationDirectory = operation,
+                records = emptyList(),
+                committedRootIds = roots + dependencies,
+                parentOperationDirectory = (roots + dependencies).singleOrNull()?.let { id ->
+                    committedParents[id] ?: committedDependencyParents[id]
+                },
+            )
+        }
         val backupRoot = File(operation, BACKUP_DIRECTORY_NAME)
         records.forEach { record ->
             val target = File(skillsRoot, record.id)
@@ -168,12 +249,27 @@ private fun recoverOperation(
 internal fun completeRecoveredSkillOperations(
     skillsRoot: File,
     recovered: List<RecoveredSkillOperation>,
+    dependencyRestore: ((List<SkillDependencyRecoverySnapshot>) -> Unit)? = null,
 ) {
     val workRoot = skillInstallerWorkRoot(skillsRoot)
-    recovered.forEach { recovery ->
+    // Clear the committed root journal first while the parent rollback record is still durable.
+    // Dependency journals and then the parent are cleared only after every root is durable.
+    val ordered = recovered.sortedWith(
+        compareBy<RecoveredSkillOperation> { recovery ->
+            when {
+                recovery.isParentDependencyTransaction -> 2
+                recovery.operationDirectory.name.startsWith("dependency-operation-") -> 1
+                else -> 0
+            }
+        },
+    )
+    ordered.forEach { recovery ->
         val operation = recovery.operationDirectory
         validateOperationDirectory(skillsRoot, operation)
-        Files.deleteIfExists(File(operation, JOURNAL_FILE_NAME).toPath())
+        if (dependencyRestore != null) {
+            applyRecoveredDependencyOwners(listOf(recovery), dependencyRestore)
+        }
+        Files.deleteIfExists(File(operation, recovery.journalFileName).toPath())
         // journal 删除即表示文件与 registry 已共同恢复完成；残留的无 journal 暂存目录
         // 不再影响索引，清理失败也不能把已经完成的恢复重新标记为待处理。
         deleteSkillPathWithoutFollowingLinks(workRoot, operation)
@@ -251,7 +347,8 @@ private fun copyDirectoryWithoutFollowingLinks(source: File, target: File) {
 private fun parseJournal(journalFile: File): List<SkillRecoveryRecord> {
     val json = runCatching { JSONObject(journalFile.readText(Charsets.UTF_8)) }
         .getOrElse { recoveryFailure("Skill 恢复日志格式无效") }
-    if (json.optInt("version", -1) != JOURNAL_VERSION) {
+    val version = json.optInt("version", -1)
+    if (version !in JOURNAL_VERSION..DEPENDENCY_JOURNAL_VERSION) {
         recoveryFailure("Skill 恢复日志版本不受支持")
     }
     val entries = json.optJSONArray("skills") ?: recoveryFailure("Skill 恢复日志缺少 skills")
@@ -276,6 +373,9 @@ private fun parseJournal(journalFile: File): List<SkillRecoveryRecord> {
             backupCompleted = entry.getBoolean("backupCompleted"),
             newTargetCommitted = entry.getBoolean("newTargetCommitted"),
             registrySnapshot = parseRegistrySnapshot(entry, id),
+            dependencySnapshot = if (version >= DEPENDENCY_JOURNAL_VERSION) {
+                parseDependencySnapshot(entry, id)
+            } else null,
         )
     }
     validateRecords(records)
@@ -287,7 +387,10 @@ private fun writeJournalAtomically(
     records: List<SkillRecoveryRecord>,
 ) {
     val json = JSONObject()
-        .put("version", JOURNAL_VERSION)
+        .put(
+            "version",
+            if (records.any { it.dependencySnapshot != null }) DEPENDENCY_JOURNAL_VERSION else JOURNAL_VERSION,
+        )
         .put(
             "skills",
             JSONArray().apply {
@@ -306,10 +409,31 @@ private fun writeJournalAtomically(
                                     .put("source", record.registrySnapshot.source)
                                     .put("installState", record.registrySnapshot.installState)
                             )
+                            .also { entry ->
+                                record.dependencySnapshot?.let { snapshot ->
+                                    entry.put(
+                                        "dependencies",
+                                        JSONObject()
+                                            .put("ownerExisted", snapshot.ownerExisted)
+                                            .put("dependencyIds", JSONArray(snapshot.dependencyIds.sorted())),
+                                    )
+                                }
+                            }
+                        ,
                     )
                 }
             }
         )
+        .put("dependencies", JSONArray().apply {
+            records.mapNotNull(SkillRecoveryRecord::dependencySnapshot).forEach { snapshot ->
+                put(
+                    JSONObject()
+                        .put("ownerId", snapshot.ownerId)
+                        .put("ownerExisted", snapshot.ownerExisted)
+                        .put("dependencyIds", JSONArray(snapshot.dependencyIds.sorted()))
+                )
+            }
+        })
     val journal = File(operationDirectory, JOURNAL_FILE_NAME)
     val temporary = File(operationDirectory, ".$JOURNAL_FILE_NAME-${UUID.randomUUID()}")
     try {
@@ -363,6 +487,14 @@ private fun validateRecords(records: List<SkillRecoveryRecord>) {
         }
         val registry = record.registrySnapshot
         if (registry.skillId != record.id) recoveryFailure("Skill 恢复日志 registry id 不一致")
+        record.dependencySnapshot?.let { dependencies ->
+            if (
+                dependencies.ownerId != record.id ||
+                dependencies.dependencyIds.any { !SKILL_ID_REGEX.matches(it) || it == record.id } ||
+                dependencies.dependencyIds.size != dependencies.dependencyIds.distinct().size ||
+                (!dependencies.ownerExisted && dependencies.dependencyIds.isNotEmpty())
+            ) recoveryFailure("Skill 恢复日志包含非法依赖边")
+        }
         if (registry.entryExisted) {
             if (
                 registry.source !in VALID_REGISTRY_SOURCES ||
@@ -405,6 +537,32 @@ private fun parseRegistrySnapshot(
     )
 }
 
+private fun parseDependencySnapshot(
+    entry: JSONObject,
+    skillId: String,
+): SkillDependencyRecoverySnapshot {
+    val dependencies = entry.optJSONObject("dependencies")
+        ?: recoveryFailure("Skill 恢复日志缺少依赖快照")
+    if (!dependencies.has("ownerExisted") || dependencies.opt("ownerExisted") !is Boolean) {
+        recoveryFailure("Skill 恢复日志依赖 owner 快照无效")
+    }
+    val ids = dependencies.optJSONArray("dependencyIds")
+        ?: recoveryFailure("Skill 恢复日志依赖边无效")
+    val dependencyIds = (0 until ids.length()).map { index -> ids.optString(index) }
+    if (
+        dependencyIds.distinct().size != dependencyIds.size ||
+        dependencyIds.any { !SKILL_ID_REGEX.matches(it) || it == skillId } ||
+        (!dependencies.getBoolean("ownerExisted") && dependencyIds.isNotEmpty())
+    ) {
+        recoveryFailure("Skill 恢复日志包含非法依赖快照")
+    }
+    return SkillDependencyRecoverySnapshot(
+        ownerId = skillId,
+        ownerExisted = dependencies.getBoolean("ownerExisted"),
+        dependencyIds = dependencyIds.toSet(),
+    )
+}
+
 private fun isSafeExistingTarget(skillsRoot: File, target: File): Boolean =
     !Files.isSymbolicLink(target.toPath()) && target.isDirectory && isStrictChild(skillsRoot, target)
 
@@ -423,6 +581,7 @@ private fun recoveryFailure(message: String): Nothing =
     throw SkillRecoveryRequiredException(message)
 
 private const val JOURNAL_VERSION = 1
+private const val DEPENDENCY_JOURNAL_VERSION = 2
 internal const val JOURNAL_FILE_NAME = "pending-install.json"
 private const val BACKUP_DIRECTORY_NAME = "backup"
 private const val RECOVERY_DIRECTORY_NAME = "recovery"
@@ -436,5 +595,7 @@ private val VALID_INSTALL_STATES = setOf(
     INSTALL_STATE_INSTALLED_VALUE,
     INSTALL_STATE_REMOVED_BUILTIN_VALUE,
 )
-private val OPERATION_NAME_REGEX = Regex("^operation-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+private val OPERATION_NAME_REGEX = Regex(
+    "^(?:dependency-)?operation-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+)
 private val SKILL_ID_REGEX = Regex("^[a-z0-9]+(?:-[a-z0-9]+)*$")

@@ -18,6 +18,17 @@ import org.robolectric.annotation.GraphicsMode
 @Config(sdk = [36], application = Application::class, qualifiers = "zh-rCN-w411dp-h896dp-xhdpi")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class BackupMetricsPresentationTest {
+    @Test fun visiblePeriodControlChangesTheCalendarRange() {
+        MemoryLearningPresentationTest.Panel {
+            AgentMetricsScreen({}, {}, {})
+        }.use { panel ->
+            panel.scrollUntil("统计周期")
+            panel.click("30 天")
+            panel.scrollUntil("最近 30 天")
+            panel.await { panel.texts().contains("最近 30 天") }
+        }
+    }
+
     @Test fun automaticallySelectedDirectoryUsesAReadablePath() {
         assertEquals(
             "Pictures / EtaBackup",
@@ -49,7 +60,7 @@ class BackupMetricsPresentationTest {
         MemoryLearningPresentationTest.Panel(dark = true, fontScale = 1.3f) {
             DataBackupScreen(context, {}, { _, _, _, _ -> error("unused") }, { _, _, _ -> error("unused") })
         }.use { panel ->
-            panel.await { panel.texts().contains("导出数据") }
+            panel.scrollUntil("导出数据")
             panel.capture("backup-narrow-dark")
             panel.click("导出数据")
             panel.await { panel.texts().contains("选择位置") }
@@ -99,12 +110,12 @@ class BackupMetricsPresentationTest {
         }.use { panel ->
             panel.await { panel.texts().contains("运行统计") }
             panel.clickDescription("筛选运行记录")
-            panel.await { panel.texts().contains("时间") }
-            panel.click("时间")
-            panel.await { panel.texts().containsAll(listOf("今天", "近 7 天", "近 30 天")) }
+            panel.await { panel.texts().contains("结果") }
+            panel.click("结果")
+            panel.await { panel.texts().containsAll(listOf("运行中", "成功", "失败")) }
             panel.capture("metrics-filter-inline-narrow-large-font")
-            panel.click("近 7 天")
-            panel.await { panel.texts().contains("近 7 天") }
+            panel.click("成功")
+            panel.await { panel.texts().contains("成功") }
         }
     }
 }

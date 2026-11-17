@@ -52,6 +52,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
             }
             .build()
         while (true) {
+            ProviderBudgetOutputLimit.apply(candidate, request, capabilities.endpoint)
             val httpRequest = Request.Builder()
                 .url(ProviderUrls.openAiResponsesUrl(config.baseUrl))
                 .headers(headers)
@@ -67,10 +68,17 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
                     authMode = config.authMode,
                     request = httpRequest,
                     controller = runController,
+                    onAuthenticationRetry = {
+                        onEvent(ProviderEvent.Usage(AgentTokenUsage(inputTokens = 0, outputTokens = 0,
+                            billingBasis = io.github.mangi.eta.agent.runtime.AgentBillingTokens.OPENAI)))
+                        onEvent(ProviderEvent.RequestStarted)
+                    },
                 ) { response ->
                     onEvent(ProviderEvent.ResponseHeaders(response.code))
                     if (!response.isSuccessful) {
                         val body = response.peekBody(16_384).string()
+                        if (ProviderBudgetOutputLimit.isParameterRejection(response.code, body)) onEvent(ProviderEvent.Usage(AgentTokenUsage(inputTokens = 0, outputTokens = 0,
+                            billingBasis = io.github.mangi.eta.agent.runtime.AgentBillingTokens.OPENAI)))
                         if (response.code == 400 && compatibilityAttempt < MAX_COMPATIBILITY_RETRIES) {
                             throw OpenAiCompatibilityRetry(body)
                         }
@@ -111,7 +119,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
             if (failure is OpenAiCompatibilityRetry) {
                 val repaired = when (compatibilityAttempt) {
                     0 -> conservativePayload(candidate, failure.body)
-                    1 -> payloadWithoutTools(candidate)
+                    1 -> payloadWithoutTools(candidate, failure.body)
                     else -> null
                 }
                 if (repaired != null) {
@@ -155,9 +163,11 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
         return payload
     }
 
-    private fun payloadWithoutTools(source: JSONObject): JSONObject? {
+    private fun payloadWithoutTools(source: JSONObject, errorBody: String): JSONObject? {
         val tools = source.optJSONArray("tools") ?: return null
         if (tools.length() == 0) return null
+        val lower = errorBody.lowercase()
+        if (listOf("tool", "function", "tool_choice").none(lower::contains)) return null
         return JSONObject(source.toString()).also { payload ->
             payload.remove("tools")
             payload.remove("tool_choice")
@@ -563,6 +573,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
             .put("content", finalResult.text)
             .put("reasoning_content", finalResult.reasoning)
             .put("finish_reason", finishReason)
+        ProviderMediaOutput.attach(assistant, ProviderMediaOutput.collect(output))
         if (finalResult.toolCalls.isNotEmpty()) {
             assistant.put(
                 "tool_calls",

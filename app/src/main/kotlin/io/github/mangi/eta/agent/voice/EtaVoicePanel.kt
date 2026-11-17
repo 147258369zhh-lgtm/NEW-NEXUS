@@ -34,7 +34,6 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -67,6 +66,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.ui.components.AgentConversationMessages
+import io.github.mangi.eta.ui.components.smoothShape
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import kotlin.math.abs
 import kotlinx.coroutines.coroutineScope
@@ -154,6 +154,7 @@ private fun rememberEtaVoicePanelColors(): EtaVoicePanelColors {
 @Composable
 internal fun EtaVoicePanel(
     speechLevel: () -> Float,
+    speechWaveform: () -> FloatArray = { FloatArray(SpeechInputState.WAVEFORM_SAMPLES) },
     state: EtaVoiceUiState,
     input: String,
     speech: EtaSpeechState,
@@ -279,10 +280,16 @@ internal fun EtaVoicePanel(
             active = (speech.active || speech.speaking || !entranceComplete) && !exitRequested,
             onEntranceFinished = onEntranceFinished,
         )
-        EtaAssistantWave(
-            active = (speech.active || speech.speaking || !entranceComplete) && !exitRequested,
+        val orbActive = (speech.active || speech.speaking || !entranceComplete) && !exitRequested
+        NexaVoiceOrb(
+            active = orbActive,
+            speaking = speech.speaking,
             level = speechLevel,
-            modifier = Modifier.align(Alignment.BottomCenter),
+            waveform = speechWaveform,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .offset(y = (-106).dp)
+                .size(188.dp),
         )
 
         if (contentVisible) BoxWithConstraints(
@@ -612,7 +619,7 @@ private fun BoxScope.AssistantPanel(
     }
 
     val messageRevealOffsetPx = with(density) { 12.dp.toPx() }
-    val sheetShape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp)
+    val sheetShape = smoothShape(34.dp)
     Column(
         modifier = Modifier
             .align(Alignment.BottomCenter)
@@ -629,7 +636,7 @@ private fun BoxScope.AssistantPanel(
                 )
             }
             .border(
-                width = 1.6.dp,
+                width = 0.75.dp,
                 color = colors.panelStroke.copy(alpha = colors.panelStroke.alpha * sheetBackgroundAlpha.value),
                 shape = sheetShape,
             ),

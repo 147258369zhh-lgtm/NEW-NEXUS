@@ -5,9 +5,26 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 internal object AgentFileToolCatalog {
-    val names = setOf("read_file", "write_file", "edit_file", "stat_file", "list_directory", "glob_files", "grep_files")
+    val deliveryNames = setOf("deliver_file", "download_media")
+    val writeNames = setOf("write_file", "edit_file", "make_directory", "copy_file", "move_file", "delete_file") + deliveryNames
+    val names = setOf("read_file", "stat_file", "list_directory", "glob_files", "grep_files") + writeNames
 
     fun appendTo(tools: JSONArray) {
+        tools.put(tool("download_media", "显式下载一个完整 HTTP(S) 媒体或成果文件，完整接收并校验后登记到当前会话/会议的成果。只发送匿名 GET，不读取浏览器登录状态、Cookie或认证信息；需要登录的链接应使用对应连接器或MCP资源读取。不会扫描或自动抓取正文中的链接。默认最多8 MiB，可设到32 MiB；可传SHA-256校验。", properties()
+            .put("url", text("明确的完整HTTP(S)下载URL；不接受用户名/密码或其他协议。", 8192))
+            .put("name", text("可选的展示文件名。", 255))
+            .put("max_bytes", integer("下载大小上限，默认8388608字节，最大33554432。", 1, 33554432))
+            .put("expected_sha256", text("可选的预期SHA-256摘要，64位十六进制。", 64)), listOf("url")))
+        tools.put(tool("make_directory", "创建目录；create_parents=true 时补齐父目录。不会覆盖已存在的普通文件。", properties()
+            .put("path", path()).put("create_parents", JSONObject().put("type", "boolean").put("default", false)), listOf("path")))
+        for (name in listOf("copy_file", "move_file")) {
+            tools.put(tool(name, if (name == "copy_file") "复制文件或目录；目标存在时拒绝覆盖，结果指向真实目标。" else "移动文件或目录；目标存在时拒绝覆盖。", properties()
+                .put("source", path()).put("destination", path()), listOf("source", "destination")))
+        }
+        tools.put(tool("delete_file", "删除明确路径；递归目录删除必须显式 recursive=true。按本 Run 审批策略执行，不允许删除文件系统根目录或当前工作区根目录。", properties()
+            .put("path", path()).put("recursive", JSONObject().put("type", "boolean").put("default", false)), listOf("path")))
+        tools.put(tool("deliver_file", "把当前 Nexus 工作区内的一个普通文件登记到当前会话或会议的项目文件；如已配置系统可见目录，还会尝试复制到该目录。只接受当前用户工作区内的文件，不能用于导出任意设备文件。检查 publication 和 message 了解目录复制结果。", properties()
+            .put("path", path()).put("label", text("可选的展示文件名；省略时使用真实文件名。", 255)), listOf("path")))
         tools.put(tool("read_file", "读取 UTF-8 文本。已知路径直接读取；返回的 next_offset_bytes 是准确续读位置，续读同时传 expected_revision。支持 start_line 定位；超长行可分段，二进制请使用对应媒体工具。", properties()
             .put("path", path())
             .put("offset_bytes", integer("字节起点，默认 0；续读使用上次 next_offset_bytes，不要自行推算。", 0))

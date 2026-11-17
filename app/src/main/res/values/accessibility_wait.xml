@@ -8,5 +8,5 @@
     <string name="accessibility_wait_permissions">Permission health</string>
     <string name="accessibility_wait_settings">Accessibility settings</string>
     <string name="accessibility_wait_stop">Stop task</string>
-    <string name="accessibility_wait_settings_failed">Unable to open settings. You can reconnect Nexus in the system accessibility settings.</string>
+    <string name="accessibility_wait_settings_failed">Unable to open settings. You can reconnect NEXA in the system accessibility settings.</string>
 </resources>

@@ -1,6 +1,5 @@
 package io.github.mangi.eta.ui.app
 
-import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
@@ -18,49 +17,41 @@ internal object ConversationTimeLabels {
         use24HourClock: Boolean = true,
         yesterdayLabel: String = "Yesterday",
         recentLabel: String = "Recent",
-    ): String {
-        if (timestampMillis <= 0L) return recentLabel
+    ): String = Formatter(nowMillis, locale, timeZone, use24HourClock, yesterdayLabel, recentLabel)
+        .label(timestampMillis)
 
-        val zoneId = timeZone.toZoneId()
-        val nowDate = Instant.ofEpochMilli(nowMillis).atZone(zoneId).toLocalDate()
-        val targetDate = Instant.ofEpochMilli(timestampMillis).atZone(zoneId).toLocalDate()
-        val dayDelta = ChronoUnit.DAYS.between(targetDate, nowDate).toInt()
+    /** One immutable date context per list projection; formatters stay local to its thread. */
+    class Formatter(
+        private val nowMillis: Long,
+        private val locale: Locale,
+        private val timeZone: TimeZone,
+        private val use24HourClock: Boolean,
+        private val yesterdayLabel: String,
+        private val recentLabel: String,
+    ) {
+        private val zoneId = timeZone.toZoneId()
+        private val nowDate = Instant.ofEpochMilli(nowMillis).atZone(zoneId).toLocalDate()
+        private val patterns = mutableMapOf<String, SimpleDateFormat>()
+        private val fullDate by lazy { DateFormat.getDateInstance(DateFormat.MEDIUM, locale).also { it.timeZone = timeZone } }
 
-        return when {
-            dayDelta <= 0 -> formatPattern(
-                if (use24HourClock) "HH:mm" else "h:mm a",
-                timestampMillis,
-                locale,
-                timeZone,
-            )
-            dayDelta == 1 -> yesterdayLabel
-            dayDelta in 2..6 -> formatPattern("EEE", timestampMillis, locale, timeZone)
-            sameYear(timestampMillis, nowMillis, locale, timeZone) ->
-                formatPattern(sameYearPattern(locale), timestampMillis, locale, timeZone)
-            else -> DateFormat.getDateInstance(DateFormat.MEDIUM, locale)
-                .also { it.timeZone = timeZone }
-                .format(Date(timestampMillis))
+        fun label(timestampMillis: Long): String {
+            if (timestampMillis <= 0L) return recentLabel
+            val targetDate = Instant.ofEpochMilli(timestampMillis).atZone(zoneId).toLocalDate()
+            val dayDelta = ChronoUnit.DAYS.between(targetDate, nowDate).toInt()
+
+            return when {
+                dayDelta <= 0 -> format(if (use24HourClock) "HH:mm" else "h:mm a", timestampMillis)
+                dayDelta == 1 -> yesterdayLabel
+                dayDelta in 2..6 -> format("EEE", timestampMillis)
+                targetDate.year == nowDate.year -> format(sameYearPattern(locale), timestampMillis)
+                else -> fullDate.format(Date(timestampMillis))
+            }
         }
-    }
 
-    private fun sameYear(
-        timestampMillis: Long,
-        nowMillis: Long,
-        locale: Locale,
-        timeZone: TimeZone,
-    ): Boolean {
-        val now = Calendar.getInstance(timeZone, locale).apply { timeInMillis = nowMillis }
-        val target = Calendar.getInstance(timeZone, locale).apply { timeInMillis = timestampMillis }
-        return now.get(Calendar.YEAR) == target.get(Calendar.YEAR)
+        private fun format(pattern: String, millis: Long): String = patterns.getOrPut(pattern) {
+            SimpleDateFormat(pattern, locale).also { it.timeZone = timeZone }
+        }.format(Date(millis))
     }
-
-    private fun formatPattern(
-        pattern: String,
-        millis: Long,
-        locale: Locale,
-        timeZone: TimeZone,
-    ): String =
-        SimpleDateFormat(pattern, locale).also { it.timeZone = timeZone }.format(Date(millis))
 
     private fun sameYearPattern(locale: Locale): String = when (locale.language) {
         Locale.CHINESE.language -> "M月d日"

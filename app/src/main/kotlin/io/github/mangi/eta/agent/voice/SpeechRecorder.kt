@@ -17,17 +17,32 @@ import kotlinx.coroutines.withContext
 internal interface SpeechAudioCapture {
     val frames: ReceiveChannel<ByteArray>
     suspend fun record(onReady: () -> Unit, onLevel: (Float) -> Unit)
+    /** Optional source-compatible callback for the visual orb; existing capture doubles stay unchanged. */
+    suspend fun record(
+        onReady: () -> Unit,
+        onLevel: (Float) -> Unit,
+        onWaveform: (FloatArray) -> Unit,
+    ) = record(onReady, onLevel)
     fun finish()
     fun cancel()
 }
 
-internal class SpeechRecorder : SpeechAudioCapture {
+internal class SpeechRecorder(private val backgroundWake: Boolean = false) : SpeechAudioCapture {
     override val frames = speechFrameChannel()
     private val finishing = AtomicBoolean(false)
     @Volatile private var recorder: AudioRecord? = null
 
     @SuppressLint("MissingPermission")
-    override suspend fun record(onReady: () -> Unit, onLevel: (Float) -> Unit) = withContext(Dispatchers.IO) {
+    override suspend fun record(onReady: () -> Unit, onLevel: (Float) -> Unit) =
+        record(onReady, onLevel) {}
+
+    override suspend fun record(
+        onReady: () -> Unit,
+        onLevel: (Float) -> Unit,
+        onWaveform: (FloatArray) -> Unit,
+    ) = withContext(Dispatchers.IO) {
+        if (!backgroundWake) BackgroundWakeWordRuntime.yieldMicrophone()
+        SpeechBargeInMonitor.awaitCaptureReleased()
         val minimum = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         if (minimum <= 0) throw SpeechFailure(SpeechErrorCode.AUDIO, "设备不支持语音录音格式")
         val audio = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, RATE,
@@ -60,6 +75,7 @@ internal class SpeechRecorder : SpeechAudioCapture {
                     energy += sample * sample
                 }
                 onLevel((sqrt(energy / (count / 2)) / 4000).toFloat().coerceIn(0f, 1f))
+                onWaveform(timeDomainWaveform(bytes, count))
             }
         } finally {
             finishing.set(true)
@@ -81,6 +97,23 @@ internal class SpeechRecorder : SpeechAudioCapture {
         const val RATE = 16_000
         const val FRAME_BYTES = 6_400
         const val MAX_BYTES = RATE * 2 * 60
+    }
+}
+
+/** A fixed-size, time-domain snapshot for the voice orb; no audio history leaves this callback. */
+private fun timeDomainWaveform(bytes: ByteArray, count: Int, targetSamples: Int = 128): FloatArray {
+    val samples = count / 2
+    if (samples <= 0) return FloatArray(targetSamples)
+    return FloatArray(targetSamples) { slot ->
+        val start = slot * samples / targetSamples
+        val end = ((slot + 1) * samples / targetSamples).coerceAtLeast(start + 1)
+        var peak = 0
+        for (sampleIndex in start until minOf(end, samples)) {
+            val byteIndex = sampleIndex * 2
+            val sample = ((bytes[byteIndex].toInt() and 255) or (bytes[byteIndex + 1].toInt() shl 8)).toShort().toInt()
+            if (kotlin.math.abs(sample) > kotlin.math.abs(peak)) peak = sample
+        }
+        (peak / 32768f).coerceIn(-1f, 1f)
     }
 }
 

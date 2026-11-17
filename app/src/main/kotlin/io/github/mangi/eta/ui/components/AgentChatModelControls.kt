@@ -9,14 +9,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalConfiguration
@@ -54,13 +56,23 @@ internal fun AgentContextUsageButton(
     val tooltipState = rememberTooltipState(isPersistent = true)
     val progress = usage.progress
     val trackColor = MiuixTheme.colorScheme.secondaryContainer
-    val progressBrush = Brush.sweepGradient(listOf(StatusSuccess, StatusWarning, StatusError))
-    val pulse by rememberInfiniteTransition(label = "context-breathe").animateFloat(
+    val normalizedProgress = progress?.coerceIn(0f, 1f) ?: 0f
+    val targetProgressColor = when {
+        normalizedProgress <= 0.55f -> lerp(StatusSuccess, StatusWarning, normalizedProgress / 0.55f)
+        normalizedProgress <= 0.82f -> lerp(StatusWarning, ContextOrange, (normalizedProgress - 0.55f) / 0.27f)
+        else -> lerp(ContextOrange, StatusError, (normalizedProgress - 0.82f) / 0.18f)
+    }
+    val progressColor by animateColorAsState(
+        targetValue = targetProgressColor,
+        animationSpec = tween(260),
+        label = "context-progress-color",
+    )
+    val pulse = if (isCompacting) rememberInfiniteTransition(label = "context-breathe").animateFloat(
         initialValue = .92f,
-        targetValue = if (isCompacting) 1.08f else .92f,
+        targetValue = 1.08f,
         animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
         label = "context-breathe-scale",
-    )
+    ) else null
     val locale = LocalConfiguration.current.locales[0]
     val summary = formatContextUsage(
         usage = usage,
@@ -124,14 +136,14 @@ internal fun AgentContextUsageButton(
             onClick = { scope.launch { tooltipState.show() } },
             minWidth = ChatInputActionSize,
             minHeight = ChatInputActionSize,
-            modifier = Modifier.pointerInput(onConfigure) {
+            modifier = Modifier.clip(androidx.compose.foundation.shape.CircleShape).pointerInput(onConfigure) {
                 detectTapGestures(onLongPress = { onConfigure() })
             },
         ) {
             Canvas(
                 modifier = Modifier
                     .size(ChatInputActionIconSize)
-                    .scale(if (isCompacting) pulse else 1f)
+                    .graphicsLayer { scaleX = pulse?.value ?: 1f; scaleY = pulse?.value ?: 1f }
                     .semantics { contentDescription = usageDescription },
             ) {
                 val stroke = 2.5.dp.toPx()
@@ -143,7 +155,7 @@ internal fun AgentContextUsageButton(
                 val current = progress
                 if (current != null && current > 0f) {
                     drawArc(
-                        brush = progressBrush,
+                        color = progressColor,
                         startAngle = -90f,
                         sweepAngle = 360f * current.coerceIn(0f, 1f),
                         useCenter = false,
@@ -159,3 +171,5 @@ internal fun AgentContextUsageButton(
         }
     }
 }
+
+private val ContextOrange = androidx.compose.ui.graphics.Color(0xFFFF9F43)

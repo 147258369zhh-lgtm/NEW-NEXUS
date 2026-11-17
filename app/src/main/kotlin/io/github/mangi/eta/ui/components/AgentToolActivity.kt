@@ -46,6 +46,8 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.browser.BrowserSessionSnapshot
 import io.github.mangi.eta.agent.overlay.toolDisplayName
@@ -107,8 +109,8 @@ internal fun ToolActivityRow(
     val running = message.status == ToolActivityStatusUi.Running
     val elapsedSeconds = rememberRunningSeconds(message.id, running)
     if (message.toolName == AgentSubagentToolCatalog.TOOL_NAME) {
-        val snapshot = remember(message.command, message.argumentsSummary, message.resultSummary, message.status) {
-            SubagentActivitySnapshot.decode(message.command) ?: SubagentActivitySnapshot(
+        val fallback = remember(message.id, message.argumentsSummary, message.resultSummary, message.status) {
+            SubagentActivitySnapshot(
                 subagentType = message.argumentsSummary.substringBefore(" · ").ifBlank { "subagent" },
                 description = message.argumentsSummary.substringAfter(" · ", message.argumentsSummary),
                 status = when (message.status) {
@@ -119,6 +121,13 @@ internal fun ToolActivityRow(
                 output = message.resultSummary.orEmpty(),
             )
         }
+        var parsed by remember(message.id) { mutableStateOf<SubagentActivitySnapshot?>(null) }
+        LaunchedEffect(message.id, message.command) {
+            // Each progress payload can contain the entire multi-step history, even while the
+            // card is collapsed. Keep its last frame while decoding the newest payload off main.
+            parsed = withContext(Dispatchers.Default) { SubagentActivitySnapshot.decode(message.command) }
+        }
+        val snapshot = parsed ?: fallback
         SubagentActivityRow(
             message = message,
             snapshot = snapshot,
@@ -151,6 +160,7 @@ internal fun ToolActivityRow(
     val resultDetail = message.resultSummary?.trim()?.takeIf { it.isNotEmpty() && it != outcome }
     val hasDetail = !message.command.isNullOrBlank() ||
         resultDetail != null ||
+        message.executionItemId != null ||
         showBrowserShortcut
 
     Column(modifier = modifier.fillMaxWidth()) {
@@ -370,6 +380,7 @@ private fun ToolActivityDetail(
                 )
             }
         }
+        message.executionItemId?.let { NexusExecutionReferenceDetail(it, refreshKey = message.status) }
     }
 }
 
@@ -418,13 +429,14 @@ private fun BrowserPagePreview(
 ) {
     val browser = LocalAgentBrowserSession.current ?: return
     var preview by remember(snapshot.url) { mutableStateOf<ImageBitmap?>(null) }
-    LaunchedEffect(browser, snapshot.url, snapshot.isLoading) {
-        while (true) {
+    val lifecycle by LocalLifecycleOwner.current.lifecycle.currentStateFlow.collectAsState()
+    LaunchedEffect(browser, snapshot.url, snapshot.isLoading, snapshot.title, snapshot.hasCommittedPage,
+        snapshot.lastAgentRunId, snapshot.lastAgentToolCallId, lifecycle) {
+        if (lifecycle.isAtLeast(Lifecycle.State.RESUMED)) {
             val image = withContext(Dispatchers.IO) {
                 browser.capturePreview()?.let { decodeDataUrlBitmap(it.dataUrl) }
             }
             if (image != null) preview = image
-            delay(if (snapshot.isLoading) 1_200L else 4_000L)
         }
     }
 

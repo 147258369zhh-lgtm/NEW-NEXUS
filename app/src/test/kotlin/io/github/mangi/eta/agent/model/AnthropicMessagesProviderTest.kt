@@ -22,6 +22,36 @@ import org.junit.Test
 
 class AnthropicMessagesProviderTest {
     @Test
+    fun http400ExplainsKnownParameterWithoutEchoingProviderMessage() {
+        val error = JSONObject()
+            .put("type", "error")
+            .put(
+                "error",
+                JSONObject()
+                    .put("type", "invalid_request_error")
+                    .put("param", "messages[0].content")
+                    .put("message", "Invalid content for private-user-prompt"),
+            )
+
+        val failure = runCatching {
+            withAnthropicServer(
+                error.toString(),
+                status = 400,
+                contentType = "application/json",
+            ) { baseUrl ->
+                AnthropicMessagesProvider.complete(providerRequest(baseUrl), AgentRunController())
+            }
+        }.exceptionOrNull()
+
+        assertTrue(failure is AgentModelFailure)
+        assertTrue(failure?.message.orEmpty().contains("HTTP 400"))
+        assertTrue(failure?.message.orEmpty().contains("invalid_request_error"))
+        assertTrue(failure?.message.orEmpty().contains("字段 messages[0].content"))
+        assertTrue(failure?.message.orEmpty().contains("消息历史格式无效"))
+        assertFalse(failure?.message.orEmpty().contains("private-user-prompt"))
+    }
+
+    @Test
     fun newAdaptiveModelsHaveRoomForThinkingAndExplicitMaxTokensWins() {
         val body = event("message_stop", JSONObject())
         val cases = listOf(
@@ -604,6 +634,8 @@ class AnthropicMessagesProviderTest {
 
     private fun withAnthropicServer(
         body: String,
+        status: Int = 200,
+        contentType: String = "text/event-stream",
         onRequest: (String) -> Unit = {},
         writeBody: ((OutputStream) -> Unit)? = null,
         block: (String) -> Unit
@@ -614,8 +646,8 @@ class AnthropicMessagesProviderTest {
         server.createContext("/v1/messages") { exchange ->
             onRequest(exchange.requestBody.use { it.readBytes().toString(Charsets.UTF_8) })
             val bytes = body.toByteArray(Charsets.UTF_8)
-            exchange.responseHeaders.add("Content-Type", "text/event-stream")
-            exchange.sendResponseHeaders(200, if (writeBody == null) bytes.size.toLong() else 0)
+            exchange.responseHeaders.add("Content-Type", contentType)
+            exchange.sendResponseHeaders(status, if (writeBody == null) bytes.size.toLong() else 0)
             exchange.responseBody.use { output ->
                 if (writeBody == null) output.write(bytes) else writeBody(output)
             }

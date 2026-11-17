@@ -44,6 +44,26 @@ internal fun validateSpeechSettings(settings: SpeechSettings, secrets: SpeechCre
     }
     if (synthesis) {
         when (settings.tts) {
+            TtsProvider.DEEPSEEK -> {
+                validateDeepSeekSpeechConfig(settings.deepSeekTts, true)
+                validateDeepSeekSpeechKey(secrets.deepSeekTts)
+            }
+            TtsProvider.XIAOMI -> {
+                validateXiaomiMiMoConfig(settings.xiaomiTts, true)
+                validateXiaomiMiMoKey(secrets.xiaomiTts)
+            }
+            TtsProvider.BAIDU -> {
+                validateBaiduSpeechConfig(settings.baiduTts, true)
+                validateBaiduSpeechCredentials(secrets.baiduTtsApiKey, secrets.baiduTtsSecretKey)
+            }
+            TtsProvider.IFLYTEK -> {
+                validateIflytekSpeechConfig(settings.iflytekTts, true)
+                validateIflytekSpeechKeys(secrets.iflytekTtsApiKey, secrets.iflytekTtsApiSecret)
+            }
+            TtsProvider.TENCENT -> {
+                validateTencentSpeechConfig(settings.tencentTts, true)
+                validateTencentSpeechKeys(secrets.tencentTtsSecretId, secrets.tencentTtsSecretKey)
+            }
             TtsProvider.NONE -> throw SpeechFailure(SpeechErrorCode.CONFIGURATION, "请先在设置中配置语音播报")
             TtsProvider.QWEN -> {
                 required(secrets.qwenTts, "千问播报 API Key")
@@ -72,6 +92,11 @@ internal fun validateSpeechSettings(settings: SpeechSettings, secrets: SpeechCre
                     throw SpeechFailure(SpeechErrorCode.CONFIGURATION, "MiniMax 语速须在 0.5～2 倍之间")
                 }
             }
+            TtsProvider.AZURE -> {
+                required(secrets.azureTts, "Azure 播报资源密钥")
+                validateAzureSpeechKey(secrets.azureTts)
+                validateAzureSpeechConfig(settings.azureTts, synthesis = true)
+            }
             TtsProvider.LOCAL -> {
                 required(settings.localTtsModelId, "本地播报模型")
                 required(settings.localTtsVoiceId, "本地播报音色")
@@ -84,6 +109,31 @@ internal fun validateSpeechSettings(settings: SpeechSettings, secrets: SpeechCre
             }
         }
     } else when (settings.asr) {
+        AsrProvider.DEEPSEEK -> {
+            validateDeepSeekSpeechConfig(settings.deepSeekAsr, false)
+            validateDeepSeekSpeechKey(secrets.deepSeekAsr)
+        }
+        AsrProvider.XIAOMI -> {
+            validateXiaomiMiMoConfig(settings.xiaomiAsr, false)
+            validateXiaomiMiMoKey(secrets.xiaomiAsr)
+        }
+        AsrProvider.BAIDU -> {
+            validateBaiduSpeechConfig(settings.baiduAsr, false)
+            validateBaiduSpeechCredentials(secrets.baiduAsrApiKey, secrets.baiduAsrSecretKey)
+        }
+        AsrProvider.IFLYTEK -> {
+            validateIflytekSpeechConfig(settings.iflytekAsr, false)
+            validateIflytekSpeechKeys(secrets.iflytekAsrApiKey, secrets.iflytekAsrApiSecret)
+        }
+        AsrProvider.TENCENT -> {
+            validateTencentSpeechConfig(settings.tencentAsr, false)
+            validateTencentSpeechKeys(secrets.tencentAsrSecretId, secrets.tencentAsrSecretKey)
+        }
+        AsrProvider.AZURE -> {
+            required(secrets.azureAsr, "Azure 识别资源密钥")
+            validateAzureSpeechKey(secrets.azureAsr)
+            validateAzureSpeechConfig(settings.azureAsr, synthesis = false)
+        }
         AsrProvider.DOUBAO -> {
             required(secrets.doubaoAsr, "豆包识别凭据")
             speechBaseUrl(settings.doubaoAsr.baseUrl)

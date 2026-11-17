@@ -21,6 +21,8 @@ internal suspend fun recognizeSpeechStream(
     onEndpoint: () -> Unit,
     endpointSilenceMs: Int,
 ): String = withTimeout(90_000) {
+    if (settings.asr == AsrProvider.IFLYTEK) return@withTimeout recognizeIflytekStream(settings.iflytekAsr,
+        credentials.iflytekAsrApiKey, credentials.iflytekAsrApiSecret, frames, onReady, onPreview, onEndpoint, endpointSilenceMs)
     // 服务端在静音达到断句时长后给出确定结果；自动结束时断句时长就是用户可感知的“停顿多久算说完”。
     // 不自动结束时沿用服务默认断句，只影响预览分段，不会提前结束录音。
     val automaticEndpoint = endpointSilenceMs > 0

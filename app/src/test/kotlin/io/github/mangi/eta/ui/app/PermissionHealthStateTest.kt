@@ -8,6 +8,17 @@ import org.junit.Test
 
 class PermissionHealthStateTest {
     @Test
+    fun notificationPolicyActionOnlyAppearsWhileAccessIsMissing() {
+        val missing = notificationPolicyPermissionHealthItem(granted = false)
+        assertEquals(PermissionStatusUi.Missing, missing.status)
+        assertEquals("设置", missing.primaryActionLabel)
+
+        val granted = notificationPolicyPermissionHealthItem(granted = true)
+        assertEquals(PermissionStatusUi.Available, granted.status)
+        assertEquals(null, granted.primaryActionLabel)
+    }
+
+    @Test
     fun optionalRootIsNotCountedAsAFaultButDisconnectedAccessibilityIs() {
         val root = PermissionHealthItemUi("root", "Root", "", PermissionStatusUi.Disabled, null, requiredForCore = false)
         val accessibility = PermissionHealthItemUi("accessibility", "Accessibility", "", PermissionStatusUi.Warning, "Settings")

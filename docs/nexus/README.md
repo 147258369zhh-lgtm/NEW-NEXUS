@@ -2,7 +2,21 @@
 
 本目录承接 `ARCHITECTURE_OVERHAUL_MASTER_PLAN_2026-11-10.md`，把大改拆成可以直接执行和验收的文档。
 
+## v6 正式执行入口
+
+> [Nexus v6 正式执行计划（2026-11-12）](31_V6_EXECUTION_PLAN_2026-11-12.md)：唯一执行清单，包含 D01-D14 依赖与验收、当前状态、发布顺序和下一步。
+
+> [NEXA UI Foundation v1.2（2026-11-14）](35_UI_FOUNDATION_SYSTEM_2026-11-14.md)：组件级视觉与交互基础评审稿，把 146 条输入调用收敛为 10 个角色、23 个搜索入口、401 个按钮调用收敛为 10 个动作角色，并规定 Material Symbols Rounded SVG、裸图标、ColorOS 17 派生材质与最终“经典 / 液晶玻璃”双皮肤；附可交互 HTML、PDF 和 JSON 令牌。本轮只做设计基础，没有修改应用代码。
+
 ## 当前基线
+
+> 当前执行计划：[基于 ETA 复用与正式包交付 R1–R8](30_ETA_REUSE_DELIVERY_PLAN_2026-11-11.md)。由用户承担真机和长期验收，助手完成实际接线、最小必要验证和正式签名桌面交付；旧阶段文档保留历史证据。
+
+> 最新子批次：[总模型请求额度与费用回执](29_MODEL_REQUEST_BUDGET_2026-11-11.md)；前一批为[软预算确认与当前 Goal 限额](28_SOFT_BUDGET_AND_LIVE_GOAL_LIMITS_2026-11-11.md)。正式恢复权尚未切换。
+
+> N1 最新实装与完整测试证据：[23_CANONICAL_EXECUTION_STORE_2026-11-10.md](23_CANONICAL_EXECUTION_STORE_2026-11-10.md)。它仍是局部 L2 证据，不代表恢复接管或真机验收通过。
+
+> 最新实施入口：[Runtime 原始审计与复核](20_RUNTIME_AUDIT_2026-11-10.md) → [N0–N9 实装计划](21_REAL_INTEGRATION_PLAN_2026-11-10.md) → [当前证据与剩余工作](22_IMPLEMENTATION_PROGRESS_2026-11-10.md)。旧阶段说明保留为历史记录，实际生产接线与验收状态以最新证据为准。
 
 - 源码来源：Eta 4.11.8，提交 `8f005e3`。
 - 新产品：Nexus。

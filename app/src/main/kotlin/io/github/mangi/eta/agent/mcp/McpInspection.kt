@@ -18,8 +18,7 @@ internal suspend fun <T> inspectMcp(
     operation: (McpClient) -> T,
 ): T = withTimeout(timeoutMillis) {
     if (server.launchCommand.isNotBlank()) {
-        McpProcessManager.ensureStarted(McpServerRepository.appContext(), server)
-        McpProcessManager.awaitReady(server)
+        McpProcessManager.ensureReady(McpServerRepository.appContext(), server)
     }
     suspendCancellableCoroutine { continuation ->
         val client = try {

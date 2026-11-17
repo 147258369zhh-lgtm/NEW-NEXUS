@@ -24,6 +24,39 @@ class PromptInjectionStoreTest {
     }
 
     @Test
+    fun newConversationDefaultIsCopiedOnceWithoutChangingExistingBindings() {
+        val first = PromptTemplate(name = "first", blocks = listOf(PromptBlock(title = "rule", content = "one")))
+        val second = PromptTemplate(name = "second", blocks = listOf(PromptBlock(title = "rule", content = "two")))
+        assertTrue(PromptInjectionStore.saveTemplate(first))
+        assertTrue(PromptInjectionStore.saveTemplate(second))
+        assertTrue(PromptInjectionStore.bind(first.id, PromptTarget.NEW_CONVERSATION, PromptInheritance.REPLACE))
+        assertTrue(PromptInjectionStore.bindNewConversationDefault("new-a"))
+        assertTrue(PromptInjectionStore.bind(second.id, PromptTarget.NEW_CONVERSATION))
+        assertTrue(PromptInjectionStore.bindNewConversationDefault("new-a"))
+        assertTrue(PromptInjectionStore.bindNewConversationDefault("new-b"))
+        assertEquals(first.id, PromptInjectionStore.binding(PromptTarget.conversation("new-a"))?.templateId)
+        assertEquals(PromptInheritance.REPLACE, PromptInjectionStore.binding(PromptTarget.conversation("new-a"))?.inheritance)
+        assertEquals(second.id, PromptInjectionStore.binding(PromptTarget.conversation("new-b"))?.templateId)
+        assertNull(PromptInjectionStore.binding(PromptTarget.conversation("old")))
+    }
+
+    @Test
+    fun removingConversationBindingKeepsDefaultOtherConversationsAndTemplate() {
+        val template = PromptTemplate(name = "default", blocks = listOf(PromptBlock(title = "rule", content = "one")))
+        assertTrue(PromptInjectionStore.saveTemplate(template))
+        assertTrue(PromptInjectionStore.bind(template.id, PromptTarget.NEW_CONVERSATION))
+        assertTrue(PromptInjectionStore.bindNewConversationDefault("deleted"))
+        assertTrue(PromptInjectionStore.bindNewConversationDefault("kept"))
+
+        assertTrue(PromptInjectionStore.unbind(PromptTarget.conversation("deleted")))
+
+        assertNull(PromptInjectionStore.binding(PromptTarget.conversation("deleted")))
+        assertEquals(template.id, PromptInjectionStore.binding(PromptTarget.conversation("kept"))?.templateId)
+        assertEquals(template.id, PromptInjectionStore.binding(PromptTarget.NEW_CONVERSATION)?.templateId)
+        assertEquals(template.id, PromptInjectionStore.template(template.id)?.id)
+    }
+
+    @Test
     fun oneTemplateCanTargetSeveralIndependentScopesButOneScopeHasOneOwner() {
         val first = PromptTemplate(name = "first", blocks = listOf(PromptBlock(title = "rule", content = "one")))
         val second = PromptTemplate(name = "second", blocks = listOf(PromptBlock(title = "rule", content = "two")))

@@ -2,6 +2,7 @@ package io.github.mangi.eta.agent.control
 
 import android.content.Context
 import java.io.File
+import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -34,11 +35,18 @@ internal class EtaAppControlAuditStore(context: Context) {
         durationMs: Long,
         before: JSONObject? = null,
         after: JSONObject? = null,
+        origin: SettingsControlOrigin? = null,
+        phase: String? = null,
     ): JSONObject = synchronized(lock) {
         val entry = JSONObject()
             .put("id", UUID.randomUUID().toString())
             .put("timestamp", System.currentTimeMillis())
-            .put("actor", "software_butler")
+            .put("actor", origin?.actor?.name ?: "software_butler")
+            .put("sourceAgent", origin?.sourceAgent?.take(256))
+            .put("sourceRunId", origin?.sourceRunId)
+            .put("reason", origin?.reason?.let(::redactString)?.take(MAX_STRING_LENGTH))
+            .put("settingsGrantId", origin?.grantId ?: JSONObject.NULL)
+            .put("phase", phase)
             .put("operation", operation)
             .put("capabilityId", capabilityId)
             .put("parameters", redactObject(parameters, depth = 0))
@@ -48,9 +56,40 @@ internal class EtaAppControlAuditStore(context: Context) {
             .put("undone", false)
         before?.let { entry.put("before", redactObject(it, depth = 0)) }
         after?.let { entry.put("after", redactObject(it, depth = 0)) }
-        val entries = (readEntries() + entry).takeLast(MAX_ENTRIES)
+        before?.let { entry.put("beforeHash", SettingsControlSnapshots.hash(it)) }
+        after?.let { entry.put("afterHash", SettingsControlSnapshots.hash(it)) }
+        entry.put("rollbackSafe", before != null && after != null &&
+            SettingsControlSnapshots.equal(before, entry.getJSONObject("before")) &&
+            SettingsControlSnapshots.equal(after, entry.getJSONObject("after")))
+        val history = readEntries() + entry
+        val diagnosticIds = history.filterNot(::isSettingsMutation).takeLast(MAX_ENTRIES).mapTo(hashSetOf()) { it.optString("id") }
+        val entries = history.filter { isSettingsMutation(it) || it.optString("id") in diagnosticIds }
         writeEntries(entries)
         entry
+    }
+
+    fun find(auditId: String): JSONObject? = synchronized(lock) {
+        readEntries().firstOrNull { it.optString("id") == auditId }
+    }
+
+    private fun isSettingsMutation(entry: JSONObject) = entry.optString("capabilityId").startsWith("settings.") &&
+        entry.optString("operation") in setOf("execute", "undo")
+
+    fun settleMutation(id: String, phase: String, after: JSONObject?, durationMs: Long, errorCode: String = ""): JSONObject = synchronized(lock) {
+        require(phase in setOf("APPLIED", "NO_CHANGE", "FAILED", "UNCERTAIN"))
+        val entries = readEntries()
+        val entry = entries.firstOrNull { it.optString("id") == id } ?: error("SETTINGS_AUDIT_NOT_FOUND")
+        check(entry.optString("phase") == "PENDING") { "SETTINGS_AUDIT_ALREADY_SETTLED" }
+        entry.put("phase", phase).put("success", phase in setOf("APPLIED", "NO_CHANGE"))
+            .put("durationMs", durationMs.coerceAtLeast(0)).put("errorCode", errorCode)
+            .put("completedAt", System.currentTimeMillis())
+        after?.let { entry.put("after", redactObject(it, 0)).put("afterHash", SettingsControlSnapshots.hash(it)) }
+        entry.put("rollbackSafe", entry.optJSONObject("before")?.let { before ->
+            entry.optString("beforeHash") == SettingsControlSnapshots.hash(before) && after != null &&
+                SettingsControlSnapshots.equal(after, entry.getJSONObject("after"))
+        } == true)
+        writeEntries(entries)
+        JSONObject(entry.toString())
     }
 
     fun markUndone(auditId: String): Boolean = synchronized(lock) {
@@ -79,17 +118,20 @@ internal class EtaAppControlAuditStore(context: Context) {
             file.readText(StandardCharsets.UTF_8).let { raw ->
                 val array = JSONArray(raw.ifBlank { "[]" })
                 buildList {
-                    for (index in 0 until minOf(array.length(), MAX_ENTRIES)) {
+                    for (index in 0 until array.length()) {
                         array.optJSONObject(index)?.let(::add)
                     }
                 }
             }
-        }.getOrDefault(emptyList())
+        }.getOrElse { throw EtaControlException("AUDIT_STORAGE_INVALID", "设置记录无法读取，请先核对备份") }
     }
 
     private fun writeEntries(entries: List<JSONObject>) {
         val temporary = File(file.parentFile, "${file.name}.tmp")
-        temporary.writeText(JSONArray(entries).toString(), StandardCharsets.UTF_8)
+        FileOutputStream(temporary).use { stream ->
+            stream.write(JSONArray(entries).toString().toByteArray(StandardCharsets.UTF_8))
+            stream.fd.sync()
+        }
         runCatching {
             Files.move(
                 temporary.toPath(),
@@ -129,12 +171,12 @@ internal class EtaAppControlAuditStore(context: Context) {
     }
 
     private fun redactString(value: String): String = INLINE_SECRET.replace(value) { match ->
-        "${match.groupValues[1]}=$REDACTED"
+        "${match.groupValues[1]}$REDACTED"
     }
 
     private fun isSensitiveKey(key: String): Boolean {
         val normalized = key.lowercase()
-        return SENSITIVE_PARTS.any(normalized::contains)
+        return normalized == "body" || SENSITIVE_PARTS.any(normalized::contains)
     }
 
     private companion object {
@@ -158,9 +200,10 @@ internal class EtaAppControlAuditStore(context: Context) {
             "private_key",
             "access_key",
             "refresh_key",
+            "headers",
         )
         val INLINE_SECRET = Regex(
-            "(?i)((?:password|passwd|secret|token|api[_-]?key|authorization|credential)=)[^&\\s]+",
+            "(?i)((?:password|passwd|secret|token|api[_-]?key|authorization|credential)=|Bearer\\s+)[^&\\s]+",
         )
         val lock = Any()
     }

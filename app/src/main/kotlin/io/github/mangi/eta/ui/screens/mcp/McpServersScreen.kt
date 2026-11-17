@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -28,11 +29,12 @@ import androidx.compose.material.icons.rounded.Science
 import androidx.compose.material.icons.rounded.Upload
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
@@ -46,6 +48,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.mcp.McpServerManager
+import io.github.mangi.eta.agent.mcp.McpServerLifecycleService
 import io.github.mangi.eta.agent.mcp.validateMcpEndpoint
 import io.github.mangi.eta.agent.capability.McpPortableCodec
 import io.github.mangi.eta.agent.capability.McpPortableConfigService
@@ -65,6 +68,7 @@ import io.github.mangi.eta.ui.components.EtaStatusTone
 import io.github.mangi.eta.ui.components.EtaUiMetrics
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.NexusSettingsTabs
 import io.github.mangi.eta.ui.components.etaGlassSurface
 import io.github.mangi.eta.ui.navigation.AppRoute
 import io.github.mangi.eta.ui.pages.providers.TagChip
@@ -77,16 +81,16 @@ import java.io.ByteArrayOutputStream
 import java.util.UUID
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.BasicComponentDefaults
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle as SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.preference.ArrowPreference
-import top.yukonga.miuix.kmp.preference.SwitchPreference
+import io.github.mangi.eta.ui.components.NexusSettingsArrowPreference as ArrowPreference
+import io.github.mangi.eta.ui.components.NexusSettingsSwitchPreference as SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
 import org.json.JSONObject
@@ -99,7 +103,9 @@ internal fun McpServersScreen(
     val context = LocalContext.current
     val resources = LocalResources.current
     val scope = rememberCoroutineScope()
-    val servers by McpServerRepository.serversFlow().collectAsState(initial = emptyList())
+    var refreshServersKey by remember { mutableIntStateOf(0) }
+    val serversLoad = rememberMcpServersLoadState(refreshServersKey)
+    val servers = (serversLoad as? McpServersLoadState.Loaded)?.servers.orEmpty()
     var showAdd by remember { mutableStateOf(false) }
     var name by remember { mutableStateOf("") }
     var url by remember { mutableStateOf("") }
@@ -109,19 +115,24 @@ internal fun McpServersScreen(
     var stdioArguments by remember { mutableStateOf("") }
     var launchCommand by remember { mutableStateOf("") }
     var workingDirectory by remember { mutableStateOf("") }
+    var executionTarget by remember { mutableStateOf("android") }
+    var linuxBackend by remember { mutableStateOf("proot") }
     var working by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val portableService = remember(context.applicationContext) {
         McpPortableConfigService(context.applicationContext)
     }
     var batchWorking by remember { mutableStateOf(false) }
+    var selectedTab by rememberSaveable { mutableStateOf(0) }
+    val connectionsListState = rememberLazyListState()
+    val transferListState = rememberLazyListState()
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null || batchWorking) return@rememberLauncherForActivityResult
         scope.launch {
             batchWorking = true
             val result = withContext(Dispatchers.IO) {
-                runCatching {
+                runCatchingPreservingCancellation {
                     portableService.importJson(readBoundedMcpConfig(context, uri))
                 }
             }
@@ -149,7 +160,7 @@ internal fun McpServersScreen(
         scope.launch {
             batchWorking = true
             val result = withContext(Dispatchers.IO) {
-                runCatching {
+                runCatchingPreservingCancellation {
                     val json = portableService.exportJson()
                     val output = context.contentResolver.openOutputStream(uri)
                         ?: error("无法写入所选文件")
@@ -172,6 +183,30 @@ internal fun McpServersScreen(
     MiuixScaffoldPage(
         title = stringResource(R.string.route_mcp_servers),
         onBack = onBack,
+        listState = if (selectedTab == 0) connectionsListState else transferListState,
+        aboveContent = {
+            Column {
+                NexusSettingsTabs(
+                    tabs = listOf(stringResource(R.string.settings_tab_connections), stringResource(R.string.settings_tab_transfer)),
+                    selectedTab = selectedTab,
+                    onTabSelected = { selectedTab = it },
+                )
+                if (batchWorking) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        InfiniteProgressIndicator(size = 18.dp)
+                        Text("正在迁移 MCP 连接…", style = MiuixTheme.textStyles.footnote1)
+                    }
+                }
+                if (serversLoad is McpServersLoadState.Failed) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(stringResource(R.string.mcp_servers_load_failed), modifier = Modifier.weight(1f), color = MiuixTheme.colorScheme.error)
+                        TextButton(text = stringResource(R.string.action_retry), onClick = { refreshServersKey++ })
+                    }
+                }
+            }
+        },
         actions = {
             IconButton(enabled = !batchWorking, onClick = { showAdd = true }) {
                 Icon(
@@ -181,36 +216,46 @@ internal fun McpServersScreen(
             }
         },
     ) {
-        item(key = "mcp_overview") {
-            McpConnectionOverviewCard(servers)
+        if (selectedTab == 0) item(key = "mcp_overview") {
+            if (serversLoad is McpServersLoadState.Loaded) McpConnectionOverviewCard(servers)
         }
-        item(key = "servers") {
-            SmallTitle(
-                stringResource(R.string.mcp_configured_servers, servers.size),
-                modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
-            )
-            if (servers.isEmpty()) {
-                Card(Modifier.padding(horizontal = 12.dp).padding(bottom = EtaUiMetrics.groupGap)) {
-                    ListEmptyState(
-                        title = stringResource(R.string.mcp_empty_title),
-                        summary = stringResource(R.string.mcp_empty_summary),
-                        icon = Icons.Rounded.Hub,
-                        action = {
-                            TextButton(text = stringResource(R.string.mcp_add_server), onClick = { showAdd = true })
-                        },
-                    )
-                }
-            } else {
-                servers.forEach { server ->
-                    McpServerListCard(server) { onNavigate(AppRoute.McpServerDetail(server.id)) }
+        if (selectedTab == 0) {
+            when (serversLoad) {
+                McpServersLoadState.Loading -> item(key = "servers_loading") { Text(
+                    text = stringResource(R.string.mcp_servers_loading),
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 18.dp),
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                ) }
+                McpServersLoadState.Failed -> Unit
+                is McpServersLoadState.Loaded -> {
+                    item(key = "servers_heading") { SmallTitle(
+                        stringResource(R.string.mcp_configured_servers, servers.size),
+                        modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
+                    ) }
+                    if (shouldShowMcpServersEmptyState(serversLoad)) {
+                        item(key = "servers_empty") { Card(Modifier.padding(horizontal = 16.dp).padding(bottom = EtaUiMetrics.groupGap)) {
+                            ListEmptyState(
+                                title = stringResource(R.string.mcp_empty_title),
+                                summary = stringResource(R.string.mcp_empty_summary),
+                                icon = Icons.Rounded.Hub,
+                                action = {
+                                    TextButton(text = stringResource(R.string.mcp_add_server), onClick = { showAdd = true })
+                                },
+                            )
+                        } }
+                    } else {
+                        servers.forEach { server ->
+                            item(key = "server:${server.id}") { McpServerListCard(server) { onNavigate(AppRoute.McpServerDetail(server.id)) } }
+                        }
+                    }
                 }
             }
         }
-        item(key = "portable") {
+        if (selectedTab == 1) item(key = "portable") {
             SmallTitle("批量迁移", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
             Card(
                 modifier = Modifier
-                    .padding(horizontal = 12.dp)
+                    .padding(horizontal = 16.dp)
                     .padding(bottom = EtaUiMetrics.groupGap),
             ) {
                 DetailListRow(
@@ -229,8 +274,12 @@ internal fun McpServersScreen(
                     title = "导出 MCP 连接",
                     subtitle = "仅导出名称、地址、协议、认证类型和工具偏好，不导出 Bearer Token",
                     icon = Icons.Rounded.Download,
-                    value = if (servers.isEmpty()) "暂无连接" else "${servers.size} 个连接",
-                    enabled = servers.isNotEmpty() && !batchWorking,
+                    value = when (serversLoad) {
+                        McpServersLoadState.Loading -> stringResource(R.string.mcp_servers_loading)
+                        McpServersLoadState.Failed -> stringResource(R.string.mcp_servers_load_failed)
+                        is McpServersLoadState.Loaded -> if (servers.isEmpty()) "暂无连接" else "${servers.size} 个连接"
+                    },
+                    enabled = serversLoad is McpServersLoadState.Loaded && servers.isNotEmpty() && !batchWorking,
                     onClick = { exportLauncher.launch("eta-mcp-connections.json") },
                 )
             }
@@ -322,6 +371,10 @@ internal fun McpServersScreen(
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
+                if (transportType == McpTransportType.STDIO || launchCommand.isNotBlank()) {
+                    McpExecutionBindingPicker(executionTarget, linuxBackend, !working,
+                        onTarget = { executionTarget = it }, onBackend = { linuxBackend = it })
+                }
                 TextField(
                     value = workingDirectory,
                     onValueChange = { workingDirectory = it },
@@ -360,7 +413,7 @@ internal fun McpServersScreen(
                     if (error == null) scope.launch {
                         working = true
                         val result = withContext(Dispatchers.IO) {
-                            runCatching {
+                            runCatchingPreservingCancellation {
                                 val draft = McpServerSetting(
                                     id = UUID.randomUUID().toString(),
                                     name = normalizedName,
@@ -379,6 +432,8 @@ internal fun McpServersScreen(
                                         .toList(),
                                     launchCommand = launchCommand.trim(),
                                     workingDirectory = workingDirectory.trim(),
+                                    executionTarget = executionTarget,
+                                    linuxBackend = linuxBackend,
                                 )
                                 val discovered = McpServerManager.discover(draft, token)
                                 McpServerRepository.add(discovered, token)
@@ -394,6 +449,8 @@ internal fun McpServersScreen(
                             stdioArguments = ""
                             launchCommand = ""
                             workingDirectory = ""
+                            executionTarget = "android"
+                            linuxBackend = "proot"
                             error = null
                             Toast.makeText(
                                 context,
@@ -414,7 +471,7 @@ internal fun McpServersScreen(
 private fun McpConnectionOverviewCard(servers: List<McpServerSetting>) {
     val healthy = servers.count { it.enabled && it.lastError.isNullOrBlank() && it.lastHealthyAt != null }
     val tools = servers.sumOf { it.activeTools.size }
-    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.secondary)) {
+    Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.secondary)) {
         Row(
             modifier = Modifier.padding(16.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -430,7 +487,7 @@ private fun McpConnectionOverviewCard(servers: List<McpServerSetting>) {
                 }
             }
             EtaStatusPill(
-                text = if (servers.isEmpty()) "未配置" else if (healthy > 0) "可用" else "待连接",
+                text = if (servers.isEmpty()) "未配置" else if (healthy > 0) "曾连接成功" else "待连接",
                 tone = if (healthy > 0) EtaStatusTone.Positive else EtaStatusTone.Neutral,
             )
         }
@@ -443,10 +500,10 @@ private fun McpServerListCard(server: McpServerSetting, onClick: () -> Unit) {
     val status = when {
         !server.enabled -> "已停用" to EtaStatusTone.Neutral
         failed -> "需处理" to EtaStatusTone.Danger
-        server.lastHealthyAt != null -> "已连接" to EtaStatusTone.Positive
+        server.lastHealthyAt != null -> "最近检测成功" to EtaStatusTone.Positive
         else -> "待检测" to EtaStatusTone.Warning
     }
-    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.secondary)) {
+    Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.secondary)) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -472,16 +529,21 @@ private fun McpServerListCard(server: McpServerSetting, onClick: () -> Unit) {
                     EtaStatusPill(text = status.first, tone = status.second)
                 }
                 Text(
-                    text = server.lastError?.takeIf(String::isNotBlank)?.take(90)
-                        ?: if (server.transportType == McpTransportType.STDIO) server.stdioCommand
-                        else server.url,
+                    text = when {
+                        !server.enabled -> "启用连接后可使用已开放的工具"
+                        failed -> server.lastError.orEmpty().take(90)
+                        server.lastHealthyAt == null -> "打开连接详情并刷新工具列表"
+                        server.activeTools.isEmpty() -> "打开连接详情并启用需要的工具"
+                        server.transportType == McpTransportType.STDIO -> server.stdioCommand
+                        else -> server.url
+                    },
                     style = MiuixTheme.textStyles.footnote1,
                     color = if (failed) MiuixTheme.colorScheme.error else MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    TagChip(if (server.transportType == McpTransportType.STDIO) "STDIO" else "HTTP")
+                    TagChip(if (server.transportType == McpTransportType.STDIO) "STDIO · ${mcpExecutionLabel(server.executionTarget, server.linuxBackend)}" else "HTTP")
                     TagChip("${server.activeTools.size}/${server.tools.size} 工具", TagChipTone.Emphasized)
                 }
             }
@@ -521,12 +583,19 @@ internal fun McpServerDetailScreen(
     val context = LocalContext.current
     val resources = LocalResources.current
     val scope = rememberCoroutineScope()
-    val servers by McpServerRepository.serversFlow().collectAsState(initial = emptyList())
+    var refreshServersKey by remember { mutableIntStateOf(0) }
+    val serversLoad = rememberMcpServersLoadState(refreshServersKey)
+    val servers = (serversLoad as? McpServersLoadState.Loaded)?.servers.orEmpty()
     val server = servers.firstOrNull { it.id == serverId }
     var working by remember { mutableStateOf(false) }
     var pendingRiskyTool by remember { mutableStateOf<McpToolDefinition?>(null) }
     var showDelete by remember { mutableStateOf(false) }
     var showToken by remember { mutableStateOf(false) }
+    var showExecution by remember { mutableStateOf(false) }
+    var selectedExecutionTarget by remember { mutableStateOf("android") }
+    var selectedLinuxBackend by remember { mutableStateOf("proot") }
+    var tokenRevision by remember(serverId) { mutableStateOf<String?>(null) }
+    var tokenRevisionReady by remember(serverId) { mutableStateOf(false) }
     var token by remember { mutableStateOf("") }
     var tokenError by remember(serverId) { mutableStateOf<String?>(null) }
     var credentialStatus by remember(serverId) { mutableStateOf<McpCredentialStatus?>(null) }
@@ -535,6 +604,24 @@ internal fun McpServerDetailScreen(
     var debugResult by remember(serverId) { mutableStateOf<String?>(null) }
     var debugFailed by remember(serverId) { mutableStateOf(false) }
     var debugWorking by remember { mutableStateOf(false) }
+    var selectedTab by rememberSaveable(serverId) { mutableStateOf(0) }
+    val connectionListState = rememberLazyListState()
+    val toolsListState = rememberLazyListState()
+
+    fun changeSetting(id: String, parameters: org.json.JSONObject) {
+        if (working) return
+        working = true
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    io.github.mangi.eta.agent.control.NexusSettingsControlPlane.get(context).applyJson(
+                        id, parameters, io.github.zhh_lgtm.nexus.application.api.SettingsActorKind.LOCAL_USER, "mcp_settings")
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled
+            } catch (_: Exception) { Toast.makeText(context, "设置未保存，请重试", Toast.LENGTH_SHORT).show()
+            } finally { working = false }
+        }
+    }
 
     LaunchedEffect(server, working) {
         if (working) return@LaunchedEffect
@@ -544,27 +631,68 @@ internal fun McpServerDetailScreen(
         }
     }
 
+    WindowDialog(
+        show = showExecution && server != null,
+        title = "MCP 运行位置",
+        onDismissRequest = { if (!working) showExecution = false },
+    ) {
+        McpExecutionBindingPicker(selectedExecutionTarget, selectedLinuxBackend, !working,
+            onTarget = { selectedExecutionTarget = it }, onBackend = { selectedLinuxBackend = it })
+        MiuixDialogActions(confirmText = "保存", confirmEnabled = !working,
+            onCancel = { showExecution = false },
+            onConfirm = {
+                server?.let {
+                    changeSetting("settings.mcp_server", JSONObject().put("serverId", it.id).put("enabled", it.enabled)
+                        .put("executionTarget", selectedExecutionTarget).put("linuxBackend", selectedLinuxBackend))
+                }
+                showExecution = false
+            })
+    }
+
     MiuixScaffoldPage(
         title = server?.name ?: stringResource(R.string.route_mcp_server_detail),
         onBack = onBack,
+        listState = if (selectedTab == 0) connectionListState else toolsListState,
+        aboveContent = {
+            if (server != null) Column {
+                NexusSettingsTabs(
+                    tabs = listOf(stringResource(R.string.settings_tab_connections), stringResource(R.string.settings_tab_tools)),
+                    selectedTab = selectedTab,
+                    onTabSelected = { selectedTab = it },
+                )
+                if (working || debugWorking) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        InfiniteProgressIndicator(size = 18.dp)
+                        Text(if (debugWorking) "工具运行中…" else "正在更新连接…", style = MiuixTheme.textStyles.footnote1)
+                    }
+                }
+                server.lastError?.takeIf(String::isNotBlank)?.let { message ->
+                    Text(message, color = MiuixTheme.colorScheme.error, style = MiuixTheme.textStyles.footnote1,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp))
+                }
+            }
+        },
         actions = {
             IconButton(
                 enabled = server != null && !working,
                 onClick = {
                     scope.launch {
                         working = true
-                        val result = withContext(Dispatchers.IO) {
-                            runCatching { McpServerManager.refresh(serverId) }
-                        }
-                        working = false
-                        Toast.makeText(
-                            context,
-                            result.fold(
-                                onSuccess = { resources.getString(R.string.mcp_refreshed, it.tools.size) },
-                                onFailure = { it.message ?: resources.getString(R.string.mcp_refresh_failed) },
-                            ),
-                            Toast.LENGTH_SHORT,
-                        ).show()
+                        try {
+                            val result = withContext(Dispatchers.IO) {
+                                runCatchingPreservingCancellation { McpServerManager.refresh(serverId) }
+                            }
+                            Toast.makeText(
+                                context,
+                                result.fold(
+                                    onSuccess = { resources.getString(R.string.mcp_refreshed, it.tools.size) },
+                                    onFailure = { it.message ?: resources.getString(R.string.mcp_refresh_failed) },
+                                ),
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        } finally { working = false }
                     }
                 },
             ) {
@@ -577,15 +705,28 @@ internal fun McpServerDetailScreen(
     ) {
         if (server == null) {
             item(key = "missing") {
-                ListEmptyState(title = stringResource(R.string.mcp_server_missing))
+                when (serversLoad) {
+                    McpServersLoadState.Loading -> Text(
+                        stringResource(R.string.mcp_servers_loading),
+                        modifier = Modifier.padding(16.dp),
+                    )
+                    McpServersLoadState.Failed -> Column(Modifier.padding(16.dp)) {
+                        Text(stringResource(R.string.mcp_servers_load_failed))
+                        TextButton(
+                            text = stringResource(R.string.action_retry),
+                            onClick = { refreshServersKey++ },
+                        )
+                    }
+                    is McpServersLoadState.Loaded -> ListEmptyState(title = stringResource(R.string.mcp_server_missing))
+                }
             }
             return@MiuixScaffoldPage
         }
-        item(key = "server") {
+        if (selectedTab == 0) item(key = "server") {
             SmallTitle(stringResource(R.string.mcp_server_settings))
             Card(
                 modifier = Modifier
-                    .padding(horizontal = 12.dp)
+                    .padding(horizontal = 16.dp)
                     .padding(bottom = 12.dp),
             ) {
                 SwitchPreference(
@@ -597,12 +738,20 @@ internal fun McpServerDetailScreen(
                     },
                     checked = server.enabled,
                     onCheckedChange = { enabled ->
-                        scope.launch(Dispatchers.IO) {
-                            McpServerRepository.update(server.copy(enabled = enabled))
-                            if (!enabled) McpServerManager.stopLocal(server.id)
-                        }
+                        changeSetting("settings.mcp_server", org.json.JSONObject().put("serverId", serverId).put("enabled", enabled))
                     },
                 )
+                if (server.transportType == McpTransportType.STDIO || server.launchCommand.isNotBlank()) {
+                    ArrowPreference(title = "运行位置",
+                        summary = mcpExecutionLabel(server.executionTarget, server.linuxBackend),
+                        onClick = {
+                            if (!working) {
+                                selectedExecutionTarget = server.executionTarget
+                                selectedLinuxBackend = server.linuxBackend
+                                showExecution = true
+                            }
+                        })
+                }
                 ArrowPreference(
                     title = stringResource(R.string.mcp_update_token),
                     summary = stringResource(
@@ -614,7 +763,13 @@ internal fun McpServerDetailScreen(
                             else -> R.string.mcp_credentials_checking
                         }
                     ),
-                    onClick = { if (!working) { tokenError = null; showToken = true } },
+                    onClick = {
+                        if (!working) {
+                            tokenError = null
+                            tokenRevisionReady = false
+                            showToken = true
+                        }
+                    },
                 )
                 ArrowPreference(
                     title = stringResource(R.string.mcp_browse_resources),
@@ -638,57 +793,65 @@ internal fun McpServerDetailScreen(
                     onClick = {
                         if (!working) scope.launch {
                             working = true
-                            runCatching { McpServerManager.refresh(serverId) }
-                            working = false
+                            try {
+                                withContext(Dispatchers.IO) { McpServerManager.refresh(serverId) }
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (failure: Exception) {
+                                Toast.makeText(context, failure.message ?: resources.getString(R.string.mcp_refresh_failed), Toast.LENGTH_SHORT).show()
+                            } finally { working = false }
                         }
                     },
                 )
             }
         }
-        item(key = "tools") {
-            SmallTitle(stringResource(R.string.mcp_tools_count, server.tools.size))
-            Card(
-                modifier = Modifier
-                    .padding(horizontal = 12.dp)
-                    .padding(bottom = 12.dp),
-            ) {
-                if (server.tools.isEmpty()) {
+        if (selectedTab == 1) {
+            val ambiguousNames = server.tools.groupingBy { it.name }.eachCount().filterValues { it > 1 }.keys
+            item(key = "tools_heading") { SmallTitle(stringResource(R.string.mcp_tools_count, server.tools.size)) }
+            if (server.tools.isEmpty()) {
+                item(key = "tools_empty") { Card(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
                     ListEmptyState(
                         title = stringResource(R.string.mcp_no_tools),
                         summary = stringResource(R.string.mcp_refresh_tools_hint),
                         icon = Icons.Rounded.Refresh,
                     )
-                } else {
-                    server.tools.forEach { tool ->
+                } }
+            } else {
+                server.tools.forEachIndexed { index, tool ->
+                    item(key = "tool:${tool.name}:$index") { Card(Modifier.padding(horizontal = 16.dp, vertical = 3.dp)) {
+                        Column {
                         val checked = tool.name in server.enabledToolNames
+                        val ambiguous = tool.name in ambiguousNames
                         ArrowPreference(
                             title = stringResource(R.string.mcp_debug_tool),
                             summary = tool.name,
-                            enabled = checked && !working,
+                            enabled = checked && !working && !ambiguous,
                             onClick = { debugTool = tool; debugArgs = "{}"; debugResult = null; debugFailed = false },
                         )
                         SwitchPreference(
                             title = tool.title.ifBlank { tool.name },
-                            summary = toolSummary(tool),
+                            summary = if (ambiguous) "服务返回同名工具，请修正服务后刷新" else toolSummary(tool),
                             checked = checked,
                             onCheckedChange = { enabled ->
-                                if (enabled && tool.readOnlyHint != true) {
+                                if (enabled && ambiguous) {
+                                    Toast.makeText(context, "服务返回同名工具，请修正服务后刷新", Toast.LENGTH_LONG).show()
+                                } else if (enabled && tool.readOnlyHint != true) {
                                     pendingRiskyTool = tool
                                 } else {
-                                    scope.launch(Dispatchers.IO) {
-                                        McpServerRepository.setToolEnabled(serverId, tool.name, enabled)
-                                    }
+                                    changeSetting("settings.mcp_tool", org.json.JSONObject().put("serverId", serverId)
+                                        .put("toolName", tool.name).put("enabled", enabled))
                                 }
                             },
                         )
-                    }
+                        }
+                    } }
                 }
             }
         }
-        item(key = "delete") {
+        if (selectedTab == 0) item(key = "delete") {
             Card(
                 modifier = Modifier
-                    .padding(horizontal = 12.dp)
+                    .padding(horizontal = 16.dp)
                     .padding(top = 4.dp, bottom = 12.dp),
             ) {
                 BasicComponent(
@@ -713,9 +876,8 @@ internal fun McpServerDetailScreen(
                 destructive = true,
                 onCancel = { pendingRiskyTool = null },
                 onConfirm = {
-                    scope.launch(Dispatchers.IO) {
-                        McpServerRepository.setToolEnabled(serverId, tool.name, true)
-                    }
+                    changeSetting("settings.mcp_tool", org.json.JSONObject().put("serverId", serverId)
+                        .put("toolName", tool.name).put("enabled", true))
                     pendingRiskyTool = null
                 },
             )
@@ -794,15 +956,16 @@ internal fun McpServerDetailScreen(
                         }
                         scope.launch {
                             debugWorking = true
-                            val result = runCatching {
-                                withContext(Dispatchers.IO) { McpServerManager.callTool(serverId, current.name, parsed) }
-                            }
-                            debugFailed = result.isFailure
-                            debugResult = result.fold(
-                                onSuccess = { it.toString(2).take(8_000) },
-                                onFailure = { it.message ?: resources.getString(R.string.mcp_debug_failed) },
-                            )
-                            debugWorking = false
+                            try {
+                                val result = runCatchingPreservingCancellation {
+                                    withContext(Dispatchers.IO) { McpServerManager.callTool(serverId, current.name, parsed) }
+                                }
+                                debugFailed = result.isFailure
+                                debugResult = result.fold(
+                                    onSuccess = { it.toString(2).take(8_000) },
+                                    onFailure = { it.message ?: resources.getString(R.string.mcp_debug_failed) },
+                                )
+                            } finally { debugWorking = false }
                         }
                     },
                 )
@@ -810,6 +973,19 @@ internal fun McpServerDetailScreen(
         }
     }
 
+    LaunchedEffect(showToken, serverId) {
+        if (showToken) {
+            tokenRevisionReady = false
+            try {
+                tokenRevision = withContext(Dispatchers.IO) { McpServerRepository.credentialRevision(serverId) }
+                tokenRevisionReady = true
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                tokenError = "无法读取凭据状态，请重新打开"
+            }
+        }
+    }
     WindowDialog(
         show = showToken,
         title = stringResource(R.string.mcp_update_token),
@@ -840,7 +1016,7 @@ internal fun McpServerDetailScreen(
                 modifier = Modifier.padding(top = 16.dp),
                 confirmText = stringResource(if (working) R.string.page_saving_d70d42 else R.string.action_save),
                 cancelEnabled = !working,
-                confirmEnabled = !working,
+                confirmEnabled = !working && tokenRevisionReady,
                 onCancel = { if (!working) { showToken = false; token = ""; tokenError = null } },
                 onConfirm = {
                     server?.let { current ->
@@ -851,6 +1027,7 @@ internal fun McpServerDetailScreen(
                             try {
                                 withContext(Dispatchers.IO) {
                                     McpServerRepository.update(
+                                        current,
                                         current.copy(
                                             authorizationType = if (enteredToken.isBlank()) {
                                                 McpAuthorizationType.NONE
@@ -859,6 +1036,7 @@ internal fun McpServerDetailScreen(
                                             },
                                         ),
                                         bearerToken = enteredToken,
+                                        expectedCredentialRevision = tokenRevision,
                                     )
                                 }
                                 token = ""
@@ -890,8 +1068,15 @@ internal fun McpServerDetailScreen(
             onCancel = { showDelete = false },
             onConfirm = {
                 scope.launch {
-                    withContext(Dispatchers.IO) { McpServerRepository.delete(serverId) }
-                    onBack()
+                    try {
+                        withContext(Dispatchers.IO) { McpServerLifecycleService().delete(serverId) }
+                        onBack()
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: Exception) {
+                        showDelete = false
+                        Toast.makeText(context, failure.message ?: "MCP 服务删除失败", Toast.LENGTH_LONG).show()
+                    }
                 }
             },
         )
@@ -902,4 +1087,35 @@ internal fun McpServerDetailScreen(
 private fun toolSummary(tool: McpToolDefinition): String = when {
     tool.readOnlyHint == true -> tool.description.ifBlank { stringResource(R.string.mcp_read_only_tool) }
     else -> tool.description.ifBlank { stringResource(R.string.mcp_may_modify_data) }
+}
+
+private suspend inline fun <T> runCatchingPreservingCancellation(block: suspend () -> T): Result<T> = try {
+    Result.success(block())
+} catch (cancelled: CancellationException) {
+    throw cancelled
+} catch (failure: Throwable) {
+    Result.failure(failure)
+}
+
+
+private fun mcpExecutionLabel(target: String, backend: String): String =
+    if (target == "android") "Android" else "${if (target == "debian") "Debian" else "Alpine"} · ${if (backend == "proot") "PRoot" else "Root"}"
+
+@Composable
+private fun McpExecutionBindingPicker(target: String, backend: String, enabled: Boolean, onTarget: (String) -> Unit, onBackend: (String) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("运行位置", style = MiuixTheme.textStyles.body2)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("android" to "Android", "debian" to "Debian", "alpine" to "Alpine").forEach { (value, label) ->
+                TextButton(text = if (target == value) "✓ $label" else label, enabled = enabled, onClick = { onTarget(value) })
+            }
+        }
+        if (target != "android") {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(text = if (backend == "chroot") "✓ Root" else "Root", enabled = enabled, onClick = { onBackend("chroot") })
+                TextButton(text = if (backend == "proot") "✓ PRoot" else "PRoot", enabled = enabled, onClick = { onBackend("proot") })
+            }
+            Text("使用所选 Linux 实例，工作目录填写实例内绝对路径。未安装或不可运行时会报错。", style = MiuixTheme.textStyles.footnote2)
+        }
+    }
 }

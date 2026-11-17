@@ -101,7 +101,7 @@ internal object MeetingMarkdownExporter {
             .trim()
             .ifBlank { "meeting" }
         val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
-        return "Nexus-$safeTitle-$stamp.md"
+        return "NEXA-$safeTitle-$stamp.md"
     }
 
     private fun formatTime(epochMillis: Long): String =

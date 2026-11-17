@@ -6,6 +6,7 @@ internal class AgentRuntimeAttachDelivery(
     private val onEvent: (AgentEvent) -> Unit,
     private val onAttachResponse: (Boolean) -> Unit,
     private val onResult: (AgentRuntimeWire.RunResult) -> Unit,
+    private val onProjectionFailure: (Exception) -> Unit = {},
 ) {
     private enum class State {
         REPLAYING,
@@ -19,7 +20,7 @@ internal class AgentRuntimeAttachDelivery(
     fun event(event: AgentEvent) {
         when (state) {
             State.REPLAYING -> replayEvents += event
-            State.LIVE -> onEvent(event)
+            State.LIVE -> deliverSafely { onEvent(event) }
             State.CLOSED -> Unit
         }
     }
@@ -53,9 +54,15 @@ internal class AgentRuntimeAttachDelivery(
         val events = replayEvents.toList()
         replayEvents.clear()
         if (onReplay != null) {
-            onReplay(events)
+            deliverSafely { onReplay(events) }
         } else {
-            events.forEach(onEvent)
+            events.forEach { event -> deliverSafely { onEvent(event) } }
+        }
+    }
+
+    private inline fun deliverSafely(deliver: () -> Unit) {
+        try { deliver() } catch (failure: Exception) {
+            runCatching { onProjectionFailure(failure) }
         }
     }
 }

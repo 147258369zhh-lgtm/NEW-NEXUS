@@ -4,19 +4,22 @@ import android.content.Context
 import io.github.mangi.eta.agent.control.EtaAppControlConfirmation
 import io.github.mangi.eta.agent.control.EtaControlCapabilityInfo
 import io.github.mangi.eta.agent.control.EtaControlDanger
+import io.github.mangi.eta.agent.runtime.RuntimeInvocationScope
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 
 internal object ConnectorTool {
-    fun execute(context: Context, raw: JSONObject): JSONObject = runBlocking {
+    fun execute(context: Context, raw: JSONObject): JSONObject = runBlocking(RuntimeInvocationScope.coroutineContext()) {
         val configStore = ConnectorConfigStore(context)
         val saved = raw.optString("connection_id").takeIf(String::isNotBlank)?.let { id ->
-            configStore.load().firstOrNull { it.id == id } ?: error("连接配置不存在：$id")
+            configStore.load().firstOrNull { it.id == id && it.enabled } ?: error("连接配置不存在或已停用：$id")
         }
         val protocol = (saved?.protocol ?: raw.optString("protocol")).lowercase()
         val security = ConnectorSecurityManager()
-        val savedToken = saved?.let(configStore::token)
-        val transport = when (protocol) {
+        val savedToken = saved?.let(configStore::tokenOrThrow)
+        val transport = if (saved != null) createSavedConnector(context, saved, savedToken, security) else when (protocol) {
+            "dsh" -> io.github.mangi.eta.agent.dsh.DshConnectorTransport(io.github.mangi.eta.agent.dsh.DshHostRepository(context).client(requireNotNull(saved) { "请先添加 DSH 主机" }))
+            "rest" -> RestConnectorTransport(saved?.endpoint ?: required(raw, "endpoint"), savedToken, security)
             "websocket" -> WebSocketConnectorTransport(
                 saved?.endpoint ?: required(raw, "endpoint"),
                 security,
@@ -34,14 +37,21 @@ internal object ConnectorTool {
             else -> throw IllegalArgumentException("不支持的连接协议：$protocol")
         }
         transport.use { active ->
-            val probe = active.probe()
-            require(probe.available) { probe.detail }
-            if (raw.optString("action") == "probe") {
-                return@use JSONObject()
-                    .put("ok", true)
-                    .put("protocol", protocol)
-                    .put("detail", probe.detail)
-                    .put("checkedAt", probe.checkedAt)
+            val controller = RuntimeInvocationScope.controller
+            val cancellation = controller?.register(active::close)
+            try {
+            controller?.throwIfCancelled()
+            if (raw.optString("action") == "probe" || protocol !in setOf("jsonrpc", "graphql")) {
+                val probe = active.probe()
+                controller?.throwIfCancelled()
+                require(probe.available) { probe.detail }
+                if (raw.optString("action") == "probe") {
+                    return@use JSONObject()
+                        .put("ok", true)
+                        .put("protocol", protocol)
+                        .put("detail", probe.detail)
+                        .put("checkedAt", probe.checkedAt)
+                }
             }
             val capabilityId = mapCapability(protocol, raw.optString("capability"))
             if (requiresConfirmation(protocol, capabilityId)) {
@@ -70,17 +80,29 @@ internal object ConnectorTool {
                 arguments = arguments,
             )
             val result = active.invoke(request)
-            JSONObject()
-                .put("ok", true)
-                .put("protocol", protocol)
-                .put("result", result.json)
-                .apply { result.text?.let { put("text", it.take(256_000)) } }
+            controller?.throwIfCancelled()
+            resultEnvelope(protocol, result)
+            } finally { cancellation?.close() }
         }
     }
+
+    internal fun resultEnvelope(protocol: String, result: ConnectorResult): JSONObject = JSONObject()
+        .put("ok", result.success)
+        .put("protocol", protocol)
+        .put("result", result.json)
+        .apply {
+            if (!result.success) {
+                put("code", result.errorCode ?: "CONNECTOR_REMOTE_ERROR")
+                result.errorMessage?.let { put("message", it.take(1000)) }
+            }
+            result.text?.let { put("text", it.take(256_000)) }
+        }
 
     private fun mapCapability(protocol: String, requested: String): String {
         if (requested.isNotBlank()) return requested
         return when (protocol) {
+            "dsh" -> "catalog"
+            "rest" -> "request"
             "websocket", "unix_socket", "broadcast" -> "send"
             "jsonrpc" -> "call"
             "graphql" -> "query"
@@ -100,7 +122,7 @@ internal object ConnectorTool {
         raw.optString(name).trim().takeIf(String::isNotBlank) ?: error("缺少参数：$name")
 
     private fun requiresConfirmation(protocol: String, capability: String): Boolean =
-        protocol in setOf("websocket", "jsonrpc", "graphql", "unix_socket", "shell", "stdio", "broadcast", "intent", "deep_link") &&
+        protocol in setOf("rest", "websocket", "jsonrpc", "graphql", "unix_socket", "shell", "stdio", "broadcast", "intent", "deep_link") &&
             capability !in setOf("package_info", "query_uri", "read_uri")
 
     private val CONNECTOR_FIELDS = setOf(
@@ -114,9 +136,9 @@ internal object ConnectorToolCatalog {
         tools.put(
             io.github.mangi.eta.agent.model.AgentToolSchema.function(
                 name = "connector_call",
-                description = "Connect to and call Nexus Connector SDK transports: WebSocket, JSON-RPC, GraphQL, SSE, Unix Socket, " +
+                description = "Connect to and call Nexus Connector SDK transports: configured DSH hosts (read-only), REST, WebSocket, JSON-RPC, GraphQL, SSE, Unix Socket, " +
                     "Shell/STDIO, Android Broadcast, MediaStore, read-only SQLite, Intent/Deep Link, SAF and ContentProvider. " +
-                    "The tool probes the transport before invocation. Destructive capabilities return an error until arguments.confirmed=true.",
+                    "Connection setup is performed where required; action=probe explicitly tests health. Risky operations require local user confirmation; model arguments cannot approve them.",
                 parameters = JSONObject()
                     .put("type", "object")
                     .put(

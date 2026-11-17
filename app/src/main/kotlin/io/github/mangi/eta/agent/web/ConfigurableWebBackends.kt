@@ -474,7 +474,7 @@ internal object ConfigurableWebBackends {
         maxResults: Int,
     ): String {
         val encodedQuery = URLEncoder.encode(query, Charsets.UTF_8.name())
-        val hasPlaceholder = "{{query}}" in template || "{{raw_query}}" in template || "{{count}}" in template
+        val hasPlaceholder = "{{query}}" in template || "{{raw_query}}" in template
         val interpolated = template
             .replace("{{query}}", encodedQuery)
             .replace("{{raw_query}}", query)

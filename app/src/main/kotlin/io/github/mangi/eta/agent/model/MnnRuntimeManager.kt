@@ -32,6 +32,10 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -301,6 +305,7 @@ internal object MnnRuntimeManager {
         }
         MnnNative.unavailableReason?.let { fail(recordId, it) }
         require(descriptor.directory.isDirectory) { "MNN 模型目录已丢失，请重新导入" }
+        io.github.mangi.eta.agent.model.mnn.MnnModelPackage.validateForRuntime(descriptor.directory)
         LocalModelRepository.publishRuntimeSnapshot(
             LocalModelRuntimeSnapshot(
                 recordId = recordId,
@@ -354,6 +359,7 @@ internal object MnnRuntimeManager {
         var lastFailure: Throwable? = null
         val loadStartedAt = SystemClock.elapsedRealtime()
         for (candidate in candidates) {
+            currentCoroutineContext().ensureActive()
             val backendId = if (candidate == LocalRuntimeBackendPolicy.GPU) "gpu" else "cpu-${effectiveSettings.threads}"
             val attempt = LocalModelNativeCrashGuard.beginAttempt(
                 record = descriptor.record,
@@ -388,6 +394,7 @@ internal object MnnRuntimeManager {
                     0,
                     false,
                 )
+                currentCoroutineContext().ensureActive()
                 if (!loadError.isNullOrBlank()) throw IllegalStateException(loadError)
                 val loaded = ActiveRuntime(
                     recordId = recordId,
@@ -416,6 +423,7 @@ internal object MnnRuntimeManager {
                 LocalModelNativeCrashGuard.failed(attempt)
                 if (handle != 0L) runCatching { MnnNative.nativeUnload(handle) }
                 if (handle != 0L) runCatching { MnnNative.nativeDestroy(handle) }
+                if (failure is CancellationException) throw failure
                 lastFailure = failure
             }
         }
@@ -427,6 +435,14 @@ internal object MnnRuntimeManager {
 
     private suspend fun warmLoadedRuntime(runtime: ActiveRuntime, attempt: NativeAttemptLease) {
         val produced = AtomicBoolean(false)
+        val timedOut = AtomicBoolean(false)
+        val caller = currentCoroutineContext()
+        // A coroutine timeout alone cannot interrupt a blocking JNI call.
+        val watchdog = scope.launch {
+            delay(WARM_UP_TIMEOUT_MS)
+            timedOut.set(true)
+            nativeCancel(runtime)
+        }
         LocalModelNativeCrashGuard.phase(attempt, "warmup-generate")
         try {
             withTimeout(WARM_UP_TIMEOUT_MS) {
@@ -440,6 +456,7 @@ internal object MnnRuntimeManager {
                         intArrayOf(1, 1, 1, 0, 0),
                         IntArray(0),
                         MnnSink { bytes ->
+                            if (!caller.isActive || timedOut.get()) return@MnnSink false
                             if (bytes.isNotEmpty()) {
                                 produced.set(true)
                                 attempt.firstTokenReceived()
@@ -449,6 +466,8 @@ internal object MnnRuntimeManager {
                     ),
                 )
                 val error = result.optString("error").trim()
+                currentCoroutineContext().ensureActive()
+                check(!timedOut.get()) { "MNN 预热超时" }
                 if (error.isNotEmpty()) throw IllegalStateException("MNN 预热失败：$error")
                 if (result.optInt("stop", 4) in setOf(2, 4)) {
                     throw IllegalStateException("MNN 预热未完成")
@@ -459,6 +478,7 @@ internal object MnnRuntimeManager {
             }
             attempt.completed()
         } finally {
+            watchdog.cancel()
             runCatching { MnnNative.nativeClearCancel(runtime.handle) }
             runCatching { MnnNative.nativeReset(runtime.handle) }
         }

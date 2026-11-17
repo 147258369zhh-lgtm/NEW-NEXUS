@@ -12,12 +12,30 @@ internal sealed interface AgentEvent {
         TOOL_CALL,
     }
 
+    data class PluginUiFrame(val packageId: String, val digest: String, val moduleId: String, val sequence: Int,
+        val documentJson: String) : AgentEvent {
+        init {
+            require(packageId.matches(Regex("[A-Za-z0-9][A-Za-z0-9_.-]{0,95}")) && digest.matches(Regex("[a-f0-9]{64}")))
+            require(moduleId.length in 1..128 && sequence in 1..128 && documentJson.toByteArray(Charsets.UTF_8).size <= 60 * 1024)
+        }
+        override fun toLogLine() = "plugin_ui_frame sequence=$sequence chars=${documentJson.length}"
+    }
+
     data class AccessibilityWaiting(val outage: Int, val phase: AccessibilityWaitPhase) : AgentEvent {
         override fun toLogLine(): String = "accessibility_wait outage=$outage phase=${phase.wireValue}"
     }
 
     data class GuiControlChanged(val status: GuiControlStatus) : AgentEvent {
         override fun toLogLine(): String = "gui_control_changed status=${status.wireValue}"
+    }
+
+    data class ApprovalChanged(
+        val approvalId: String,
+        val toolName: String,
+        val phase: RunApprovalPhase,
+    ) : AgentEvent {
+        override fun toLogLine(): String =
+            "approval_changed id=${approvalId.toSafeLogToken()} tool=${toolName.toSafeLogToken()} phase=${phase.name.lowercase()}"
     }
 
     data class ContextCompaction(
@@ -29,7 +47,11 @@ internal sealed interface AgentEvent {
     ) : AgentEvent {
         val displayMessage: String get() = when (phase) {
             PHASE_STARTED -> RUNNING_DETAIL
-            PHASE_COMPLETED -> "上下文已压缩，用量将在下一次模型响应后更新。"
+            PHASE_COMPLETED -> if (reasonCode == "FALLBACK_TO_CHAT_MODEL") {
+                "独立压缩模型不可用，已使用当前聊天模型完成压缩。"
+            } else {
+                "上下文已压缩，用量将在下一次模型响应后更新。"
+            }
             else -> "上下文压缩失败，原始上下文已保留。"
         }
         override fun toLogLine(): String =
@@ -142,7 +164,8 @@ internal sealed interface AgentEvent {
         val round: Int,
         val contentChars: Int,
         val reasoningContent: String,
-        val toolNames: List<String>
+        val toolNames: List<String>,
+        val artifacts: List<AgentArtifactReference> = emptyList(),
     ) : AgentEvent {
         override fun toLogLine(): String =
             "assistant_received round=$round, content_chars=$contentChars, " +
@@ -188,6 +211,12 @@ internal sealed interface AgentEvent {
         /** 可选：旧版本 Runtime 不发送，消费端缺省时回退到摘要文本判断。 */
         val success: Boolean? = null,
         val command: String? = null,
+        val artifactId: String? = null,
+        val artifactName: String? = null,
+        val workflowReference: String? = null,
+        /** The tool may have produced an external effect but its result could not be confirmed. */
+        val effectUnknown: Boolean = false,
+        val artifacts: List<AgentArtifactReference> = emptyList(),
     ) : AgentEvent {
         override fun toLogLine(): String =
             "tool_finished round=$round, name=${name.toSafeLogToken()}, " +
@@ -204,6 +233,27 @@ internal sealed interface AgentEvent {
         override fun toLogLine(): String =
             "subagent_progress round=$round, id=${subagentId.toSafeLogToken()}, " +
                 "type=${subagentType.toSafeLogToken()}, chars=${snapshotJson.length}"
+    }
+
+    data class SubagentQueued(
+        val round: Int,
+        val toolCallId: String,
+        val subagentType: String,
+        val maxParallelAgents: Int,
+        val queuePosition: Int,
+    ) : AgentEvent {
+        override fun toLogLine(): String =
+            "subagent_queued round=$round, type=${subagentType.toSafeLogToken()}, limit=$maxParallelAgents, position=$queuePosition"
+    }
+
+    data class SubagentAdmitted(
+        val round: Int,
+        val toolCallId: String,
+        val subagentType: String,
+        val waitedMillis: Long,
+    ) : AgentEvent {
+        override fun toLogLine(): String =
+            "subagent_admitted round=$round, type=${subagentType.toSafeLogToken()}, waited_ms=$waitedMillis"
     }
 
     data class HostedToolStarted(

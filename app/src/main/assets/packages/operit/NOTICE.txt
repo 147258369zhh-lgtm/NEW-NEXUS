@@ -1,0 +1,6 @@
+These JavaScript packages are from Operit:
+https://github.com/AAswordman/Operit
+Source revision: 16cffb98f52a11dc77bd0a789ffa0b01ed398ee4
+License: LGPL-3.0, included in LICENSE-LGPL-3.0.txt.
+Nexus provides its own isolated runtime and permission adapters. Importing these
+scripts does not imply that every Operit host API or UI extension is supported.

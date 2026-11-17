@@ -151,6 +151,10 @@ class EtaDatabaseMigrationTest {
                 EtaDatabase.MIGRATION_24_25,
                 EtaDatabase.MIGRATION_25_26,
                 EtaDatabase.MIGRATION_26_27,
+                EtaDatabase.MIGRATION_27_28,
+                EtaDatabase.MIGRATION_28_29,
+                EtaDatabase.MIGRATION_29_30,
+                EtaDatabase.MIGRATION_30_31,
             )
             .build()
         try {
@@ -189,6 +193,8 @@ class EtaDatabaseMigrationTest {
             val mcpServers = runBlocking(Dispatchers.IO) {
                 database.mcpServerDao().servers()
             }
+            assertEquals("android", mcpServers.single().executionTarget)
+            assertEquals("chroot", mcpServers.single().linuxBackend)
 
             assertEquals("保留的结果", result.content)
             assertEquals("[]", result.transcriptJson)
@@ -216,6 +222,7 @@ class EtaDatabaseMigrationTest {
             assertEquals("default", conversations.first { it.id == "conv-enabled" }.reasoningEffort)
             assertEquals(null, runBlocking(Dispatchers.IO) { database.conversationDao().state() })
             assertEquals(listOf("built-in", "manual"), provider.models.map { it.modelId })
+            assertTrue(provider.models.none { it.tryUnknownCapabilities })
             assertEquals(false, provider.hostedWebSearchEnabled)
             assertEquals(ProviderAuthModes.API_KEY, provider.authMode)
             assertEquals("fixture-existing-api-key", provider.apiKey)
@@ -393,6 +400,10 @@ class EtaDatabaseMigrationTest {
         EtaDatabase.MIGRATION_24_25,
         EtaDatabase.MIGRATION_25_26,
         EtaDatabase.MIGRATION_26_27,
+        EtaDatabase.MIGRATION_27_28,
+        EtaDatabase.MIGRATION_28_29,
+        EtaDatabase.MIGRATION_29_30,
+        EtaDatabase.MIGRATION_30_31,
     )
 
     private fun currentVersion(database: EtaDatabase): Int =

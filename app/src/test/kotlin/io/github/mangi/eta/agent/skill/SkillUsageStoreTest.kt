@@ -49,4 +49,18 @@ class SkillUsageStoreTest {
         store.remove("safe-skill")
         assertFalse("safe-skill" in store.readAll())
     }
+
+    @Test fun concurrentOwnersCountEachActualRunOnceAndUnknownOutcomesDoNotBecomeFailures() {
+        val context = RuntimeEnvironment.getApplication()
+        val threads = (1..12).map { index -> kotlin.concurrent.thread {
+            val value = SkillUsageStore(context)
+            value.recordRun(listOf("skill-one"), null, index.toLong(), "run-$index")
+            value.recordRun(listOf("skill-one"), null, index.toLong(), "run-$index")
+        } }
+        threads.forEach { it.join(3_000); assertFalse(it.isAlive) }
+        val result = store.readAll().getValue("skill-one")
+        assertEquals(12, result.useCount); assertEquals(0, result.failureCount); assertEquals(0, result.successCount)
+        val json = File(context.filesDir, "capability-center/skill-usage.json").readText()
+        assertFalse(json.contains("run-"))
+    }
 }

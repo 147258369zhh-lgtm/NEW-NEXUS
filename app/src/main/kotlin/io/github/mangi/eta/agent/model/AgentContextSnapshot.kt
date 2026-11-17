@@ -18,6 +18,8 @@ internal data class AgentContextSnapshot(
     val usableInputBudgetTokens: Int? = null,
     val outputReserveTokens: Int? = null,
     val demotedToolResults: Int = 0,
+    /** 四层上下文关联；为空表示旧快照，恢复时沿用既有安全策略。 */
+    val link: AgentContextLink? = null,
 ) {
     fun encode(): String = codec.encodeToString(this)
 

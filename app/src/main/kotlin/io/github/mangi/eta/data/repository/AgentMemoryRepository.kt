@@ -113,9 +113,22 @@ internal class AgentMemoryStore(
 
     private fun snapshotLocked(): AgentMemorySnapshot {
         val file = atomicFile.baseFile
-        if (!file.exists()) return snapshotOf("")
+        // AtomicFile restores an interrupted legacy write from .bak in openRead(). Checking
+        // only the base file first made recoverable memory appear empty after a process death.
+        if (!file.exists() && !File(file.path + ".bak").exists()) return snapshotOf("")
         val bytes = try {
-            atomicFile.openRead().use { it.readBytes() }
+            atomicFile.openRead().use { input ->
+                val output = java.io.ByteArrayOutputStream()
+                val buffer = ByteArray(16 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    if (count > MAX_FILE_BYTES - output.size()) throw AgentMemoryException(
+                        code = "MEMORY_TOO_LARGE", message = "记忆文件超过 1 MiB 安全上限")
+                    output.write(buffer, 0, count)
+                }
+                output.toByteArray()
+            }
         } catch (throwable: IOException) {
             throw AgentMemoryException(
                 code = "MEMORY_READ_FAILED",
@@ -362,6 +375,12 @@ internal object AgentMemoryRepository {
         }
     }
 
+    internal fun resetForTests(context: Context) {
+        scopedStores.clear()
+        storeRootRef = context.applicationContext.filesDir
+        store = AgentMemoryStore(storeRootRef)
+    }
+
     fun snapshot(): AgentMemorySnapshot {
         ensureInitialized()
         return store.snapshot()
@@ -439,7 +458,11 @@ internal object AgentMemoryRepository {
 
     suspend fun isEnabled(): Boolean = SettingsDataStore.settings().memoryEnabled
 
-    suspend fun setEnabled(enabled: Boolean) = SettingsDataStore.setMemoryEnabled(enabled)
+    suspend fun setEnabled(enabled: Boolean) {
+        io.github.mangi.eta.agent.control.NexusSettingsControlPlane.get(SettingsDataStore.applicationContext()).applyJson(
+            "settings.memory.enabled", org.json.JSONObject().put("enabled", enabled),
+            io.github.zhh_lgtm.nexus.application.api.SettingsActorKind.LOCAL_USER)
+    }
 
     private fun ensureInitialized() {
         check(::store.isInitialized) {

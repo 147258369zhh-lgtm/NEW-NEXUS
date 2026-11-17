@@ -1,3 +1,5 @@
+import java.security.MessageDigest
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -39,8 +41,8 @@ android {
         applicationId = "io.github.zhh_lgtm.nexus"
         minSdk = 33
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2026111701
+        versionName = "0.7.8"
 
         ndk {
             // 同时过滤本地与依赖 AAR 的原生库，确保 APK 仅包含 ARM64。
@@ -55,6 +57,8 @@ android {
                 storePassword = releaseStorePassword
                 keyAlias = releaseKeyAlias
                 keyPassword = releaseKeyPassword
+                enableV2Signing = true
+                enableV3Signing = true
             }
         }
     }
@@ -65,6 +69,12 @@ android {
             versionNameSuffix = "-debug" + buildMetadataSuffix
             isMinifyEnabled = false
             isPseudoLocalesEnabled = true
+            // Android Studio Live Edit uses the debug variant. Sign that variant with
+            // the production key when available so it can update an installed release
+            // in place instead of asking the user to erase app data after a signature mismatch.
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.findByName("release")
+            }
         }
         release {
             versionNameSuffix = buildMetadataSuffix
@@ -78,6 +88,14 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+        }
+        create("performance") {
+            initWith(getByName("release"))
+            // Same package and signing key as the installed development build: update in place.
+            signingConfig = if (hasReleaseSigning) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
+            versionNameSuffix = "-smooth" + buildMetadataSuffix
+            isDebuggable = false
+            matchingFallbacks += "release"
         }
     }
 
@@ -153,8 +171,10 @@ androidComponents {
 dependencies {
     implementation(project(":kernel-api"))
     implementation(project(":application-api"))
+    implementation(project(":plugin-runtime"))
     coreLibraryDesugaring(libs.desugar.jdk.libs.nio)
     implementation(libs.jsoup)
+    implementation(libs.exp4j)
     implementation(libs.commons.compress)
     implementation(libs.xz)
     compileOnly(libs.libxposed.api)
@@ -174,7 +194,15 @@ dependencies {
     implementation(libs.androidx.core)
     // 只使用 GFM 解析器；聊天渲染层由 ui/markdown 自建，按块冻结并接入逐字显现。
     implementation(libs.intellij.markdown)
+    implementation(libs.media3.exoplayer)
+    implementation(libs.media3.ui.compose)
+    // Bounded native SVG and TeX rasterization; no per-message WebView or document engine.
+    implementation("com.caverock:androidsvg-aar:1.4")
+    implementation("ru.noties:jlatexmath-android:0.2.0")
     implementation(libs.hidden.api.bypass)
+    // Native QR capture/decoding; no Google services or additional browser engine.
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    implementation("com.google.zxing:core:3.5.4")
 
     // DataStore：Provider / Model 结构化 JSON 与当前选中 ID 等键值
     implementation(libs.datastore.preferences)
@@ -189,6 +217,7 @@ dependencies {
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.19.1")
     // MediaPipe audio tasks provide the production ASR/TTS adapters for LiteRT speech bundles.
     implementation("com.google.mediapipe:tasks-audio:1.2.2")
+    implementation("com.k2fsa.sherpa:sherpa-onnx-static-link-onnxruntime:2.0.1@aar")
     // Qualcomm dispatch is kept in the APK, while the licensed QNN runtime is installed on demand
     // into app storage. This keeps the LiteRT-LM/NPU ABI paired and avoids redistributing QNN.
     implementation("com.google.ai.edge.litert:litert-npu-runtime-qualcomm:2.3.2")
@@ -211,3 +240,23 @@ dependencies {
     testImplementation(libs.room.testing)
     testImplementation(libs.robolectric)
 }
+
+val sherpaVerifiedArtifact = configurations.detachedConfiguration(
+    dependencies.create("com.k2fsa.sherpa:sherpa-onnx-static-link-onnxruntime:2.0.1@aar"),
+)
+val verifySherpaRuntime = tasks.register("verifySherpaRuntime") {
+    inputs.files(sherpaVerifiedArtifact)
+    doLast {
+        // Read the resolved input through TaskInputs. Capturing the detached configuration
+        // object inside the action prevents Gradle configuration-cache serialization.
+        val artifact = inputs.files.singleFile
+        val digest = MessageDigest.getInstance("SHA-256")
+        artifact.inputStream().buffered().use { input ->
+            val buffer = ByteArray(256 * 1024)
+            while (true) { val count = input.read(buffer); if (count < 0) break; digest.update(buffer, 0, count) }
+        }
+        val actual = digest.digest().joinToString("") { "%02x".format(it) }
+        check(actual == "07e042d97f3a6bd5b7fe74d4eef0513dc01a714b16c15a903250095aba43a575") { "Sherpa runtime SHA-256 mismatch" }
+    }
+}
+tasks.named("preBuild") { dependsOn(verifySherpaRuntime) }

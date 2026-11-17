@@ -1,9 +1,12 @@
 package io.github.mangi.eta.ui.components
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
@@ -30,6 +33,8 @@ import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.layout.DialogDefaults
 import top.yukonga.miuix.kmp.window.WindowDialog
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.squircle.squircleBorder
+import top.yukonga.miuix.kmp.squircle.squircleSurface
 
 internal sealed interface ConversationFolderDialogRequest {
     data class Menu(val folder: ConversationFolderUi) : ConversationFolderDialogRequest
@@ -49,7 +54,9 @@ internal fun ConversationFolderDialogs(
     onRename: suspend (String, String) -> Unit,
     onMoveFolder: suspend (String, String?) -> Unit,
     onMoveConversation: suspend (String, String?) -> Unit,
+    onSetFolderPinned: suspend (String, Boolean) -> Unit,
     onDelete: suspend (String) -> Unit,
+    deleteMessage: String? = null,
 ) {
     if (request == null) return
     key(request) {
@@ -89,18 +96,31 @@ internal fun ConversationFolderDialogs(
                 Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
                     when (request) {
                         is ConversationFolderDialogRequest.Menu -> {
-                            TextButton(
-                                text = stringResource(R.string.folder_tree_create_child),
-                                enabled = tree.ancestors(request.folder.id).size + 2 <= MAX_CONVERSATION_FOLDER_DEPTH,
-                                onClick = { onRequestChange(ConversationFolderDialogRequest.Create(request.folder.id)) },
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            TextButton(stringResource(R.string.conversation_folder_rename_action),
-                                onClick = { onRequestChange(ConversationFolderDialogRequest.Rename(request.folder)) }, modifier = Modifier.fillMaxWidth())
-                            TextButton(stringResource(R.string.folder_tree_move),
-                                onClick = { onRequestChange(ConversationFolderDialogRequest.MoveFolder(request.folder)) }, modifier = Modifier.fillMaxWidth())
-                            TextButton(stringResource(R.string.folder_tree_delete),
-                                onClick = { onRequestChange(ConversationFolderDialogRequest.Delete(request.folder)) }, modifier = Modifier.fillMaxWidth())
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                FolderActionRow(
+                                    text = stringResource(R.string.folder_tree_create_child),
+                                    enabled = tree.ancestors(request.folder.id).size + 2 <= MAX_CONVERSATION_FOLDER_DEPTH,
+                                    onClick = { onRequestChange(ConversationFolderDialogRequest.Create(request.folder.id)) },
+                                )
+                                FolderActionRow(
+                                    text = if (request.folder.isPinned) "取消置顶" else "置顶文件夹",
+                                    enabled = !busy,
+                                    onClick = { submit { onSetFolderPinned(request.folder.id, !request.folder.isPinned) } },
+                                )
+                                FolderActionRow(
+                                    text = stringResource(R.string.conversation_folder_rename_action),
+                                    onClick = { onRequestChange(ConversationFolderDialogRequest.Rename(request.folder)) },
+                                )
+                                FolderActionRow(
+                                    text = stringResource(R.string.folder_tree_move),
+                                    onClick = { onRequestChange(ConversationFolderDialogRequest.MoveFolder(request.folder)) },
+                                )
+                                FolderActionRow(
+                                    text = stringResource(R.string.folder_tree_delete),
+                                    destructive = true,
+                                    onClick = { onRequestChange(ConversationFolderDialogRequest.Delete(request.folder)) },
+                                )
+                            }
                         }
                         is ConversationFolderDialogRequest.Create, is ConversationFolderDialogRequest.Rename -> {
                             val parentId = when (request) {
@@ -131,7 +151,7 @@ internal fun ConversationFolderDialogs(
                                     onClick = { move(folder.id) }, modifier = Modifier.fillMaxWidth())
                             }
                         }
-                        is ConversationFolderDialogRequest.Delete -> Text(stringResource(R.string.folder_tree_delete_message))
+                        is ConversationFolderDialogRequest.Delete -> Text(deleteMessage ?: stringResource(R.string.folder_tree_delete_message))
                     }
                 }
                 error?.let { code ->
@@ -169,5 +189,33 @@ internal fun ConversationFolderDialogs(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun FolderActionRow(
+    text: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    destructive: Boolean = false,
+) {
+    val colors = MiuixTheme.colorScheme
+    val accent = if (destructive) colors.error else colors.primary
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 46.dp)
+            .squircleSurface(accent.copy(alpha = 0.08f), 14.dp)
+            .squircleBorder(0.5.dp, accent.copy(alpha = 0.20f), 14.dp)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+    ) {
+        Text(
+            text = text,
+            color = if (enabled) accent else colors.onSurfaceVariantSummary.copy(alpha = 0.5f),
+            style = MiuixTheme.textStyles.body2,
+            modifier = Modifier.weight(1f),
+        )
     }
 }

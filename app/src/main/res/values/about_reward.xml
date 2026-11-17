@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="about_reward_title">Support development</string>
+    <string name="about_reward_wechat">WeChat</string>
+    <string name="about_reward_alipay">Alipay</string>
+    <string name="about_reward_save">Save current image</string>
+    <string name="about_reward_flip">Flip card</string>
+    <string name="about_reward_thanks">Thank you for supporting NEXA</string>
+    <string name="about_reward_gesture">Drag to flip · Long press to save the current image</string>
+    <string name="about_reward_saved">Original image saved to Pictures/NEXA</string>
+    <string name="about_reward_save_failed">Unable to save image. Please check available space and try again.</string>
+    <string name="about_reward_saving">Saving…</string>
+</resources>

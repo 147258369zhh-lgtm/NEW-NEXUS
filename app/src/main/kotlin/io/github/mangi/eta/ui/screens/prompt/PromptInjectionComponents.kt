@@ -196,6 +196,7 @@ internal fun promptCount(value: Int): String =
 internal fun PromptScopeType.titleRes(): Int = when (this) {
     PromptScopeType.GLOBAL -> R.string.prompt_injection_global
     PromptScopeType.MODEL -> R.string.prompt_injection_scope_model
+    PromptScopeType.PROJECT -> R.string.prompt_injection_scope_project
     PromptScopeType.CONVERSATION -> R.string.prompt_injection_scope_conversation
     PromptScopeType.SUBAGENT -> R.string.prompt_injection_scope_subagent
     PromptScopeType.MEETING -> R.string.prompt_injection_scope_meeting
@@ -207,6 +208,7 @@ internal fun PromptScopeType.titleRes(): Int = when (this) {
 internal fun PromptScopeType.icon(): ImageVector = when (this) {
     PromptScopeType.GLOBAL -> Icons.Rounded.Public
     PromptScopeType.MODEL -> Icons.Rounded.Memory
+    PromptScopeType.PROJECT -> Icons.Rounded.Forum
     PromptScopeType.CONVERSATION -> Icons.Rounded.Forum
     PromptScopeType.SUBAGENT -> Icons.Rounded.SupportAgent
     PromptScopeType.MEETING -> Icons.Rounded.Groups

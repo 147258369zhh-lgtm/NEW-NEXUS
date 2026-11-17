@@ -29,7 +29,8 @@ internal fun assistantBindingFor(target: PowerAssistantTarget): AssistantBinding
 internal fun shouldConfigureAssistant(
     autoConfigEnabled: Boolean,
     target: PowerAssistantTarget,
-): Boolean = autoConfigEnabled && target != PowerAssistantTarget.OEM
+    explicitSelection: Boolean = false,
+): Boolean = explicitSelection || (autoConfigEnabled && target != PowerAssistantTarget.OEM)
 
 internal enum class AssistantSelectionAction {
     NONE,
@@ -40,9 +41,13 @@ internal enum class AssistantSelectionAction {
 internal fun assistantSelectionAction(
     autoConfigEnabled: Boolean,
     target: PowerAssistantTarget,
+    explicitSelection: Boolean = false,
+    hasManagedOwnership: Boolean = false,
 ): AssistantSelectionAction = when {
-    target == PowerAssistantTarget.OEM -> AssistantSelectionAction.RESTORE_OEM
-    shouldConfigureAssistant(autoConfigEnabled, target) ->
+    target == PowerAssistantTarget.OEM -> if (explicitSelection || (autoConfigEnabled && hasManagedOwnership)) {
+        AssistantSelectionAction.RESTORE_OEM
+    } else AssistantSelectionAction.NONE
+    shouldConfigureAssistant(autoConfigEnabled, target, explicitSelection) ->
         AssistantSelectionAction.CONFIGURE_MANAGED
     else -> AssistantSelectionAction.NONE
 }
@@ -51,5 +56,15 @@ internal fun isAssistantConfigurationCurrent(
     autoConfigEnabled: Boolean,
     expectedTarget: PowerAssistantTarget,
     currentTarget: PowerAssistantTarget,
-): Boolean = shouldConfigureAssistant(autoConfigEnabled, currentTarget) &&
+    explicitSelection: Boolean = false,
+): Boolean = shouldConfigureAssistant(autoConfigEnabled, currentTarget, explicitSelection) &&
     expectedTarget == currentTarget
+
+/** A request belongs to the Android user who made the selection, not every user of the module. */
+internal fun assistantSelectionRequestForUser(request: String, userId: Int): String? {
+    if (request.isBlank()) return null
+    val separator = request.indexOf(':')
+    // Compatibility for the first unscoped request format; never replay it in secondary users.
+    if (separator < 0) return request.takeIf { userId == 0 }
+    return request.takeIf { request.substring(0, separator).toIntOrNull() == userId && separator < request.lastIndex }
+}

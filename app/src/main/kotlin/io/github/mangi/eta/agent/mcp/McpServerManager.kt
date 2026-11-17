@@ -10,7 +10,7 @@ internal object McpServerManager {
         bearerToken: String?,
     ): McpServerSetting = withClient(server, bearerToken) { client ->
         val discovery = client.discoverTools()
-        val availableNames = discovery.tools.mapTo(mutableSetOf()) { it.name }
+        val availableNames = discovery.tools.groupingBy { it.name }.eachCount().filterValues { it == 1 }.keys
         val refreshedAt = System.currentTimeMillis()
         server.copy(
             tools = discovery.tools,
@@ -42,60 +42,69 @@ internal object McpServerManager {
     }
 
     suspend fun refresh(serverId: String): McpServerSetting {
-        val server = requireNotNull(McpServerRepository.serverById(serverId)) {
+        val connection = requireNotNull(McpServerRepository.connectionSnapshot(serverId)) {
             "MCP 服务器不存在"
         }
+        val server = connection.server
+        val token = connection.token
         val refreshed = try {
-            discover(server, McpServerRepository.bearerToken(server))
+            discover(server, token)
         } catch (failure: Throwable) {
+            if (failure is kotlinx.coroutines.CancellationException ||
+                failure is io.github.mangi.eta.agent.runtime.AgentRunCancelledException ||
+                failure is io.github.mangi.eta.agent.runtime.AgentRunPauseException) throw failure
             runCatching {
-                McpServerRepository.update(
-                    server.copy(
-                        lastCheckedAt = System.currentTimeMillis(),
-                        lastError = McpFailureDiagnostics.describe(server, failure).take(500),
-                    ),
-                )
+                McpServerRepository.recordDiscoveryFailure(server, token, McpFailureDiagnostics.describe(server, failure))
             }
             throw failure
         }
-        McpServerRepository.update(refreshed)
-        return refreshed
+        return McpServerRepository.saveDiscovery(server, refreshed, token)
+            ?: error("MCP 配置已更改，请按当前配置重新刷新")
     }
 
     /** Explicit, user initiated tool probe used by the MCP detail screen. */
     suspend fun callTool(serverId: String, toolName: String, arguments: JSONObject): JSONObject {
-        val server = requireNotNull(McpServerRepository.serverById(serverId)) { "MCP 服务器不存在" }
-        val tool = server.tools.firstOrNull { it.name == toolName } ?: error("MCP 工具不存在")
+        val connection = requireNotNull(McpServerRepository.connectionSnapshot(serverId)) { "MCP 服务器不存在" }
+        val server = connection.server
+        val tool = server.tools.singleOrNull { it.name == toolName }
+            ?: error("工具不存在或名称重复，请修正服务后刷新")
         require(tool.name in server.enabledToolNames) { "请先启用此工具" }
-        return withClient(server, McpServerRepository.bearerToken(server)) { client ->
+        return withClient(server, connection.token, retryReadOnly = false) { client ->
             client.callTool(tool, arguments)
         }
     }
 
-    suspend fun stopLocal(serverId: String) = McpProcessManager.stop(serverId)
+    suspend fun stopLocal(serverId: String): Boolean = McpProcessManager.stopAndAwait(serverId)
 
     private suspend fun <T> withClient(
         server: McpServerSetting,
         bearerToken: String?,
+        retryReadOnly: Boolean = true,
         operation: (McpClient) -> T,
     ): T {
         if (server.launchCommand.isNotBlank()) {
-            McpProcessManager.ensureStarted(McpServerRepository.appContext(), server)
-            McpProcessManager.awaitReady(server)
+            McpProcessManager.ensureReady(McpServerRepository.appContext(), server)
         }
         var lastFailure: Throwable? = null
         repeat(2) { attempt ->
             val client = runCatching { McpClientFactory.create(server, bearerToken) }.getOrElse { failure ->
-                if (server.launchCommand.isNotBlank()) McpProcessManager.stop(server.id)
                 throw McpDiagnosticException(McpFailureDiagnostics.describe(server, failure), failure)
             }
+            val controller = io.github.mangi.eta.agent.runtime.RuntimeInvocationScope.controller
+            val cancellation = controller?.register(client::close)
             try {
-                return client.use(operation)
+                controller?.throwIfCancelled()
+                return client.use(operation).also { controller?.throwIfCancelled() }
             } catch (failure: Throwable) {
+                if (failure is kotlinx.coroutines.CancellationException ||
+                    failure is io.github.mangi.eta.agent.runtime.AgentRunCancelledException ||
+                    failure is io.github.mangi.eta.agent.runtime.AgentRunPauseException) throw failure
+                controller?.throwIfCancelled()
                 lastFailure = failure
-                if (attempt == 0 && McpFailureDiagnostics.retryable(failure)) return@repeat
-                if (server.launchCommand.isNotBlank()) McpProcessManager.stop(server.id)
+                if (retryReadOnly && attempt == 0 && McpFailureDiagnostics.retryable(failure)) return@repeat
                 throw McpDiagnosticException(McpFailureDiagnostics.describe(server, failure), failure)
+            } finally {
+                cancellation?.close()
             }
         }
         throw McpDiagnosticException(McpFailureDiagnostics.describe(server, lastFailure), lastFailure)

@@ -74,6 +74,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
         var compatibilityAttempt = 0
         var transportFallback = false
         while (true) {
+            ProviderBudgetOutputLimit.apply(candidate, request, capabilities.endpoint)
             val httpRequest = Request.Builder()
                 .url(url)
                 .headers(headers)
@@ -89,10 +90,17 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
                     authMode = config.authMode,
                     request = httpRequest,
                     controller = runController,
+                    onAuthenticationRetry = {
+                        onEvent(ProviderEvent.Usage(AgentTokenUsage(inputTokens = 0, outputTokens = 0,
+                            billingBasis = io.github.mangi.eta.agent.runtime.AgentBillingTokens.OPENAI)))
+                        onEvent(ProviderEvent.RequestStarted)
+                    },
                 ) { response ->
                     onEvent(ProviderEvent.ResponseHeaders(response.code))
                     if (!response.isSuccessful) {
                         val body = response.peekBody(16_384).string()
+                        if (ProviderBudgetOutputLimit.isParameterRejection(response.code, body)) onEvent(ProviderEvent.Usage(AgentTokenUsage(inputTokens = 0, outputTokens = 0,
+                            billingBasis = io.github.mangi.eta.agent.runtime.AgentBillingTokens.OPENAI)))
                         if (response.code == 400 && compatibilityAttempt < MAX_COMPATIBILITY_RETRIES) {
                             throw OpenAiCompatibilityRetry(body)
                         }
@@ -120,10 +128,12 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
                             body = response.body.string(),
                             existingToolCallIds = existingToolCallIds,
                             onEvent = eventSink,
+                            audioOutputFormat = candidate.optJSONObject("audio")?.optString("format").orEmpty().ifBlank { "wav" },
                         )
                     } else {
                         readStreamingAssistantMessage(
                             response.body.byteStream(), runController, existingToolCallIds, eventSink,
+                            audioOutputFormat = candidate.optJSONObject("audio")?.optString("format").orEmpty().ifBlank { "wav" },
                         )
                     }
                     onEvent(ProviderEvent.Completed(assistantMessage.optString("finish_reason").ifBlank { null }))
@@ -133,12 +143,12 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             val retry = outcome.exceptionOrNull() as? OpenAiCompatibilityRetry
             if (retry != null) {
                 val repaired = when (compatibilityAttempt) {
-                    0 -> if (shouldRetryWithConservativePayload(retry.body, candidate, config)) {
-                        conservativePayload(candidate, retry.body, config)
+                    0 -> if (shouldRetryWithConservativePayload(retry.body, candidate)) {
+                        conservativePayload(candidate, retry.body)
                     } else {
                         null
                     }
-                    1 -> payloadWithoutTools(candidate, retry.body, config)
+                    1 -> payloadWithoutTools(candidate, retry.body)
                     else -> null
                 }
                 if (repaired != null) {
@@ -183,7 +193,6 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
     private fun shouldRetryWithConservativePayload(
         body: String,
         request: JSONObject,
-        config: AgentModelClient.ModelConfig,
     ): Boolean {
         if (request.length() == 0) return false
         val lower = body.lowercase()
@@ -192,14 +201,13 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
         val modelRejected = ("model" in lower || "model_not_found" in lower) &&
             listOf("does not exist", "not found", "unknown model", "unsupported model", "invalid model")
                 .any(lower::contains)
-        if (modelRejected && !canRepairDeepSeekModel(config)) return false
+        if (modelRejected) return false
         return true
     }
 
     private fun conservativePayload(
         source: JSONObject,
         errorBody: String,
-        config: AgentModelClient.ModelConfig,
     ): JSONObject {
         val payload = JSONObject(source.toString())
         val lower = errorBody.lowercase()
@@ -225,16 +233,6 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             // hiding the capability from the model.
             payload.remove("tool_choice")
         }
-        if (canRepairDeepSeekModel(config) &&
-            ("model" in lower || "model_not_found" in lower) &&
-            listOf("does not exist", "not found", "unknown model", "unsupported model", "invalid model")
-                .any(lower::contains)
-        ) {
-            // The built-in DeepSeek catalog contains forward-compatible aliases. The public
-            // endpoint rejects those aliases with 400; map them only for that endpoint and only
-            // after it explicitly reports an unknown model, leaving custom gateways untouched.
-            payload.put("model", deepSeekFallbackModel(config.model))
-        }
         return payload
     }
 
@@ -246,15 +244,15 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
     private fun payloadWithoutTools(
         source: JSONObject,
         errorBody: String,
-        config: AgentModelClient.ModelConfig,
     ): JSONObject? {
         val tools = source.optJSONArray("tools") ?: return null
         if (tools.length() == 0) return null
         val lower = errorBody.lowercase()
+        if (listOf("tool", "function", "tool_choice").none(lower::contains)) return null
         val modelRejected = ("model" in lower || "model_not_found" in lower) &&
             listOf("does not exist", "not found", "unknown model", "unsupported model", "invalid model")
                 .any(lower::contains)
-        if (modelRejected && !canRepairDeepSeekModel(config)) return null
+        if (modelRejected) return null
         if (AgentModelFailure.http(400, errorBody, includeParameterDetails = true).code == "CONTEXT_OVERFLOW") {
             return null
         }
@@ -264,24 +262,6 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             payload.remove("parallel_tool_calls")
         }
     }
-
-    private fun canRepairDeepSeekModel(config: AgentModelClient.ModelConfig): Boolean {
-        val source = ProviderSourceRegistry.resolve(
-            providerId = config.providerId,
-            sourceType = config.providerSourceType,
-            baseUrl = config.baseUrl,
-            providerType = config.providerType,
-        )
-        return source == ProviderSourceTypes.DEEPSEEK &&
-            config.baseUrl.lowercase().contains("api.deepseek.com")
-    }
-
-    private fun deepSeekFallbackModel(model: String): String =
-        if (model.lowercase().contains("flash") || model.lowercase().contains("pro")) {
-            "deepseek-reasoner"
-        } else {
-            "deepseek-chat"
-        }
 
     internal fun buildRequestJson(
         config: AgentModelClient.ModelConfig,
@@ -330,39 +310,23 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             }
     }
 
-    /**
-     * DeepSeek's public OpenAI-compatible endpoint accepts the stable chat/reasoner IDs.
-     * Older Eta catalogs used forward-looking aliases (for example `deepseek-flash`) which
-     * are rejected by the official endpoint with HTTP 400. Keep custom gateways untouched and
-     * normalize only those known aliases on the official host.
-     */
-    private fun effectiveModelName(config: AgentModelClient.ModelConfig): String {
-        val source = ProviderSourceRegistry.resolve(
-            providerId = config.providerId,
-            sourceType = config.providerSourceType,
-            baseUrl = config.baseUrl,
-            providerType = config.providerType,
-        )
-        if (source != ProviderSourceTypes.DEEPSEEK || !config.baseUrl.lowercase().contains("api.deepseek.com")) {
-            return config.model
-        }
-        return when (config.model.trim().lowercase()) {
-            "deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-reasoner-preview" ->
-                "deepseek-reasoner"
-            else -> config.model
-        }
-    }
+    /** Never rewrite the user's selected model before the provider has rejected it. */
+    private fun effectiveModelName(config: AgentModelClient.ModelConfig): String = config.model
 
     private fun readStreamingAssistantMessage(
         stream: java.io.InputStream?,
         runController: AgentRunController,
         existingToolCallIds: Set<String>,
-        onEvent: (ProviderEvent) -> Unit
+        onEvent: (ProviderEvent) -> Unit,
+        audioOutputFormat: String = "wav",
     ): JSONObject {
         if (stream == null) error("模型接口未返回响应流")
         val content = StringBuilder()
         val reasoningContent = StringBuilder()
         val toolCalls = linkedMapOf<Int, StreamingToolCall>()
+        val media = JSONArray()
+        val audioData = StringBuilder()
+        var audioFormat = audioOutputFormat
         var usage: AgentTokenUsage? = null
         var sawStreamData = false
         var sawDone = false
@@ -423,13 +387,28 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
                 error("模型接口 SSE 以 error 结束")
             }
             val delta = choice.optJSONObject("delta") ?: JSONObject()
+            // Audio data is fragmented independently of the visible transcript text.
+            delta.optJSONObject("audio")?.let { audio ->
+                val data = audio.optString("data")
+                if (audioData.length.toLong() + data.length > 12L * 1024 * 1024) {
+                    throw AgentModelFailure("MODEL_MEDIA_INVALID", false, "模型返回的媒体超过保存容量限制。")
+                }
+                audioData.append(data)
+                audio.optString("format").takeIf(String::isNotBlank)?.let { audioFormat = it }
+                audio.optString("transcript").takeIf(String::isNotEmpty)?.let { transcript ->
+                    content.append(transcript)
+                    appendVisibleDelta(AssistantBlockKind.TEXT, transcript)
+                }
+            }
+            ProviderMediaOutput.collect(delta.optJSONArray("content"), media)
+            ProviderMediaOutput.collect(delta.optJSONArray("images"), media)
             val reasoningDelta = visibleReasoningDelta(delta)
             if (reasoningDelta.isNotEmpty()) {
                 reasoningContent.append(reasoningDelta)
                 appendVisibleDelta(AssistantBlockKind.THINKING, reasoningDelta)
             }
             if (delta.has("content") && !delta.isNull("content")) {
-                val text = delta.optString("content")
+                val text = messageText(delta.opt("content"))
                 if (text.isNotEmpty()) {
                     content.append(text)
                     appendVisibleDelta(AssistantBlockKind.TEXT, text)
@@ -481,6 +460,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
 
         finishActiveVisibleBlock()
         resolveToolCallIds(toolCalls.values, existingToolCallIds)
+        ProviderMediaOutput.add(media, audioData.toString(), ProviderMediaOutput.audioMime(audioFormat))
         toolCalls.values.sortedBy { it.contentIndex }.forEach { call ->
             onEvent(
                 ProviderEvent.BlockEnd(
@@ -498,6 +478,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             .put("content", content.toString())
             .put("reasoning_content", reasoningContent.toString())
             .put("finish_reason", finishReason.orEmpty())
+            .also { message -> ProviderMediaOutput.attach(message, media) }
             .also { message ->
                 usage?.let { message.put("usage", it.toJson()) }
             }
@@ -519,6 +500,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
         body: String,
         existingToolCallIds: Set<String>,
         onEvent: (ProviderEvent) -> Unit,
+        audioOutputFormat: String = "wav",
     ): JSONObject {
         val root = JSONObject(body)
         root.optJSONObject("error")?.let { error ->
@@ -531,7 +513,10 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             ?: error("模型接口未返回 choices")
         val rawMessage = choice.optJSONObject("message")
             ?: error("模型接口未返回 assistant message")
-        val content = messageText(rawMessage.opt("content"))
+        rawMessage.optJSONObject("audio")?.let { audio ->
+            if (audio.optString("format").isBlank()) audio.put("format", audioOutputFormat)
+        }
+        val content = messageText(rawMessage.opt("content")).ifBlank { rawMessage.optJSONObject("audio")?.optString("transcript").orEmpty() }
         val reasoning = visibleReasoningDelta(rawMessage)
         var contentIndex = 0
 
@@ -591,6 +576,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             .put("content", content)
             .put("reasoning_content", reasoning)
             .put("finish_reason", choice.optString("finish_reason").ifBlank { "stop" })
+            .also { message -> ProviderMediaOutput.attach(message, ProviderMediaOutput.collect(rawMessage)) }
             .also { message ->
                 usage?.let { message.put("usage", it.toJson()) }
                 if (normalizedCalls.length() > 0) message.put("tool_calls", normalizedCalls)

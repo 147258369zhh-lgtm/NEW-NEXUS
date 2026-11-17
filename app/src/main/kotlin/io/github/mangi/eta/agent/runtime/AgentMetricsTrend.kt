@@ -16,7 +16,10 @@ internal object AgentMetricsTrend {
     fun window(records: List<AgentRunMetricsRecord>, daysBack: Int, now: Long = System.currentTimeMillis(),
         zone: ZoneId = ZoneId.systemDefault(), usages: Map<String, List<AgentRunMetrics>> = emptyMap()): List<AgentMetricDay> {
         val today = Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
-        val grouped = records.groupBy { Instant.ofEpochMilli(it.startedAt).atZone(zone).toLocalDate() }
+        // Unknown start times are omitted rather than bucketed into 1970.
+        val grouped = records.mapNotNull { record ->
+            AgentMetricsTime.known(record.startedAt)?.let { Instant.ofEpochMilli(it).atZone(zone).toLocalDate() to record }
+        }.groupBy({ it.first }, { it.second })
         val span = daysBack.coerceAtLeast(1).toLong()
         return ((span - 1) downTo 0).map { offset ->
             val date = today.minusDays(offset)

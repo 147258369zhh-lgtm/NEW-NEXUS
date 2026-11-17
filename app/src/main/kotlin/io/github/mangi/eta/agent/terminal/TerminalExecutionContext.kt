@@ -9,6 +9,8 @@ internal data class TerminalExecutionContext(
     val linuxRootfsPath: String?,
     val userWorkspacePath: String = TerminalRuntime.userWorkspacePath,
     val sharedMounts: List<SharedFolderMount> = emptyList(),
+    val workspaceBinding: io.github.zhh_lgtm.nexus.application.api.WorkspaceBinding? = null,
+    val limits: LinuxExecutionLimits? = null,
 ) {
     init {
         require(linuxEnvironment.isLinux)
@@ -27,7 +29,7 @@ internal data class TerminalExecutionContext(
         get() = TerminalRuntime.LINUX_WORKSPACE_PATH
 
     val linuxHostWorkspacePath: String
-        get() = if (linuxIdentity == "root") TerminalRuntime.ROOT_WORKSPACE_PATH else userWorkspacePath
+        get() = if (workspaceBinding != null) workspaceBinding.hostPath else if (linuxIdentity == "root") TerminalRuntime.ROOT_WORKSPACE_PATH else userWorkspacePath
 
     val linuxReady: Boolean
         get() = LinuxEnvironmentPaths.rootfsReady(linuxRootfsPath)
@@ -80,6 +82,14 @@ internal data class TerminalExecutionContext(
             append(JSONObject.quote(linuxHostWorkspacePath))
             append(" 访问同一文件夹。")
         }
+        append("会话输入目录 ")
+        append(JSONObject.quote(TerminalRuntime.userWorkspacePath))
+        append(" 也以 bind mount 出现在 Linux ")
+        append(JSONObject.quote(TerminalRuntime.LINUX_INPUTS_PATH))
+        append("：用户消息里位于该目录的 Android 绝对路径，在 Linux 命令中要写成 ")
+        append(JSONObject.quote(TerminalRuntime.LINUX_INPUTS_PATH + "/<相对路径>"))
+        append("；手机 content:// URI 不是 Linux 路径，工作区外的文件需先导入或分享到工作区。")
+        append("若设备策略使该入口不可读，就先把输入复制到 /workspace 再处理，不要用 Android 绝对路径或 URI 猜 Linux 路径。")
         if (sharedMounts.isEmpty()) {
             append("当前未配置额外共享目录（/workspace/mounts 仅在配置挂载项后挂载）；")
         } else {
@@ -97,6 +107,12 @@ internal data class TerminalExecutionContext(
             append("PRoot 下若已授予所有文件访问权限，宿主 \"/storage/emulated/0\" 也会默认挂载至 Linux 同路径。")
         }
         append("Linux 路径按 Linux 环境解释。")
+        limits?.let { append(" Linux 单进程 CPU 时间上限 ${it.cpuSeconds}s、地址空间上限 ${it.memoryMb}MiB、当前执行器最多 ${it.maxShells} 个活动 Shell；这不是整机内存配额。") }
+        workspaceBinding?.let { binding ->
+            append("\n项目 ").append(JSONObject.quote(binding.projectId)).append(" 使用本次运行的私有工作副本，首次文件/命令调用时从已授权目录读取。")
+            append("原目录默认不写入；修改只在副本内生效。要写回请先调用 project_workspace_status，核对变更指纹，再调用 project_workspace_publish 并等待本机确认。")
+            append("未确认的发布不得自动重发，删除项不会自动删除原文件。")
+        }
     }
 
     private companion object {

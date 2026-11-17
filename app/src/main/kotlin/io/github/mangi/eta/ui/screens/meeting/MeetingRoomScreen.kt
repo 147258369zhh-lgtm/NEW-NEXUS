@@ -44,15 +44,17 @@ import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
@@ -82,12 +84,16 @@ import io.github.mangi.eta.fork.meeting.MeetingTaskEntity
 import io.github.mangi.eta.fork.meeting.MeetingTaskStatus
 import io.github.mangi.eta.fork.meeting.toUiState
 import io.github.mangi.eta.data.model.ProviderSetting
+import io.github.mangi.eta.data.model.ModelRoleBinding
+import io.github.mangi.eta.data.model.hasUsableConnection
 import io.github.mangi.eta.data.model.ConversationSubject
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.ui.components.EtaChoiceChip
 import io.github.mangi.eta.ui.components.ConversationStage
 import io.github.mangi.eta.ui.components.AgentConversationMessages
 import io.github.mangi.eta.ui.components.AgentIdentityAvatar
+import io.github.mangi.eta.ui.components.AgentIdentityPalette
+import io.github.mangi.eta.ui.components.AgentTimelineEntry
 import io.github.mangi.eta.ui.components.toTimelineEntries
 import io.github.mangi.eta.ui.components.ConversationTextEditor
 import io.github.mangi.eta.ui.components.ConversationDraftFeedback
@@ -99,6 +105,13 @@ import io.github.mangi.eta.ui.components.ConversationAttachmentFeedback
 import io.github.mangi.eta.ui.components.AgentAttachmentPickerButton
 import io.github.mangi.eta.ui.components.PendingImageStrip
 import io.github.mangi.eta.ui.components.PendingFileReferenceStrip
+import io.github.mangi.eta.ui.components.ConversationComposerSurface
+import io.github.mangi.eta.ui.components.LocalNexusBackdrop
+import io.github.mangi.eta.ui.components.rememberGlassRenderPolicy
+import io.github.mangi.eta.ui.components.NexusSettingsTheme
+import io.github.mangi.eta.ui.components.NexusSettingsCard
+import io.github.mangi.eta.ui.components.NexusSettingsArrowPreference
+import io.github.mangi.eta.ui.app.LocalEtaDesignTokens
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
@@ -114,7 +127,12 @@ import io.github.mangi.eta.ui.components.StatusRunning
 import io.github.mangi.eta.ui.components.StatusSuccess
 import io.github.mangi.eta.ui.components.StatusWarning
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Card
@@ -129,6 +147,17 @@ import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
+import top.yukonga.miuix.kmp.blur.layerBackdrop
+import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
+
+private data class TimelineProjectionInput(
+    val state: MeetingRoomUiState,
+    val previewLines: Int,
+    val toolInterrupted: String,
+    val sensitiveTool: String,
+    val streamPreview: String,
+    val streamInterrupted: String,
+)
 
 @Composable
 internal fun MeetingRoomScreen(
@@ -140,9 +169,11 @@ internal fun MeetingRoomScreen(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    val snapshot by MeetingRepository.snapshot(context, roomId)
+    val snapshot by remember(context, roomId) {
+        MeetingRepository.snapshot(context, roomId).map { it?.toUiState() }.flowOn(Dispatchers.Default)
+    }
         .collectAsState(initial = null)
-    val state = snapshot?.takeIf { it.room.id == roomId }?.toUiState()
+    val state = snapshot?.takeIf { it.room.id == roomId }
 
     MiuixScaffold(
         title = state?.room?.title ?: stringResource(R.string.meeting_room_title),
@@ -162,7 +193,9 @@ internal fun MeetingRoomScreen(
                     .padding(horizontal = sidePadding),
             )
         } else {
-            ConversationStage(ConversationSubject.meeting(roomId)) {
+            ConversationStage(ConversationSubject.meeting(roomId), onDshCommand = { name, args ->
+                if (name == "stop" && args.isBlank()) { MeetingRunCoordinator.stop(roomId); true } else false
+            }) {
                 MeetingRoomContent(
                     state = state,
                     onDeleted = onDeleted,
@@ -189,13 +222,17 @@ internal fun MeetingRoomConversationStage(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    val snapshot by MeetingRepository.snapshot(context, roomId)
+    val snapshot by remember(context, roomId) {
+        MeetingRepository.snapshot(context, roomId).map { it?.toUiState() }.flowOn(Dispatchers.Default)
+    }
         .collectAsState(initial = null)
-    val state = snapshot?.takeIf { it.room.id == roomId }?.toUiState()
+    val state = snapshot?.takeIf { it.room.id == roomId }
     if (state == null) {
         MeetingRoomLoading(modifier = modifier.fillMaxSize())
     } else {
-        ConversationStage(ConversationSubject.meeting(roomId)) {
+        ConversationStage(ConversationSubject.meeting(roomId), onDshCommand = { name, args ->
+            if (name == "stop" && args.isBlank()) { MeetingRunCoordinator.stop(roomId); true } else false
+        }) {
             MeetingRoomContent(
                 state = state,
                 onDeleted = onDeleted,
@@ -219,7 +256,7 @@ private fun MeetingRoomContent(
 ) {
     val context = LocalContext.current
     val listState = rememberLazyListState()
-    val providers by ProviderRepository.providersFlow().collectAsState(initial = emptyList())
+    val providers by remember { ProviderRepository.providersFlow() }.collectAsState(initial = emptyList())
     val settingsStore = remember(context.applicationContext) {
         MeetingSettingsStore.get(context.applicationContext)
     }
@@ -232,8 +269,6 @@ private fun MeetingRoomContent(
     var keepBottomAnchored by rememberSaveable(state.room.id) { mutableStateOf(true) }
     var followAfterSortIndex by remember(state.room.id) { mutableStateOf<Int?>(null) }
     var managementOpen by rememberSaveable(state.room.id) { mutableStateOf(false) }
-    var renameOpen by rememberSaveable(state.room.id) { mutableStateOf(false) }
-    var deleteOpen by rememberSaveable(state.room.id) { mutableStateOf(false) }
     var exportTitle by rememberSaveable(state.room.id) { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val exportLauncher = rememberLauncherForActivityResult(
@@ -244,12 +279,12 @@ private fun MeetingRoomContent(
         if (uri == null || title == null) return@rememberLauncherForActivityResult
         scope.launch {
             runCatching {
-                val snapshot = MeetingRepository.snapshot(context, state.room.id).first()
-                    ?: error("会议室不存在")
-                val markdown = MeetingMarkdownExporter.export(snapshot)
-                val output = context.contentResolver.openOutputStream(uri)
-                    ?: error("无法打开导出文件")
                 withContext(Dispatchers.IO) {
+                    val snapshot = MeetingRepository.snapshot(context, state.room.id).first()
+                        ?: error("会议室不存在")
+                    val markdown = MeetingMarkdownExporter.export(snapshot)
+                    val output = context.contentResolver.openOutputStream(uri)
+                        ?: error("无法打开导出文件")
                     output.use { it.write(markdown.toByteArray(Charsets.UTF_8)) }
                 }
             }.onSuccess {
@@ -266,6 +301,7 @@ private fun MeetingRoomContent(
     val activeMention = if (editor.field.selection.collapsed) {
         MeetingComposerState.activeMention(input, editor.field.selection.end)
     } else null
+    var submitting by remember(state.room.id) { mutableStateOf(false) }
     val mentionMatches = remember(activeMention?.query, state.mentionCandidates) {
         val query = activeMention?.query.orEmpty()
         state.mentionCandidates.filter { participant ->
@@ -277,20 +313,34 @@ private fun MeetingRoomContent(
     val sensitiveToolDetail = stringResource(R.string.meeting_tool_sensitive_hidden)
     val streamPreviewDetail = stringResource(R.string.meeting_stream_preview_truncated)
     val streamInterruptedDetail = stringResource(R.string.meeting_stream_interrupted)
-    val previousTimeline = remember(state.room.id) { arrayOf<MeetingConversationTimeline?>(null) }
-    val timeline = remember(state.messages, state.timelineEvents, state.messageAttachments, state.latestRoundTasks, state.room.status,
-        meetingSettings.summaryPreviewLines, toolInterruptedDetail, sensitiveToolDetail, streamPreviewDetail, streamInterruptedDetail) {
-        state.conversationTimeline(meetingSettings.summaryPreviewLines, toolInterruptedDetail, sensitiveToolDetail,
-            streamPreviewDetail, streamInterruptedDetail, previous = previousTimeline[0])
+    var timeline by remember(state.room.id) { mutableStateOf<MeetingConversationTimeline?>(null) }
+    val projectionInput by rememberUpdatedState(TimelineProjectionInput(
+        state, meetingSettings.summaryPreviewLines, toolInterruptedDetail, sensitiveToolDetail,
+        streamPreviewDetail, streamInterruptedDetail,
+    ))
+    LaunchedEffect(state.room.id) {
+        var previous: MeetingConversationTimeline? = null
+        val metadataCache = MeetingTimelineMetadataCache()
+        // Finish one projection at a time and keep only the newest pending update.
+        snapshotFlow { projectionInput }.conflate().collect { input ->
+            val projection = withContext(Dispatchers.Default) {
+                val projectionContext = currentCoroutineContext()
+                input.state.conversationTimeline(input.previewLines, input.toolInterrupted, input.sensitiveTool,
+                    input.streamPreview, input.streamInterrupted, previous = previous, metadataCache = metadataCache,
+                    checkCancelled = { projectionContext.ensureActive() })
+            }
+            previous = projection
+            timeline = projection
+        }
     }
-    SideEffect { previousTimeline[0] = timeline }
     val isRunning = state.isRunning
-    val routing = remember(input, state.mentionCandidates) {
+    val routing = remember(input, state.mentionCandidates, state.host, meetingSettings.maxParallelParticipants) {
         input.takeIf(String::isNotBlank)?.let { text ->
             MeetingMentionRouter.route(
                 text = text,
                 availableProfiles = state.mentionCandidates.map(MeetingParticipantEntity::profileName),
                 maxParticipants = meetingSettings.maxParallelParticipants,
+                hostProfile = state.host?.profileName ?: state.room.hostProfile,
             )
         }
     }
@@ -298,15 +348,26 @@ private fun MeetingRoomContent(
         it.profileName == selectedParticipantName
     } ?: state.host ?: state.participants.firstOrNull()
 
-    LaunchedEffect(state.messages, followAfterSortIndex) {
+    LaunchedEffect(state.messages, followAfterSortIndex, timeline) {
         val after = followAfterSortIndex
-        if (after != null && state.messages.any { it.authorType == MeetingAuthorType.USER && it.sortIndex > after }) {
+        val currentTimeline = timeline
+        val sentMessage = after?.let { sortIndex ->
+            state.messages.lastOrNull { it.authorType == MeetingAuthorType.USER && it.sortIndex > sortIndex }
+        }
+        if (currentTimeline != null && sentMessage != null && currentTimeline.messages.any { it.id == sentMessage.id }) {
             keepBottomAnchored = true
-            listState.requestScrollToItem(timeline.messages.toTimelineEntries(workGroups = timeline.identities.mapValues { it.value.workGroup }).size)
+            listState.requestScrollToItem(currentTimeline.messages.toTimelineEntries(workGroups = currentTimeline.identities.mapValues { it.value.workGroup }).size)
             followAfterSortIndex = null
         }
     }
 
+    val surfaceColor = MiuixTheme.colorScheme.surface
+    val glassPolicy = rememberGlassRenderPolicy()
+    val sampleMessages = state.messages.isNotEmpty() && LocalEtaDesignTokens.current.skin.isGlass && glassPolicy.sampleBackdrop
+    val messageBackdrop = rememberLayerBackdrop {
+        drawRect(surfaceColor)
+        drawContent()
+    }
     Column(modifier = modifier) {
         MeetingRoomOverview(
             state = state,
@@ -323,8 +384,12 @@ private fun MeetingRoomContent(
                 }
             },
         )
-        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            if (timeline.messages.isEmpty()) {
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()
+            .then(if (sampleMessages) Modifier.layerBackdrop(messageBackdrop) else Modifier)) {
+            val currentTimeline = timeline
+            if (currentTimeline == null) {
+                MeetingRoomLoading(modifier = Modifier.align(Alignment.Center))
+            } else if (currentTimeline.messages.isEmpty()) {
                 ListEmptyState(
                     title = stringResource(R.string.meeting_room_no_messages),
                     summary = stringResource(R.string.meeting_room_topology_summary),
@@ -333,9 +398,9 @@ private fun MeetingRoomContent(
                 )
             } else {
                 AgentConversationMessages(
-                    visibleMessages = timeline.messages,
-                    messageIdentities = timeline.identities,
-                    completedReplyMessageIds = timeline.completedReplyIds,
+                    visibleMessages = currentTimeline.messages,
+                    messageIdentities = currentTimeline.identities,
+                    completedReplyMessageIds = currentTimeline.completedReplyIds,
                     allowMessageChanges = false,
                     scrollState = listState,
                     isStreaming = isRunning,
@@ -357,17 +422,19 @@ private fun MeetingRoomContent(
                     val active = MeetingComposerState.activeMention(current, editor.field.selection.end)
                         ?: return@MentionSuggestions
                     val completed = MeetingComposerState.completeMention(current, active, participant.profileName)
-                    editor.replace(completed, TextRange(active.replaceStart + participant.profileName.length + 2))
+                    editor.replace(completed, TextRange(active.replaceStart + MeetingMentionRouter.formatMention(participant.profileName).length + 1))
                 },
             )
         }
         routing?.let { decision ->
             MeetingRoutePreview(
-                decision = decision,
+                decision = state.host?.let { MeetingMentionRouter.throughHost(decision, it.profileName, input) } ?: decision,
                 maxParallelParticipants = meetingSettings.maxParallelParticipants,
-                autoDispatchEnabled = meetingSettings.autoDispatchWithoutMention,
+                autoDispatchEnabled = meetingSettings.autoDispatchWithoutMention || decision !is MeetingRoutingDecision.HostDispatch,
+                hostExplicitlyAddressed = decision !is MeetingRoutingDecision.HostDispatch,
             )
         }
+        CompositionLocalProvider(LocalNexusBackdrop provides messageBackdrop.takeIf { sampleMessages }) {
         MeetingComposer(
             editor = editor,
             attachments = attachments,
@@ -376,18 +443,29 @@ private fun MeetingRoomContent(
             onStop = { MeetingRunCoordinator.stop(state.room.id) },
             onSend = {
                 val message = editor.field.text.toString().trim()
-                if ((message.isNotEmpty() || !attachments.value.isEmpty) && attachments.ready && attachments.pending == 0) {
+                if (!submitting && (message.isNotEmpty() || !attachments.value.isEmpty) && attachments.ready && attachments.pending == 0) {
                     val submitted = attachments.value
-                    val accepted = if (isRunning) MeetingRunCoordinator.enqueue(context, state.room.id, message, submitted)
-                    else MeetingRunCoordinator.start(context, state.room.id, message, submitted)
-                    if (accepted) {
-                        editor.replace("")
-                        attachments.clearSubmitted(submitted)
-                        followAfterSortIndex = state.messages.lastOrNull()?.sortIndex ?: -1
+                    submitting = true
+                    scope.launch {
+                        try {
+                            val accepted = if (isRunning) MeetingRunCoordinator.enqueue(context, state.room.id, message, submitted)
+                                else MeetingRunCoordinator.start(context, state.room.id, message, submitted)
+                            if (accepted) {
+                                if (editor.field.text.toString().trim() == message) editor.replace("")
+                                attachments.clearSubmitted(submitted)
+                                followAfterSortIndex = state.messages.lastOrNull()?.sortIndex ?: -1
+                                if (isRunning) Toast.makeText(context, R.string.meeting_queue_accepted, Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, R.string.meeting_send_failed, Toast.LENGTH_LONG).show()
+                            }
+                        } finally {
+                            submitting = false
+                        }
                     }
                 }
             },
         )
+        }
     }
 
     if (showParticipantDetails) selectedParticipant?.let { participant ->
@@ -397,14 +475,15 @@ private fun MeetingRoomContent(
             task = state.latestTaskFor(participant.profileName),
             latestActivity = state.latestActivityFor(participant.profileName),
             roomStatus = state.room.status,
+            waiting = state.isParticipantWaiting(participant.profileName),
             onMention = if (participant.enabled) {
                 {
                     showParticipantDetails = false
                     selectedParticipantName = null
                     editor.replace(if (input.isBlank()) {
-                        "@${participant.profileName} "
+                        "${MeetingMentionRouter.formatMention(participant.profileName)} "
                     } else {
-                        input.trimEnd() + " @${participant.profileName} "
+                        input.trimEnd() + " ${MeetingMentionRouter.formatMention(participant.profileName)} "
                     })
                 }
             } else {
@@ -417,64 +496,13 @@ private fun MeetingRoomContent(
     if (managementOpen) {
         MeetingRoomManagementDialog(
             roomTitle = state.room.title,
-            isRunning = state.isRunning,
-            onRename = {
-                managementOpen = false
-                renameOpen = true
-            },
             onExport = {
                 managementOpen = false
                 exportTitle = state.room.title
                 exportLauncher.launch(MeetingMarkdownExporter.defaultFileName(state.room.title))
             },
-            onArchive = {
-                managementOpen = false
-                scope.launch {
-                    runCatching {
-                        withContext(Dispatchers.IO) {
-                            MeetingRepository.setRoomArchived(context, state.room.id, archived = true)
-                        }
-                    }.onSuccess {
-                        Toast.makeText(context, "会议室已归档", Toast.LENGTH_SHORT).show()
-                        onArchived()
-                    }.onFailure { error ->
-                        Toast.makeText(
-                            context,
-                            "归档失败：${error.message ?: error.javaClass.simpleName}",
-                            Toast.LENGTH_LONG,
-                        ).show()
-                    }
-                }
-            },
-            onOpenSettings = {
-                managementOpen = false
-                onOpenSettings()
-            },
-            onDelete = {
-                managementOpen = false
-                deleteOpen = true
-            },
+            onOpenSettings = { managementOpen = false; onOpenSettings() },
             onDismiss = { managementOpen = false },
-        )
-    }
-
-    if (renameOpen) {
-        MeetingRoomRenameDialog(
-            roomId = state.room.id,
-            currentTitle = state.room.title,
-            onDismiss = { renameOpen = false },
-        )
-    }
-
-    if (deleteOpen) {
-        MeetingRoomDeleteDialog(
-            roomId = state.room.id,
-            roomTitle = state.room.title,
-            onDismiss = { deleteOpen = false },
-            onDeleted = {
-                deleteOpen = false
-                onDeleted()
-            },
         )
     }
 }
@@ -482,92 +510,33 @@ private fun MeetingRoomContent(
 @Composable
 private fun MeetingRoomManagementDialog(
     roomTitle: String,
-    isRunning: Boolean,
-    onRename: () -> Unit,
     onExport: () -> Unit,
-    onArchive: () -> Unit,
     onOpenSettings: () -> Unit,
-    onDelete: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    WindowDialog(
-        show = true,
-        title = roomTitle,
-        summary = "管理会议室与导出完整记录",
-        onDismissRequest = onDismiss,
-    ) {
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            ArrowPreference(
-                title = "重命名",
-                startAction = {
-                    MeetingManageActionIcon(
-                        icon = Icons.Rounded.Edit,
-                        tint = MiuixTheme.colorScheme.primary,
-                    )
-                },
-                onClick = onRename,
-            )
-            ArrowPreference(
-                title = "会议参数设置",
-                summary = "主持人调度、并行上限、超时、上下文压缩和自动汇总",
-                startAction = {
-                    MeetingManageActionIcon(
-                        icon = Icons.Rounded.Settings,
-                        tint = MiuixTheme.colorScheme.primary,
-                    )
-                },
-                onClick = onOpenSettings,
-            )
-            ArrowPreference(
-                title = "导出完整记录",
-                summary = "Markdown，包含参与者、对话与 Agent 任务",
-                startAction = {
-                    MeetingManageActionIcon(
-                        icon = Icons.Rounded.Download,
-                        tint = StatusSuccess,
-                    )
-                },
-                onClick = onExport,
-            )
-            ArrowPreference(
-                title = "归档会议室",
-                summary = if (isRunning) {
-                    "本轮运行结束后可归档"
-                } else {
-                    "从活动列表移到归档，记录仍可查看和导出"
-                },
-                startAction = {
-                    MeetingManageActionIcon(icon = Icons.Rounded.Archive, tint = StatusWarning)
-                },
-                onClick = onArchive,
-                enabled = !isRunning,
-            )
-            ArrowPreference(
-                title = "删除会议室",
-                summary = if (isRunning) "本轮运行结束后可删除" else "会同时删除全部消息与任务记录",
-                startAction = {
-                    MeetingManageActionIcon(icon = Icons.Rounded.DeleteOutline, tint = StatusError)
-                },
-                onClick = onDelete,
-                enabled = !isRunning,
-            )
+    NexusSettingsTheme {
+        WindowDialog(show = true, title = roomTitle, onDismissRequest = onDismiss) {
+            NexusSettingsCard {
+                NexusSettingsArrowPreference(
+                    title = "会议室参数设置",
+                    startAction = { MeetingManageActionIcon(Icons.Rounded.Settings, MiuixTheme.colorScheme.primary) },
+                    onClick = onOpenSettings,
+                )
+                NexusSettingsArrowPreference(
+                    title = "导出完整会议记录",
+                    startAction = { MeetingManageActionIcon(Icons.Rounded.Download, StatusSuccess) },
+                    onClick = onExport,
+                )
+            }
         }
     }
 }
-
 @Composable
 private fun MeetingManageActionIcon(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     tint: Color,
 ) {
-    Box(
-        modifier = Modifier
-            .size(30.dp)
-            .squircleSurface(tint.copy(alpha = 0.12f), 9.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(17.dp))
-    }
+    Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(24.dp))
 }
 
 @Composable
@@ -745,6 +714,7 @@ private fun MeetingRoomOverview(
                     selected = participant.profileName == selectedParticipant?.profileName,
                     task = state.latestTaskFor(participant.profileName),
                     roomStatus = state.room.status,
+                    waiting = state.isParticipantWaiting(participant.profileName),
                     onClick = { onParticipantClick(participant) },
                 )
             }
@@ -760,10 +730,11 @@ private fun MeetingRoomOverview(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                MeetingProcessDot(task = selectedTask, roomStatus = state.room.status)
+                MeetingProcessDot(task = selectedTask, roomStatus = state.room.status, isHost = participant.isHost,
+                    enabled = participant.enabled, waiting = state.isParticipantWaiting(participant.profileName))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "${participant.displayName} · ${participantProcessLabel(participant, selectedTask, state.room.status)}",
+                        text = "${participant.displayName} · ${participantProcessLabel(participant, selectedTask, state.room.status, state.isParticipantWaiting(participant.profileName))}",
                         style = MiuixTheme.textStyles.footnote2,
                         fontWeight = FontWeight.Medium,
                         color = MiuixTheme.colorScheme.onSurface,
@@ -789,11 +760,53 @@ private fun MeetingRoomOverview(
 }
 
 @Composable
+private fun MeetingAssignmentsDialog(
+    state: MeetingRoomUiState,
+    onOpenResult: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val participantsByProfile = remember(state.participants) { state.participants.associateBy { it.profileName } }
+    val messageIds = remember(state.messages) { state.messages.mapTo(hashSetOf()) { it.id } }
+    WindowDialog(show = true, title = stringResource(R.string.meeting_assignments), onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().heightIn(max = 500.dp)) {
+        androidx.compose.foundation.lazy.LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false),
+            verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            items(state.latestRoundTasks, key = { it.id }) { task ->
+                val participant = participantsByProfile[task.participantProfile]
+                val name = participant?.displayName ?: task.participantProfile
+                val status = when (task.status) {
+                    MeetingTaskStatus.QUEUED -> "排队中"
+                    MeetingTaskStatus.RUNNING -> "执行中"
+                    MeetingTaskStatus.COMPLETED -> "已完成"
+                    MeetingTaskStatus.FAILED -> "执行失败"
+                    MeetingTaskStatus.CANCELLED -> "已取消"
+                    else -> task.status
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text("$name · $status", style = MiuixTheme.textStyles.body2, fontWeight = FontWeight.SemiBold)
+                    Text(task.instruction.ifBlank { stringResource(R.string.meeting_no_instruction) },
+                        style = MiuixTheme.textStyles.footnote1)
+                    task.errorMessage?.takeIf(String::isNotBlank)?.let {
+                        Text(it, color = MiuixTheme.colorScheme.error, style = MiuixTheme.textStyles.footnote1)
+                    }
+                    task.resultMessageId?.takeIf { id -> id in messageIds }?.let { id ->
+                        TextButton(text = stringResource(R.string.meeting_open_result), onClick = { onOpenResult(id) })
+                    }
+                }
+            }
+        }
+        TextButton(text = stringResource(R.string.action_cancel), onClick = onDismiss)
+        }
+    }
+}
+
+@Composable
 private fun ParticipantChip(
     participant: MeetingParticipantEntity,
     selected: Boolean,
     task: MeetingTaskEntity?,
     roomStatus: String,
+    waiting: Boolean,
     onClick: () -> Unit,
 ) {
     val isHost = participant.isHost
@@ -825,9 +838,12 @@ private fun ParticipantChip(
     ) {
         MeetingAgentAvatar(
             displayName = participant.displayName,
+            identity = participant.profileName,
             task = task,
             roomStatus = roomStatus,
             isHost = isHost,
+            enabled = participant.enabled,
+            waiting = waiting,
             selected = selected,
             size = 22.dp,
         )
@@ -845,13 +861,6 @@ private fun ParticipantChip(
                 color = foreground.copy(alpha = 0.7f),
                 modifier = Modifier.padding(start = 5.dp),
             )
-        } else if (!participant.enabled) {
-            Text(
-                text = "停用",
-                style = MiuixTheme.textStyles.footnote2,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                modifier = Modifier.padding(start = 5.dp),
-            )
         }
     }
 }
@@ -859,31 +868,36 @@ private fun ParticipantChip(
 @Composable
 private fun MeetingAgentAvatar(
     displayName: String,
+    identity: String,
     task: MeetingTaskEntity?,
     roomStatus: String,
     isHost: Boolean = false,
+    enabled: Boolean = true,
+    waiting: Boolean = false,
     selected: Boolean = false,
     size: androidx.compose.ui.unit.Dp,
 ) {
-    val statusColor = meetingProcessColor(task, roomStatus, isHost)
-    val statusDescription = meetingProcessLabel(task, roomStatus, isHost)
+    val statusColor = if (!enabled) Color(0xFF8A9299) else if (waiting) Color(0xFFF28C18) else meetingProcessColor(task, roomStatus, isHost)
+    val statusDescription = if (!enabled) "已停用" else if (waiting) "等待处理" else meetingProcessLabel(task, roomStatus, isHost)
     AgentIdentityAvatar(
         displayName = displayName,
-        seed = displayName,
+        seed = identity,
         size = size,
-        icon = if (isHost) Icons.Rounded.Groups else Icons.Rounded.AutoAwesome,
+        icon = null,
+        singleInitial = true,
         statusColor = statusColor,
         statusDescription = statusDescription,
         selected = selected,
+        palette = AgentIdentityPalette.MeetingVivid,
     )
 }
 
 private fun meetingStatusHint(state: MeetingRoomUiState): String = when {
     state.isRunning && state.completingTasks > 0 ->
-        "${state.completingTasks} 位 Agent 正在独立执行，主持人监督汇总"
+        "${state.completingTasks} 项任务正在执行或排队"
     state.isRunning -> "主持人正在选择参与者或汇总本轮结果"
     state.isFailed -> "本轮未完成，可查看 Agent 进程后重试"
-    state.isWaiting -> "结果已就绪，可 @ Agent 或交给主持人分派下一轮"
+    state.isWaiting -> "本轮已结束，可继续发起下一轮"
     else -> "@ 一位直接执行，@ 多位并行执行"
 }
 
@@ -891,7 +905,11 @@ private fun participantProcessLabel(
     participant: MeetingParticipantEntity,
     task: MeetingTaskEntity?,
     roomStatus: String,
-): String = when (task?.status) {
+    waiting: Boolean,
+): String = when {
+    !participant.enabled -> "已停用"
+    waiting -> "等待处理"
+    else -> when (task?.status) {
     MeetingTaskStatus.QUEUED -> "排队等待执行"
     MeetingTaskStatus.RUNNING -> "正在独立执行"
     MeetingTaskStatus.COMPLETED -> "本轮任务已完成"
@@ -902,6 +920,7 @@ private fun participantProcessLabel(
         participant.isHost && roomStatus == MeetingRoomStatus.FAILED -> "主持人进程已中断"
         participant.isHost -> "等待下一轮，持续监督"
         else -> "本轮尚未分派任务"
+    }
     }
 }
 
@@ -923,13 +942,13 @@ private fun participantProcessPreview(
 }
 
 @Composable
-private fun MeetingProcessDot(task: MeetingTaskEntity?, roomStatus: String) {
-    val color = meetingProcessColor(task, roomStatus)
+private fun MeetingProcessDot(task: MeetingTaskEntity?, roomStatus: String, isHost: Boolean, enabled: Boolean, waiting: Boolean) {
+    val color = if (!enabled) Color(0xFF8A9299) else if (waiting) Color(0xFFF28C18) else meetingProcessColor(task, roomStatus, isHost)
     Box(
         modifier = Modifier
             .size(7.dp)
             .squircleSurface(color, 7.dp)
-            .semantics { contentDescription = meetingProcessLabel(task, roomStatus) },
+            .semantics { contentDescription = if (!enabled) "已停用" else if (waiting) "等待处理" else meetingProcessLabel(task, roomStatus, isHost) },
     )
 }
 
@@ -943,7 +962,11 @@ private fun meetingProcessLabel(
     MeetingTaskStatus.CANCELLED -> "已取消"
     MeetingTaskStatus.QUEUED -> "排队中"
     MeetingTaskStatus.RUNNING -> "执行中"
-    else -> if (isHost && roomStatus == MeetingRoomStatus.RUNNING) "主持人正在协调" else "空闲"
+    else -> when {
+        isHost && roomStatus == MeetingRoomStatus.FAILED -> "主持人进程已中断"
+        isHost && roomStatus == MeetingRoomStatus.RUNNING -> "主持人正在协调"
+        else -> "空闲"
+    }
 }
 
 @Composable
@@ -962,12 +985,16 @@ private fun meetingProcessColor(
     roomStatus: String,
     isHost: Boolean = false,
 ): Color = when (task?.status) {
-    MeetingTaskStatus.COMPLETED -> StatusSuccess
-    MeetingTaskStatus.FAILED -> StatusError
-    MeetingTaskStatus.CANCELLED -> StatusIdle
-    MeetingTaskStatus.QUEUED -> StatusWarning
-    MeetingTaskStatus.RUNNING -> StatusRunning
-    else -> if (isHost && roomStatus == MeetingRoomStatus.RUNNING) StatusRunning else StatusIdle
+    MeetingTaskStatus.COMPLETED -> Color(0xFF8A9299)
+    MeetingTaskStatus.FAILED -> Color(0xFFE43D45)
+    MeetingTaskStatus.CANCELLED -> Color(0xFF8A9299)
+    MeetingTaskStatus.QUEUED -> Color(0xFFF28C18)
+    MeetingTaskStatus.RUNNING -> Color(0xFF18A957)
+    else -> when {
+        isHost && roomStatus == MeetingRoomStatus.FAILED -> Color(0xFFE43D45)
+        isHost && roomStatus == MeetingRoomStatus.RUNNING -> Color(0xFF18A957)
+        else -> Color(0xFF8A9299)
+    }
 }
 
 @Composable
@@ -1008,16 +1035,15 @@ private fun MeetingTaskPill(task: MeetingTaskEntity) {
 @Composable
 private fun MeetingStatusDot(status: String) {
     val running = status == MeetingRoomStatus.RUNNING
-    val transition = rememberInfiniteTransition(label = "meeting_status")
-    val alpha by transition.animateFloat(
-        initialValue = if (running) 0.35f else 1f,
-        targetValue = if (running) 1f else 1f,
+    val alpha = if (running) rememberInfiniteTransition(label = "meeting_status").animateFloat(
+        initialValue = 0.35f,
+        targetValue = 1f,
         animationSpec = infiniteRepeatable(
             animation = tween(durationMillis = 760),
             repeatMode = RepeatMode.Reverse,
         ),
         label = "meeting_status_alpha",
-    )
+    ) else null
     val color = when (status) {
         MeetingRoomStatus.FAILED -> MiuixTheme.colorScheme.error
         MeetingRoomStatus.RUNNING -> MiuixTheme.colorScheme.primary
@@ -1027,7 +1053,7 @@ private fun MeetingStatusDot(status: String) {
     Box(
         modifier = Modifier
             .size(8.dp)
-            .graphicsLayer { this.alpha = alpha }
+            .graphicsLayer { this.alpha = alpha?.value ?: 1f }
             .squircleSurface(color, 8.dp),
     )
 }
@@ -1075,6 +1101,7 @@ private fun MeetingRoutePreview(
     decision: MeetingRoutingDecision,
     maxParallelParticipants: Int,
     autoDispatchEnabled: Boolean,
+    hostExplicitlyAddressed: Boolean,
 ) {
     val unknown = decision is MeetingRoutingDecision.UnknownMentions
     val hostBlocked = decision is MeetingRoutingDecision.HostDispatch && !autoDispatchEnabled
@@ -1105,12 +1132,12 @@ private fun MeetingRoutePreview(
                     "独立并行 · ${decision.participants.joinToString(" + ") { "@$it" }}"
                 is MeetingRoutingDecision.HostDispatch ->
                     if (autoDispatchEnabled) {
-                        "未指定参与者 · 主持人将选择 1–$maxParallelParticipants 位 Agent"
+                        "${if (hostExplicitlyAddressed) "主持人协调" else "未指定参与者"} · 主持人将选择 1–$maxParallelParticipants 位 Agent"
                     } else {
                         "当前设置要求明确执行者 · 请输入 @Agent"
                     }
                 is MeetingRoutingDecision.UnknownMentions ->
-                    "无法发送 · 未识别 ${decision.mentions.joinToString(" ") { "@$it" }}"
+                    "无法发送 · 未识别 ${decision.mentions.joinToString(" ", transform = MeetingMentionRouter::describeUnknown)}"
             },
             style = MiuixTheme.textStyles.footnote2,
             color = if (warning) MiuixTheme.colorScheme.onErrorContainer else MiuixTheme.colorScheme.onSurfaceVariantSummary,
@@ -1141,23 +1168,16 @@ private fun MeetingComposer(
             .padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
     ) {
         ConversationDraftFeedback(editor)
+        if (running) Text(stringResource(R.string.meeting_queue_stop_hint),
+            modifier = Modifier.padding(bottom = 4.dp), style = MiuixTheme.textStyles.footnote2,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+        io.github.mangi.eta.ui.screens.capability.DshComposerPlugins(generating = running)
         ConversationAttachmentFeedback(attachments)
         if (attachments.value.images.isNotEmpty()) PendingImageStrip(attachments.value.images, attachments::removeImage,
             Modifier.padding(vertical = 4.dp))
         if (attachments.value.files.isNotEmpty()) PendingFileReferenceStrip(attachments.value.files, attachments::removeFile,
             Modifier.padding(vertical = 4.dp))
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .onGloballyPositioned { anchorTop = it.positionInWindow().y.toInt() }
-                .squircleSurface(MiuixTheme.colorScheme.surfaceContainer, 20.dp)
-                .squircleBorder(
-                    width = 0.5.dp,
-                    color = MiuixTheme.colorScheme.outline.copy(alpha = 0.55f),
-                    cornerRadius = 20.dp,
-                )
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-        ) {
+        ConversationComposerSurface(Modifier.onGloballyPositioned { anchorTop = it.positionInWindow().y.toInt() }) {
             ConversationTextEditor(
                 state = editor.field,
                 onUserEdit = editor::onUserEdit,
@@ -1177,6 +1197,7 @@ private fun MeetingComposer(
                     onAttachFiles = attachments::files,
                     onAttachFolder = attachments::folder,
                     onAttachFilePath = attachments::path,
+                    showSkillPicker = false,
                     modifier = Modifier.size(40.dp),
                 )
                 Spacer(Modifier.weight(1f))
@@ -1239,6 +1260,7 @@ private fun MeetingParticipantDialog(
     task: MeetingTaskEntity?,
     latestActivity: MeetingMessageEntity?,
     roomStatus: String,
+    waiting: Boolean,
     onMention: (() -> Unit)?,
     onDismiss: () -> Unit,
 ) {
@@ -1247,24 +1269,25 @@ private fun MeetingParticipantDialog(
         title = participant.displayName,
         onDismissRequest = onDismiss,
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 520.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Text(
-                text = if (participant.isHost) "主持人 / 监督器" else "会议参与者",
-                style = MiuixTheme.textStyles.footnote1,
-                fontWeight = FontWeight.SemiBold,
-                color = MiuixTheme.colorScheme.primary,
-            )
+        Column(modifier = Modifier.fillMaxWidth()) {
+          Column(
+            modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+          ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                MeetingAgentAvatar(participant.displayName, participant.profileName, task, roomStatus,
+                    isHost = participant.isHost, enabled = participant.enabled, waiting = waiting, size = 42.dp)
+                Column {
+                    Text(participant.displayName, style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.SemiBold)
+                    Text(if (participant.isHost) "主持人" else "会议参与者", style = MiuixTheme.textStyles.footnote2,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                }
+            }
             ParticipantDetailRow("Profile", "@${participant.profileName}")
             ParticipantDetailRow("模型", modelLabel)
             ParticipantDetailRow(
                 "执行进程",
-                participantProcessLabel(participant, task, roomStatus),
+                participantProcessLabel(participant, task, roomStatus, waiting),
             )
             if (!participant.enabled) {
                 ParticipantDetailRow("状态", "已停用，不接收新任务；历史进程仍保留")
@@ -1284,15 +1307,7 @@ private fun MeetingParticipantDialog(
             if (participant.profileSummary.isNotBlank()) {
                 ParticipantDetailRow("职责", participant.profileSummary)
             }
-            Text(
-                text = if (participant.isHost) {
-                    "主持人负责选择参与者、监督并行任务并汇总结果；用户明确 @ 时由用户决定执行者。"
-                } else {
-                    "参与者只接收本轮独立任务，不自动继承其他参与者的上下文。"
-                },
-                style = MiuixTheme.textStyles.footnote2,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            )
+          }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1329,8 +1344,11 @@ private fun ParticipantDetailRow(label: String, value: String) {
 private fun MeetingParticipantEntity.modelDisplayLabel(providers: List<ProviderSetting>): String {
     val modelId = modelId?.trim().orEmpty()
     if (modelId.isEmpty()) return "自动选择 · Profile → 全局 Subagent → 主模型"
-    val provider = providerId?.let { expected -> providers.firstOrNull { it.id == expected } }
-        ?: providers.firstOrNull { candidate -> candidate.models.any { it.id == modelId } }
+    val provider = if (providerId != null) {
+        providers.firstOrNull { it.id == providerId }
+    } else {
+        providers.firstOrNull { candidate -> candidate.models.any { it.id == modelId } }
+    }
     val model = provider?.models?.firstOrNull { it.id == modelId }
     return when {
         provider != null && model != null -> "${provider.name} · ${model.displayName.ifBlank { model.modelId }}"

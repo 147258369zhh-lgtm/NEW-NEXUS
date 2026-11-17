@@ -11,12 +11,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -24,7 +24,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Dns
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -56,19 +58,23 @@ import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.model.AgentModelOptionUi
 import io.github.mangi.eta.ui.model.AgentModelPickerUiState
 import io.github.mangi.eta.ui.model.filterGroups
+import io.github.mangi.eta.ui.model.formatCompactTokenCount
 import io.github.mangi.eta.ui.model.modelCount
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
+import top.yukonga.miuix.kmp.basic.DropdownImpl
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InputField
+import top.yukonga.miuix.kmp.basic.ListPopupColumn
 import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.overlay.OverlayBottomSheet
-import top.yukonga.miuix.kmp.overlay.OverlayListPopup
+import top.yukonga.miuix.kmp.squircle.squircleBorder
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.window.WindowListPopup
 
 /**
  * 模型不多时用输入栏上方的轻量弹窗一次列完；模型较多时弹窗既放不下也不好找，
@@ -78,42 +84,24 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 internal fun AgentModelPickerButton(
     state: AgentModelPickerUiState,
     isStreaming: Boolean,
-    popupAnchorTopPx: Int,
-    popupMaxHeight: Dp,
     onModelSelected: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var showPopup by remember { mutableStateOf(false) }
     var showSheet by remember { mutableStateOf(false) }
     // 每次打开面板换一个 key，搜索词、筛选与滚动位置都从头开始。
     var sheetSession by remember { mutableIntStateOf(0) }
     val selected = state.selectedModel
     val enabled = !isStreaming && !state.isChanging && state.providerGroups.isNotEmpty()
     LaunchedEffect(enabled) {
-        if (!enabled) {
-            showPopup = false
-            showSheet = false
-        }
-    }
-    val density = LocalDensity.current
-    val popupWindowInsetPx = with(density) { 14.dp.roundToPx() }
-    val popupPositionProvider = remember(popupAnchorTopPx, popupWindowInsetPx) {
-        InputPopupPositionProvider(
-            inputContainerTopPx = popupAnchorTopPx,
-            windowHorizontalInsetPx = popupWindowInsetPx,
-        )
+        if (!enabled) showSheet = false
     }
     val currentModel = selected?.displayName ?: stringResource(R.string.model_not_selected)
     val switchModelDescription = stringResource(R.string.model_switch_current, currentModel)
     Box(modifier = modifier) {
         IconButton(
             onClick = {
-                if (state.modelCount <= ModelPopupLimit) {
-                    showPopup = true
-                } else {
-                    sheetSession += 1
-                    showSheet = true
-                }
+                sheetSession += 1
+                showSheet = true
             },
             enabled = enabled,
             minWidth = ChatInputActionSize,
@@ -129,32 +117,19 @@ internal fun AgentModelPickerButton(
             )
         }
 
-        OverlayListPopup(
-            show = showPopup && popupAnchorTopPx > 0,
-            popupPositionProvider = popupPositionProvider,
-            alignment = PopupPositionProvider.Align.TopEnd,
-            onDismissRequest = { showPopup = false },
-            maxHeight = popupMaxHeight,
-            minWidth = ModelPopupWidth,
-        ) {
-            ModelQuickList(
-                state = state,
-                onModelSelected = { modelId ->
-                    showPopup = false
-                    onModelSelected(modelId)
-                },
-            )
-        }
-
         OverlayBottomSheet(
             show = showSheet,
-            title = stringResource(R.string.model_picker_title),
+            title = null,
             onDismissRequest = { showSheet = false },
-            insideMargin = DpSize(0.dp, 0.dp),
+            insideMargin = DpSize(16.dp, 0.dp),
+            cornerRadius = 30.dp,
+            backgroundColor = MiuixTheme.colorScheme.surface.copy(alpha = 0.95f),
+            dragHandleColor = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.24f),
         ) {
             key(sheetSession) {
                 ModelSheetContent(
                     state = state,
+                    onDismiss = { showSheet = false },
                     onModelSelected = { modelId ->
                         showSheet = false
                         onModelSelected(modelId)
@@ -207,10 +182,12 @@ private sealed interface ModelSheetEntry {
 @Composable
 private fun ModelSheetContent(
     state: AgentModelPickerUiState,
+    onDismiss: () -> Unit,
     onModelSelected: (String) -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
     var providerFilter by remember { mutableStateOf<String?>(null) }
+    var showProviderFilter by remember { mutableStateOf(false) }
     val entries = remember(state.providerGroups, query, providerFilter) {
         state.filterGroups(query)
             .filter { providerFilter == null || it.providerId == providerFilter }
@@ -235,7 +212,10 @@ private fun ModelSheetContent(
     val selectedId = select.pendingId ?: state.selectedModel?.id
     val density = LocalDensity.current
     // 面板高度固定，不随搜索结果伸缩；键盘弹出时由面板的约束自然压缩列表区域。
-    val sheetHeight = with(density) { LocalWindowInfo.current.containerSize.height.toDp() } * 0.68f
+    val sheetHeight = with(density) { LocalWindowInfo.current.containerSize.height.toDp() } * 0.82f
+    val providerFilterLabel = providerFilter?.let { id ->
+        state.providerGroups.firstOrNull { it.providerId == id }?.providerName
+    } ?: stringResource(R.string.model_picker_filter_all)
 
     Column(
         modifier = Modifier
@@ -243,43 +223,143 @@ private fun ModelSheetContent(
             .height(sheetHeight)
             .navigationBarsPadding(),
     ) {
-        InputField(
-            query = query,
-            onQueryChange = { query = it },
-            onSearch = {},
-            expanded = false,
-            onExpandedChange = {},
-            label = stringResource(R.string.ui_search_model_df5586),
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .padding(top = 4.dp, bottom = 8.dp),
-        )
-        if (state.providerGroups.size > 1) {
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.padding(bottom = 6.dp),
+                .padding(horizontal = 12.dp)
+                .padding(top = 5.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .squircleSurface(MiuixTheme.colorScheme.primary.copy(alpha = 0.12f), 13.dp)
+                    .squircleBorder(
+                        0.5.dp,
+                        MiuixTheme.colorScheme.primary.copy(alpha = 0.24f),
+                        13.dp,
+                    ),
+                contentAlignment = Alignment.Center,
             ) {
-                item(key = "all") {
-                    EtaChoiceChip(
-                        text = stringResource(R.string.model_picker_filter_all),
-                        selected = providerFilter == null,
-                        onClick = { providerFilter = null },
-                    )
-                }
-                items(state.providerGroups, key = { it.providerId }) { group ->
-                    EtaChoiceChip(
-                        text = group.providerName,
-                        selected = providerFilter == group.providerId,
-                        onClick = { providerFilter = group.providerId },
+                state.selectedModel?.let { selected ->
+                    ModelBrandMark(
+                        modelId = selected.modelId,
+                        sourceType = selected.providerSourceType,
+                        size = 24.dp,
                     )
                 }
             }
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                Text(
+                    text = stringResource(R.string.model_picker_title),
+                    style = MiuixTheme.textStyles.title3,
+                )
+                Text(
+                    text = state.selectedModel?.let { "${it.providerName} · ${it.displayName}" }
+                        ?: stringResource(R.string.model_not_selected),
+                    style = MiuixTheme.textStyles.footnote2,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            IconButton(
+                onClick = onDismiss,
+                minWidth = 32.dp,
+                minHeight = 32.dp,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Close,
+                    contentDescription = "关闭模型选择",
+                    modifier = Modifier.size(17.dp),
+                    tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+            }
         }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp)
+                .padding(top = 1.dp, bottom = 7.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            InputField(
+                query = query,
+                onQueryChange = { query = it },
+                onSearch = {},
+                expanded = false,
+                onExpandedChange = {},
+                label = stringResource(R.string.ui_search_model_df5586),
+                modifier = Modifier.weight(1f),
+            )
+            Box {
+                Row(
+                    modifier = Modifier
+                        .width(112.dp)
+                        .heightIn(min = 48.dp)
+                        .squircleSurface(
+                            MiuixTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.86f),
+                            16.dp,
+                        )
+                        .squircleBorder(
+                            0.5.dp,
+                            MiuixTheme.colorScheme.outline.copy(alpha = 0.3f),
+                            16.dp,
+                        )
+                        .clickable { showProviderFilter = true }
+                        .padding(horizontal = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Tune,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MiuixTheme.colorScheme.primary,
+                    )
+                    Text(
+                        text = providerFilterLabel,
+                        style = MiuixTheme.textStyles.footnote1,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                WindowListPopup(
+                    show = showProviderFilter,
+                    alignment = PopupPositionProvider.Align.End,
+                    onDismissRequest = { showProviderFilter = false },
+                ) {
+                    val providers = listOf(null to stringResource(R.string.model_picker_filter_all)) +
+                        state.providerGroups.map { it.providerId to it.providerName }
+                    ListPopupColumn {
+                        providers.forEachIndexed { index, (providerId, label) ->
+                            DropdownImpl(
+                                text = label,
+                                optionSize = providers.size,
+                                isSelected = providerFilter == providerId,
+                                index = index,
+                                onSelectedIndexChange = {
+                                    providerFilter = providerId
+                                    showProviderFilter = false
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        Text(
+            text = if (providerFilter == null) "全部模型" else "模型列表",
+            style = MiuixTheme.textStyles.footnote2,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp),
+        )
         LazyColumn(
             state = listState,
-            contentPadding = PaddingValues(top = 2.dp, bottom = 12.dp),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth(),
@@ -362,33 +442,74 @@ private fun ModelPickerRow(
     onClick: () -> Unit,
     horizontalPadding: Dp = 8.dp,
 ) {
-    val containerColor = if (selected) MiuixTheme.colorScheme.tertiaryContainer else Color.Transparent
+    val containerColor = if (selected) MiuixTheme.colorScheme.tertiaryContainer
+    else MiuixTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f)
     val contentColor = if (selected) MiuixTheme.colorScheme.onTertiaryContainer else MiuixTheme.colorScheme.onSurface
+    val details = buildList {
+        add(model.providerName)
+        model.contextWindow?.let { add("${formatCompactTokenCount(it)} 上下文") }
+        if (!model.id.equals(model.displayName, ignoreCase = true)) add(model.id)
+    }.joinToString(" · ")
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = horizontalPadding, vertical = 2.dp)
-            .squircleSurface(color = containerColor, cornerRadius = 12.dp)
+            .padding(horizontal = horizontalPadding, vertical = 3.dp)
+            .squircleSurface(color = containerColor, cornerRadius = 16.dp)
+            .squircleBorder(
+                0.5.dp,
+                if (selected) MiuixTheme.colorScheme.primary.copy(alpha = 0.38f)
+                else MiuixTheme.colorScheme.outline.copy(alpha = 0.22f),
+                16.dp,
+            )
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 11.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = model.displayName,
-            style = MiuixTheme.textStyles.body2,
-            color = contentColor,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .squircleSurface(MiuixTheme.colorScheme.surface.copy(alpha = 0.88f), 12.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            ModelBrandMark(
+                modelId = model.modelId,
+                sourceType = model.providerSourceType,
+                size = 24.dp,
+            )
+        }
+        Spacer(Modifier.width(11.dp))
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = model.displayName,
+                style = MiuixTheme.textStyles.body2,
+                color = contentColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = details,
+                style = MiuixTheme.textStyles.footnote2,
+                color = if (selected) contentColor.copy(alpha = 0.72f)
+                else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
         if (selected) {
             Spacer(modifier = Modifier.width(8.dp))
-            Icon(
-                imageVector = Icons.Rounded.Check,
-                contentDescription = stringResource(R.string.ui_current_model_a0af8f),
-                modifier = Modifier.size(18.dp),
-                tint = contentColor,
-            )
+            Box(
+                modifier = Modifier
+                    .size(22.dp)
+                    .squircleSurface(MiuixTheme.colorScheme.primary, 11.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Check,
+                    contentDescription = stringResource(R.string.ui_current_model_a0af8f),
+                    modifier = Modifier.size(14.dp),
+                    tint = MiuixTheme.colorScheme.onPrimary,
+                )
+            }
         }
     }
 }

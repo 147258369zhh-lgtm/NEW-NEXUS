@@ -5,7 +5,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import io.github.mangi.eta.R
-import io.github.mangi.eta.agent.memory.AgentMemoryContextBuilder
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.data.repository.AgentMemoryRepository
@@ -26,8 +25,10 @@ internal class AgentMemoryStore(
 
     var memoryState by mutableStateOf(AgentMemoryUiState())
         private set
+    private var loadGeneration = 0L
 
     fun refreshMemory() {
+        if (memoryState.isSaving || memoryState.hasUnsavedChanges) return
         loadScope(memoryState.selectedScope)
     }
 
@@ -42,18 +43,29 @@ internal class AgentMemoryStore(
     }
 
     private fun loadScope(selectedScope: AgentMemoryScope) {
+        val generation = ++loadGeneration
         memoryState = memoryState.copy(isLoading = true, notice = null)
         scope.launch(Dispatchers.IO) {
             runCatching {
                 val snapshot = AgentMemoryRepository.snapshot(selectedScope)
-                val enabled = AgentMemoryRepository.isEnabled()
-                val scopes = (listOf(AgentMemoryScope.GLOBAL) + AgentMemoryRepository.listScopes())
-                    .distinctBy { it.key }
-                val contextWindow = RuntimeConfigRepository.currentRuntimeConfig()?.contextWindow
-                LoadedMemory(snapshot, enabled, scopes, AgentMemoryContextBuilder.coreBudgetChars(contextWindow))
+                val enabled = try { AgentMemoryRepository.isEnabled() }
+                    catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                    catch (failure: Exception) {
+                        AndroidAgentLogger.warn("Memory enabled setting unavailable: type=${failure.safeLogType()}")
+                        memoryState.enabled
+                    }
+                val catalog = io.github.mangi.eta.data.repository.MemoryManagementCatalog.load(appContext)
+                // A model credential/configuration failure must not make local documents unreadable.
+                val contextWindow = try { RuntimeConfigRepository.currentRuntimeConfig()?.contextWindow }
+                    catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                    catch (_: Exception) { null }
+                LoadedMemory(snapshot, enabled, catalog,
+                    io.github.mangi.eta.agent.memory.TaskMemorySelector.coreBudget(contextWindow),
+                    io.github.mangi.eta.agent.memory.TaskMemorySelector.budget(contextWindow))
             }.fold(
                 onSuccess = { loaded ->
                     withContext(Dispatchers.Main) {
+                        if (generation != loadGeneration) return@withContext
                         memoryState = AgentMemoryUiState(
                             enabled = loaded.enabled,
                             isLoading = false,
@@ -62,8 +74,13 @@ internal class AgentMemoryStore(
                             savedRevision = loaded.snapshot.revision,
                             draftBytes = loaded.snapshot.byteSize,
                             coreBudgetChars = loaded.coreBudget,
-                            scopes = loaded.scopes,
+                            totalBudgetChars = loaded.totalBudget,
+                            scopes = (loaded.catalog.scopes + selectedScope).distinctBy { it.key },
+                            scopeNames = loaded.catalog.names,
+                            characters = loaded.catalog.characters,
                             selectedScope = selectedScope,
+                            notice = loaded.catalog.unavailableSources.takeIf { it.isNotEmpty() }
+                                ?.let { "部分分类暂不可用：${it.joinToString("、")}；已保留可读取的记忆" },
                         )
                     }
                 },
@@ -72,6 +89,7 @@ internal class AgentMemoryStore(
                         "Agent memory UI load failed: type=${throwable.safeLogType()}"
                     }
                     withContext(Dispatchers.Main) {
+                        if (generation != loadGeneration) return@withContext
                         memoryState = memoryState.copy(
                             isLoading = false,
                             notice = appContext.getString(R.string.state_ui_failed_to_read_memory_please_try_again_later_caeaa6),
@@ -85,8 +103,9 @@ internal class AgentMemoryStore(
     private data class LoadedMemory(
         val snapshot: io.github.mangi.eta.data.repository.AgentMemorySnapshot,
         val enabled: Boolean,
-        val scopes: List<AgentMemoryScope>,
+        val catalog: io.github.mangi.eta.data.repository.MemoryManagementTargets,
         val coreBudget: Int,
+        val totalBudget: Int,
     )
 
     fun updateMemoryDraft(content: String) {

@@ -6,7 +6,7 @@ import io.github.mangi.eta.core.HookInstallation
 import io.github.mangi.eta.core.HookRegistrar
 import io.github.mangi.eta.core.ModuleConfig
 import io.github.mangi.eta.core.ModuleLogger
-import io.github.mangi.eta.hook.system.CircleToSearchInvoker
+import io.github.mangi.eta.hook.system.NexaAssistantGestureInvoker
 
 import android.app.Activity
 import android.content.Context
@@ -101,7 +101,7 @@ internal object ColorDirectHooks {
                 return@intercept chain.proceed()
             }
 
-            if (tryStartCircleToSearch(activity, logger)) {
+            if (tryStartNexaAssistant(activity, logger)) {
                 finishColorDirectActivity(activity)
                 null
             } else {
@@ -110,23 +110,21 @@ internal object ColorDirectHooks {
         }
     }
 
-    private fun tryStartCircleToSearch(context: Context, logger: ModuleLogger): Boolean {
+    private fun tryStartNexaAssistant(context: Context, logger: ModuleLogger): Boolean {
         val now = SystemClock.uptimeMillis()
-        if (now - lastHandledUptime <= ModuleConfig.INTERCEPT_DEDUP_WINDOW_MS) {
+        if (lastHandledUptime > 0L &&
+            now - lastHandledUptime <= ModuleConfig.INTERCEPT_DEDUP_WINDOW_MS
+        ) {
             logger.debug { "$SOURCE: 命中去重窗口，吞掉重复双指识屏" }
             return true
         }
 
-        if (!CircleToSearchInvoker.isAvailable(context, logger, SOURCE, "回退小布双指识屏")) {
-            return false
-        }
-
-        if (!CircleToSearchInvoker.trigger(logger, "$SOURCE 双指识屏")) {
+        if (!NexaAssistantGestureInvoker.trigger(context, logger, "$SOURCE 双指识屏")) {
             return false
         }
 
         lastHandledUptime = now
-        logger.debug { "$SOURCE: 命中双指识屏，已转发 Circle to Search" }
+        logger.debug { "$SOURCE: 命中双指识屏，已请求 NEXA 助手" }
         return true
     }
 

@@ -57,7 +57,7 @@ internal class AgentTaskRepository(
     }
 
     suspend fun delete(definitionId: String) {
-        dao.deleteDefinition(definitionId)
+        dao.deleteDefinitionIfIdle(definitionId)
     }
 
     /** Queues one user-triggered execution without changing the recurring schedule. */

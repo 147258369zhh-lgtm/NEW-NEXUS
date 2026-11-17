@@ -1,0 +1,11 @@
+Nexus uses the unmodified official sherpa-onnx Android runtime 2.0.1.
+Project: https://github.com/k2-fsa/sherpa-onnx
+Source revision: af2d8d81dbfa61c4cea4c568da78f3982edca005
+Artifact: sherpa-onnx-static-link-onnxruntime-2.0.1.aar
+SHA-256: 07e042d97f3a6bd5b7fe74d4eef0513dc01a714b16c15a903250095aba43a575
+The build verifies this digest before packaging.
+
+sherpa-onnx is distributed under Apache License 2.0; see sherpa-onnx-Apache-2.0.txt.
+The statically linked ONNX Runtime uses the MIT license; see onnxruntime-MIT.txt.
+Model weights are downloaded or imported separately and retain their own licenses.
+Nexus adapters, package validation and lifecycle coordination are maintained separately.

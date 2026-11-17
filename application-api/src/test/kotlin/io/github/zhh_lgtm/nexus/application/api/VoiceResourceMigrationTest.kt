@@ -9,6 +9,18 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class VoiceResourceMigrationTest {
+    @Test fun nexusBackupsHaveAnExplicitRestorePurposeAndRejectUnsupportedSources() {
+        val manifest = NexusMigrationManifest(sourceApplicationId = io.github.zhh_lgtm.nexus.kernel.api.NexusProduct.APPLICATION_ID,
+            sourceVersionName = "0.1.0", sourceDatabaseVersions = mapOf("eta.db" to 28), createdAt = 1, encrypted = true,
+            entries = listOf(MigrationArtifactEntry("data/report..final.md", "a".repeat(64), 10, MigrationCategory.WORKSPACE_FILES)))
+        assertFalse(NexusMigrationValidator.validate(manifest).valid)
+        assertTrue(NexusMigrationValidator.validate(manifest, MigrationPurpose.RESTORE_NEXUS).valid)
+        assertFalse(NexusMigrationValidator.validate(manifest.copy(sourceApplicationId = "unrelated.application")).valid)
+        val huge = manifest.copy(entries = listOf(MigrationArtifactEntry("one", "a".repeat(64), Long.MAX_VALUE, MigrationCategory.MODELS),
+            MigrationArtifactEntry("two", "b".repeat(64), Long.MAX_VALUE, MigrationCategory.MODELS)))
+        val rejected = NexusMigrationValidator.validate(huge, MigrationPurpose.RESTORE_NEXUS)
+        assertFalse(rejected.valid); assertEquals(Long.MAX_VALUE, rejected.totalBytes)
+    }
     @Test fun voiceBargeInReleasesAssistantAudioOwner() {
         var state = VoiceSessionSnapshot()
         state = VoiceStateMachine.transition(state, VoiceTransition.StartListening)

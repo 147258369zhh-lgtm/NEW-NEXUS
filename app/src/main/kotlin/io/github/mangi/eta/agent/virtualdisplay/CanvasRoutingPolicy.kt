@@ -71,6 +71,13 @@ internal object CanvasRoutingPolicy {
         CAPTURE_COMPAT_FLAGS,
     )
 
+    fun flagProfile(flags: Int): VirtualDisplayFlagProfile = when (flags) {
+        TRUSTED_INTERACTIVE_FLAGS -> VirtualDisplayFlagProfile.TRUSTED_INTERACTIVE
+        INTERACTIVE_COMPAT_FLAGS -> VirtualDisplayFlagProfile.INTERACTIVE_COMPAT
+        CAPTURE_COMPAT_FLAGS -> VirtualDisplayFlagProfile.CAPTURE_COMPAT
+        else -> VirtualDisplayFlagProfile.UNKNOWN
+    }
+
     private val MAIN_DISPLAY_ONLY_PACKAGES = setOf(
         "android",
         "com.android.systemui",

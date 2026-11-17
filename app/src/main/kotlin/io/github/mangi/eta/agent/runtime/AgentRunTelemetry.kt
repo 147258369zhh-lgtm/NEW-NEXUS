@@ -30,6 +30,7 @@ internal data class AgentRunTelemetrySnapshot(
     val recordId: String = runId,
     val children: List<AgentMetricChild> = emptyList(),
     val requests: List<AgentMetricRequest> = emptyList(),
+    val projectId: String? = null,
 )
 
 /** Captures facts once in Runtime; UI replay never enters this recorder. No text/arguments/results are kept. */
@@ -39,6 +40,7 @@ internal class AgentRunTelemetry(
     private val monotonicClock: () -> Long = { System.nanoTime() / 1_000_000L },
     private val onSnapshot: (AgentRunTelemetrySnapshot) -> Unit = {},
     private val recordId: String = request.runId,
+    private val projectId: String? = null,
     private val priceResolver: (String, String) -> AgentTokenPrice? = { _, _ -> null },
 ) {
     private data class Model(val modelConfig: AgentModelClient.ModelConfig, val providerId: String, val id: String, val name: String,
@@ -136,6 +138,14 @@ internal class AgentRunTelemetry(
             is AgentEvent.AccessibilityWaiting -> once("accessibility:${event.outage}:${event.phase.wireValue}", "accessibility",
                 label = event.phase.wireValue)
             is AgentEvent.GuiControlChanged -> addStep("gui", label = event.status.wireValue)
+            is AgentEvent.ApprovalChanged -> once(
+                "approval:${event.approvalId}:${event.phase}", "approval", label = event.phase.name.lowercase(),
+                success = when (event.phase) {
+                    RunApprovalPhase.APPROVED -> true
+                    RunApprovalPhase.REQUESTED -> null
+                    else -> false
+                },
+            )
             is AgentEvent.UserSupplementReceived -> once("supplement:${event.index}", "supplement")
             is AgentEvent.SubagentProgress -> once("subagent:${event.round}:${event.toolCallId}:${event.subagentId}", "subagent", event.round, toolName(event.subagentType))
             is AgentEvent.UsageReceived -> if (usageBefore != metrics.snapshot()) addStep("usage", event.round)
@@ -187,7 +197,7 @@ internal class AgentRunTelemetry(
                     if (child.status == AgentMetricStatus.RUNNING) (elapsed() - child.startElapsed).coerceAtLeast(0) else child.durationMs,
                     child.status, child.revision, child.model.providerId, child.model.id, child.model.name,
                     child.metrics.snapshot(), child.model.price, child.model.priceCaptured)
-            }, requestLedger.snapshot() + children.values.flatMap { it.requests.snapshot() },
+            }, requestLedger.snapshot() + children.values.flatMap { it.requests.snapshot() }, projectId,
         )
     }
 

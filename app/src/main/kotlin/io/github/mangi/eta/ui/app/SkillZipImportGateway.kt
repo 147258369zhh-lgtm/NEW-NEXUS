@@ -4,7 +4,7 @@ import android.content.Context
 import io.github.mangi.eta.agent.skill.SkillInstallErrorCode
 import io.github.mangi.eta.agent.skill.SkillInstallResult
 import io.github.mangi.eta.agent.skill.SkillRuntime
-import io.github.mangi.eta.agent.skill.SkillVersionService
+import io.github.mangi.eta.agent.capability.SkillMarketService
 import java.io.InputStream
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
@@ -25,7 +25,6 @@ internal class CoreSkillZipImportGateway(
     context: Context,
 ) : SkillZipImportGateway {
     private val appContext = context.applicationContext
-    private val installer = SkillRuntime.createPackageInstaller(appContext)
 
     override suspend fun installLocalZip(
         openStream: () -> InputStream,
@@ -33,24 +32,16 @@ internal class CoreSkillZipImportGateway(
         expectedReplacementId: String?,
         expectedArchiveSha256: String?,
     ): SkillZipImportOutcome {
-        if (replaceUserSkill && !expectedReplacementId.isNullOrBlank()) {
-            val backup = runCatching {
-                SkillVersionService(appContext).backupCurrent(expectedReplacementId)
-            }
-            if (backup.isFailure) {
-                return SkillZipImportOutcome.Failure(
-                    SkillZipImportOutcome.FailureCode.VERSION_BACKUP_FAILED,
-                )
-            }
-        }
         val callingContext = currentCoroutineContext()
-        return installer.installLocalZip(
-            openStream = openStream,
-            replaceUserSkill = replaceUserSkill,
-            expectedReplacementId = expectedReplacementId,
-            expectedArchiveSha256 = expectedArchiveSha256,
-            isCancelled = { !callingContext.isActive },
-        ).toZipImportOutcome()
+        return SkillMarketService(appContext).use { market ->
+            market.installLocalZip(
+                openStream = openStream,
+                replaceUserSkill = replaceUserSkill,
+                expectedReplacementId = expectedReplacementId,
+                expectedArchiveSha256 = expectedArchiveSha256,
+                isCancelled = { !callingContext.isActive },
+            ).toZipImportOutcome()
+        }
     }
 }
 
@@ -82,6 +73,7 @@ internal fun SkillInstallResult.toZipImportOutcome(): SkillZipImportOutcome = wh
         } else {
             error.code.toUiFailureCode()
         },
+        message = error.message,
     )
 }
 
@@ -101,6 +93,7 @@ internal fun SkillInstallErrorCode.toUiFailureCode(): SkillZipImportOutcome.Fail
     SkillInstallErrorCode.NO_SKILL_FOUND -> SkillZipImportOutcome.FailureCode.NO_SKILL
     SkillInstallErrorCode.MULTIPLE_SKILLS_FOUND -> SkillZipImportOutcome.FailureCode.MULTIPLE_SKILLS
     SkillInstallErrorCode.INVALID_SELECTION -> SkillZipImportOutcome.FailureCode.PACKAGE_CHANGED
+    SkillInstallErrorCode.CHECKSUM_MISMATCH -> SkillZipImportOutcome.FailureCode.PACKAGE_CHANGED
     SkillInstallErrorCode.INVALID_SKILL,
     SkillInstallErrorCode.DUPLICATE_SKILL_ID,
     -> SkillZipImportOutcome.FailureCode.INVALID_SKILL
@@ -110,6 +103,7 @@ internal fun SkillInstallErrorCode.toUiFailureCode(): SkillZipImportOutcome.Fail
     SkillInstallErrorCode.CANCELLED -> SkillZipImportOutcome.FailureCode.READ_FAILED
     SkillInstallErrorCode.IO_ERROR -> SkillZipImportOutcome.FailureCode.READ_FAILED
     SkillInstallErrorCode.COMMIT_FAILED -> SkillZipImportOutcome.FailureCode.STORAGE_FAILED
+    SkillInstallErrorCode.DEPENDENCY_SETUP_REQUIRED -> SkillZipImportOutcome.FailureCode.DEPENDENCY_SETUP_REQUIRED
 }
 
 internal sealed interface SkillZipImportOutcome {
@@ -124,6 +118,7 @@ internal sealed interface SkillZipImportOutcome {
 
     data class Failure(
         val code: FailureCode,
+        val message: String? = null,
     ) : SkillZipImportOutcome
 
     data class InstalledSkill(
@@ -152,5 +147,6 @@ internal sealed interface SkillZipImportOutcome {
         STORAGE_FAILED,
         VERSION_BACKUP_FAILED,
         RECOVERY_REQUIRED,
+        DEPENDENCY_SETUP_REQUIRED,
     }
 }

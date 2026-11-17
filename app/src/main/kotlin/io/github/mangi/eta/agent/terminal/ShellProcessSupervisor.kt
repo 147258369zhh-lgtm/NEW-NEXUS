@@ -6,6 +6,7 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
+import io.github.mangi.eta.agent.runtime.RuntimeInvocationScope
 
 /** 负责 Shell 进程的启动接纳、所有权识别、进程树终止与回收。 */
 internal class ShellProcessSupervisor(
@@ -13,6 +14,9 @@ internal class ShellProcessSupervisor(
     private val setsidCommand: String = "setsid",
     private val rootAvailable: () -> Boolean = { TerminalRuntime.rootAvailable },
     private val ptyExecutable: () -> File? = { TerminalRuntime.nativeExecutable(PTY_EXECUTABLE) },
+    private val workspacePath: String? = null,
+    private val linuxLimits: LinuxExecutionLimits? = null,
+    private val processStarter: (ProcessBuilder) -> Process = ProcessBuilder::start,
 ) {
     private companion object {
         const val PROCESS_REAP_TIMEOUT_MS = 1_000L
@@ -30,6 +34,8 @@ internal class ShellProcessSupervisor(
 
     private val activeProcesses = mutableSetOf<Process>()
     private val processMetadata = mutableMapOf<Process, ProcessMetadata>()
+    private var startingProcesses = 0
+    fun activeProcessCount(): Int = synchronized(activeProcesses) { processMetadata.size }
 
     @Volatile
     var isClosing: Boolean = false
@@ -50,6 +56,16 @@ internal class ShellProcessSupervisor(
         ptyCols: Int = DEFAULT_PTY_COLS,
         ptyRows: Int = DEFAULT_PTY_ROWS,
     ): Process? {
+        synchronized(activeProcesses) {
+            if (isClosing || linuxLimits != null && processMetadata.size + startingProcesses >= linuxLimits.maxShells) return null
+            startingProcesses++
+        }
+        return try { startAdmittedShellProcess(identity, command, mergeStderr, environment, linuxRootfsPath, linuxSharedMounts, pty, ptyCols, ptyRows) }
+        finally { synchronized(activeProcesses) { startingProcesses-- } }
+    }
+
+    private fun startAdmittedShellProcess(identity: String, command: String?, mergeStderr: Boolean, environment: TerminalEnvironment,
+        linuxRootfsPath: String?, linuxSharedMounts: List<SharedFolderMount>, pty: Boolean, ptyCols: Int, ptyRows: Int): Process? {
         if (isClosing) return null
         require(identity == "root" || identity == "user") { "identity 仅支持 root/user" }
         require(!environment.isLinux || identity == "root" || LinuxEnvironmentPaths.backendOf(linuxRootfsPath) == LinuxExecutionBackend.PROOT) {
@@ -88,9 +104,9 @@ internal class ShellProcessSupervisor(
                 ProcessBuilder("sh", "-c", launcher)
             }
             if (identity == "user" && environment == TerminalEnvironment.ANDROID) {
-                builder.environment()["HOME"] = TerminalRuntime.userWorkspacePath
+                builder.environment()["HOME"] = workspacePath ?: TerminalRuntime.userWorkspacePath
             }
-            builder.redirectErrorStream(mergeStderr).start()
+            processStarter(builder.redirectErrorStream(mergeStderr))
         }.getOrElse {
             ownershipFile.delete()
             return null
@@ -287,13 +303,18 @@ internal class ShellProcessSupervisor(
         command: String?,
         sharedMounts: List<SharedFolderMount> = emptyList(),
         termType: String = "dumb",
+        inputsWorkspace: String = TerminalRuntime.userWorkspacePath,
     ): String {
+        val boundedCommand = linuxLimits?.command(command) ?: command
         if (LinuxEnvironmentPaths.backendOf(rootfsPath) == LinuxExecutionBackend.PROOT) {
-            return ProotCommandBuilder.payload(rootfsPath, command, sharedMounts, termType)
+            return ProotCommandBuilder.payload(rootfsPath, boundedCommand, sharedMounts, termType,
+                workspace = workspacePath ?: TerminalRuntime.userWorkspacePath, inputsWorkspace = inputsWorkspace)
         }
         val rootfs = shellQuote(rootfsPath)
-        val mode = if (command == null) "session" else "command"
-        val payload = shellQuote(command.orEmpty())
+        val mode = if (boundedCommand == null) "session" else "command"
+        val payload = shellQuote(boundedCommand.orEmpty())
+        val workspace = workspacePath?.let(::shellQuote) ?: TerminalRuntime.ROOT_WORKSPACE_PATH
+        val inputsMount = "eta_mount_optional ${shellQuote(inputsWorkspace)} \"\$eta_rootfs${TerminalRuntime.LINUX_INPUTS_PATH}\" bind"
         // name 经 SharedFolderMounts 校验只含 [A-Za-z0-9._-]，可安全拼进双引号路径。
         val mountsBlock = sharedMounts.joinToString("\n") { mount ->
             "eta_mount_optional ${shellQuote(mount.sourcePath)} " +
@@ -326,8 +347,8 @@ internal class ShellProcessSupervisor(
             fi
             [ -d /data/local/tmp ] || exit 125
             eta_mount_required /data/local/tmp "${'$'}eta_rootfs/data/local/tmp" bind
-            "${'$'}eta_busybox" mkdir -p /data/local/tmp/eta || exit 125
-            eta_mount_required /data/local/tmp/eta "${'$'}eta_rootfs/workspace" bind
+            "${'$'}eta_busybox" mkdir -p $workspace || exit 125
+            eta_mount_required $workspace "${'$'}eta_rootfs/workspace" bind
         """.trimIndent()
         val innerScriptTail = """
             if [ "${'$'}eta_mode" = command ]; then
@@ -358,9 +379,9 @@ internal class ShellProcessSupervisor(
               /bin/sh
         """.trimIndent()
         val innerScript = if (mountsBlock.isEmpty()) {
-            "$innerScriptHead\n$innerScriptTail"
+            "$innerScriptHead\n$inputsMount\n$innerScriptTail"
         } else {
-            "$innerScriptHead\n$mountsBlock\n$innerScriptTail"
+            "$innerScriptHead\n$mountsBlock\n$inputsMount\n$innerScriptTail"
         }
         val discovery = AndroidBusyBox.discoveryScript()
         // Alpine 的 /bin/sh 是指向 /bin/busybox 的绝对符号链接，Android 侧 -x 会按宿主根目录
@@ -541,6 +562,8 @@ internal fun runOneShotShell(
     linuxSharedMounts: List<SharedFolderMount> = emptyList(),
     maxOutputBytes: Int = Int.MAX_VALUE,
 ): OneShotShellResult {
+    val controller = RuntimeInvocationScope.controller
+    controller?.throwIfCancelled()
     val process = processSupervisor.startShellProcess(
         identity = identity,
         command = command,
@@ -554,6 +577,11 @@ internal fun runOneShotShell(
         if (processSupervisor.isClosing) "操作已取消".toByteArray() else "无法启动进程".toByteArray(),
     )
 
+    val cancelled = AtomicBoolean(false)
+    val binding = controller?.register {
+        cancelled.set(true)
+        thread(name = "agent-terminal-call-cancel", isDaemon = true) { processSupervisor.terminateProcessTree(process) }
+    }
     try {
         val output = ByteArrayOutputCollector()
         val stderr = ByteArrayOutputCollector()
@@ -589,6 +617,7 @@ internal fun runOneShotShell(
         stderrThread.join(500)
         stdinThread.join(500)
         val exitCode = process.exitValue()
+        if (cancelled.get()) return OneShotShellResult(-3, output.bytes(), "操作已取消".toByteArray(), output.isTruncated(), stderr.isTruncated())
         // 子进程的失败保留原始语义；声称成功但输入传输失败时不能把不完整写入当作成功。
         if (exitCode == 0 && stdin?.isNotEmpty() == true && stdinFailed.get()) {
             return OneShotShellResult(
@@ -600,7 +629,8 @@ internal fun runOneShotShell(
             exitCode, output.bytes(), stderr.bytes(), output.isTruncated(), stderr.isTruncated(),
         )
     } finally {
-        if (processSupervisor.isClosing) {
+        binding?.close()
+        if (processSupervisor.isClosing || cancelled.get()) {
             processSupervisor.terminateAndReap(process)
         } else {
             processSupervisor.reapProcess(process)

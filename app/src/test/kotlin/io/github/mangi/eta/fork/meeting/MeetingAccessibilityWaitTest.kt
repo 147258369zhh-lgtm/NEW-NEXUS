@@ -77,4 +77,52 @@ class MeetingAccessibilityWaitTest {
         assertEquals(snapshot.timelineEvents, snapshot.toUiState().timelineEvents)
         assertEquals(2, MeetingDatabase.get(context).meetingDao().accessibilityWaitEvents(room).size)
     }
+
+    @Test fun participantWaitingBelongsToCurrentTask() = runBlocking(Dispatchers.IO) {
+        val room = room()
+        MeetingRepository.appendMessage(context, room, MeetingAuthorType.USER, null, "You", "work", now = 100)
+        val snapshot = MeetingRepository.snapshot(context, room).first()!!
+        val worker = MeetingParticipantEntity(roomId = room, profileName = "worker", displayName = "Worker", profileSummary = "")
+        val task = MeetingTaskEntity(id = "current", roomId = room, participantProfile = "worker", instruction = "work",
+            status = MeetingTaskStatus.RUNNING, createdAt = 101, updatedAt = 101)
+        fun event(taskId: String?, type: String) = MeetingEventEntity(id = 1, roomId = room, taskId = taskId,
+            type = type, payloadJson = "{\"profile\":\"worker\",\"phase\":\"waiting\"}", createdAt = 102)
+        fun state(events: List<MeetingEventEntity>) = snapshot.copy(participants = snapshot.participants + worker,
+            tasks = listOf(task), timelineEvents = events).toUiState()
+
+        assertFalse(state(listOf(event("old", "accessibility_wait:old"))).isParticipantWaiting("worker"))
+        assertFalse(state(listOf(event(null, "accessibility_wait:legacy"))).isParticipantWaiting("worker"))
+        assertTrue(state(listOf(event("current", "accessibility_wait:current"))).isParticipantWaiting("worker"))
+        assertTrue(state(listOf(event("current", "approval_wait:current" ).copy(payloadJson =
+            "{\"profile\":\"worker\",\"phase\":\"REQUESTED\"}"))).isParticipantWaiting("worker"))
+    }
+
+    @Test fun accessibilityWaitPersistsTaskAssociation() = runBlocking(Dispatchers.IO) {
+        val room = room()
+        MeetingRepository.recordAccessibilityWait(context, room, "worker", "Worker", "run",
+            AgentEvent.AccessibilityWaiting(1, AccessibilityWaitPhase.WAITING), "task")
+        val snapshot = MeetingRepository.snapshot(context, room).first()!!
+        assertEquals("task", snapshot.timelineEvents.single().taskId)
+        assertEquals("task", snapshot.messages.single().taskId)
+        MeetingRepository.recordAccessibilityWait(context, room, "worker", "Worker", "run",
+            AgentEvent.AccessibilityWaiting(1, AccessibilityWaitPhase.RESTORED))
+        assertEquals("task", MeetingRepository.snapshot(context, room).first()!!.messages.single().taskId)
+    }
+
+    @Test fun hostWaitingAcceptsCurrentTaskAndIndependentCoordination() = runBlocking(Dispatchers.IO) {
+        val room = room()
+        MeetingRepository.appendMessage(context, room, MeetingAuthorType.USER, null, "You", "work", now = 100)
+        val snapshot = MeetingRepository.snapshot(context, room).first()!!
+        val task = MeetingTaskEntity(id = "current", roomId = room, participantProfile = "lead", instruction = "work",
+            status = MeetingTaskStatus.RUNNING, createdAt = 101, updatedAt = 101)
+        fun event(taskId: String?) = MeetingEventEntity(id = 1, roomId = room, taskId = taskId,
+            type = "accessibility_wait:run", payloadJson = "{\"profile\":\"lead\",\"phase\":\"waiting\"}", createdAt = 102)
+        fun state(tasks: List<MeetingTaskEntity>, taskId: String?) = snapshot.copy(tasks = tasks,
+            timelineEvents = listOf(event(taskId))).toUiState()
+
+        assertFalse(state(listOf(task), "old").isParticipantWaiting("lead"))
+        assertTrue(state(listOf(task), null).isParticipantWaiting("lead"))
+        assertTrue(state(listOf(task), "current").isParticipantWaiting("lead"))
+        assertTrue(state(emptyList(), null).isParticipantWaiting("lead"))
+    }
 }

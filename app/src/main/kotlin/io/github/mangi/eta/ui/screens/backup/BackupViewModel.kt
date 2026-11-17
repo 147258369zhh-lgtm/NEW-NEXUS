@@ -16,6 +16,7 @@ internal class BackupViewModel : ViewModel() {
     val importUriState = mutableStateOf<android.net.Uri?>(null)
     val importDialogState = mutableStateOf(false)
     val previewState = mutableStateOf<io.github.mangi.eta.data.repository.EtaBackupSummary?>(null)
+    val importSha256State = mutableStateOf<String?>(null)
     val passwordState = mutableStateOf("")
     val destinationPasswordState = mutableStateOf<String?>(null)
     val selectedOptionsState = mutableStateOf(io.github.mangi.eta.data.repository.EtaBackupOptions())
@@ -39,7 +40,7 @@ internal class BackupViewModel : ViewModel() {
                 status = "操作已取消"
                 throw cancelled
             } catch (failure: Exception) {
-                status = failure.message ?: "操作未完成，请重试"
+                status = "操作未完成 · ${failure.message ?: "请重试"}"
             } finally {
                 operation = null
                 generation++

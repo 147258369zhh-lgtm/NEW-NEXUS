@@ -222,6 +222,7 @@ class SkillIndexService(
     private val provenanceStore = SkillProvenanceStore(context.applicationContext)
     private val usageStore = SkillUsageStore(context.applicationContext)
     private val versionStore = SkillVersionStore(context.applicationContext)
+    private val dependencyStore = SkillDependencyStore(context.applicationContext)
 
     @Volatile
     private var builtinsSeeded = false
@@ -233,11 +234,18 @@ class SkillIndexService(
      * 所有可读写索引的入口都先在同一把跨进程锁内完成待处理文件事务与 Room 快照恢复。
      * 仅能读取文件、不具备 registry 恢复能力的 Loader 会由锁实现保持 fail-closed。
      */
-    internal fun <T> withMutationLock(block: () -> T): T = SkillMutationLock.withLock(
+    internal fun <T> withMutationLock(
+        excludedRecoveryDirectories: Set<File> = emptySet(),
+        block: () -> T,
+    ): T = SkillMutationLock.withLock(
         skillsRoot = skillsRoot,
         recoveryHandler = ::restoreRecoveredRegistry,
+        excludedRecoveryDirectories = excludedRecoveryDirectories,
         block = block,
     )
+
+    internal fun prepareRuntime(entry: SkillIndexEntry, workspace: File, linuxWorkspace: String): SkillRuntimePreparer.Prepared =
+        withMutationLock { SkillRuntimePreparer(skillsRoot).prepare(entry, workspace, linuxWorkspace) }
 
     fun seedBuiltinSkillsIfNeeded() {
         withMutationLock {
@@ -262,6 +270,49 @@ class SkillIndexService(
 
     fun listInstalledSkills(): List<SkillIndexEntry> =
         listSkillsForManagement().filter { it.installed && it.enabled }
+
+    data class EditDocument(val name: String, val body: String, val revision: String)
+
+    fun readForEdit(skillId: String): EditDocument = withMutationLock {
+        synchronized(indexLock) {
+            val entry = listSkillsForManagement(forceRefresh = true).firstOrNull { it.id == skillId && it.installed }
+                ?: throw IllegalArgumentException("未找到已安装的 Skill")
+            val file = File(managedSkillDirectory(entry) ?: error("Skill 目录不可用"), "SKILL.md")
+            require(!Files.isSymbolicLink(file.toPath())) { "Skill 文件不可用" }
+            val raw = file.readText()
+            val parsed = SkillParser.parseSkillFile(file) ?: error("无法读取 Skill")
+            EditDocument(entry.name, parsed.body, editRevision(raw))
+        }
+    }
+
+    fun saveEdit(skillId: String, name: String, body: String, revision: String) = withMutationLock {
+        synchronized(indexLock) {
+            val cleanName = name.trim()
+            require(cleanName.isNotEmpty() && cleanName.length <= 100 && cleanName.none { it == '\n' || it == '\r' || it.isISOControl() }) { "显示名无效" }
+            require(body.toByteArray(Charsets.UTF_8).size <= 512 * 1024) { "正文过长" }
+            val entry = listSkillsForManagement().firstOrNull { it.id == skillId && it.installed }
+                ?: throw IllegalArgumentException("未找到已安装的 Skill")
+            val file = File(managedSkillDirectory(entry) ?: error("Skill 目录不可用"), "SKILL.md")
+            require(!Files.isSymbolicLink(file.toPath())) { "Skill 文件不可用" }
+            val raw = file.readText()
+            require(editRevision(raw) == revision) { "Skill 已被修改，请重新打开后再编辑" }
+            val normalized = raw.removePrefix("\uFEFF").replace("\r\n", "\n")
+            val marker = if (normalized.startsWith("---\n")) Regex("(?m)^---\\s*$").find(normalized, 4) else null
+            require(marker != null) { "Skill 缺少有效的元数据，无法编辑" }
+            val header = normalized.substring(4, marker.range.first)
+            val existingHeader = header.lineSequence().filterNot { it.startsWith("nexa-display-name:") }.joinToString("\n").trimEnd()
+            val escapedName = cleanName.replace("'", "''")
+            val updated = "---\n$existingHeader\nnexa-display-name: '$escapedName'\n---\n\n${body.trim()}\n"
+            val atomic = android.util.AtomicFile(file)
+            val output = atomic.startWrite()
+            try { output.write(updated.toByteArray(Charsets.UTF_8)); atomic.finishWrite(output) }
+            catch (failure: Throwable) { atomic.failWrite(output); throw failure }
+            invalidateIndexLocked()
+        }
+    }
+
+    private fun editRevision(raw: String): String = java.security.MessageDigest.getInstance("SHA-256")
+        .digest(raw.toByteArray(Charsets.UTF_8)).joinToString("") { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
 
     fun findInstalledSkill(identifier: String): SkillIndexEntry? {
         val normalized = SkillParser.normalizeSkillLookup(identifier)
@@ -293,8 +344,11 @@ class SkillIndexService(
             synchronized(indexLock) {
                 val entry = listSkillsForManagement().firstOrNull { it.id == skillId && it.installed }
                     ?: return@synchronized false
+                // 共享依赖仍被其他已安装 Skill 使用时拒绝删除，避免卸载一个 Skill 破坏另一个。
+                if (dependencyStore.dependentsOf(entry.id).isNotEmpty()) return@synchronized false
                 val targetDir = managedSkillDirectory(entry) ?: return@synchronized false
                 val registrySnapshot = captureRegistryRecoverySnapshots(listOf(entry.id)).single()
+                val dependencySnapshot = captureInstalledSkillDependencyOwners(listOf(entry.id)).single()
                 val operation = runCatching {
                     createSkillRecoveryOperationDirectory(skillsRoot)
                 }.getOrElse { return@synchronized false }
@@ -315,6 +369,7 @@ class SkillIndexService(
                                 id = entry.id,
                                 originalTargetExisted = true,
                                 registrySnapshot = registrySnapshot,
+                                dependencySnapshot = dependencySnapshot,
                             )
                         ),
                     )
@@ -335,6 +390,7 @@ class SkillIndexService(
                     }
                     invalidateIndexLocked()
                     journal.clear()
+                    dependencyStore.removeOwner(entry.id)
                     if (entry.source != BUILTIN_SOURCE) {
                         runCatching { provenanceStore.remove(entry.id) }
                         runCatching { usageStore.remove(entry.id) }
@@ -394,13 +450,44 @@ class SkillIndexService(
                 }
                 val registry = registryStore.readStrict()
                 skillIds.distinct().forEach { skillId ->
+                    val existing = registry[skillId]
+                        ?.takeIf {
+                            it.source == USER_SOURCE &&
+                                it.installState == INSTALL_STATE_INSTALLED
+                        }
                     registry[skillId] = SkillRegistryEntry(
-                        enabled = true,
+                        // 更新和回滚替换已安装 Skill 时，不能把用户主动停用的状态改回启用。
+                        enabled = existing?.enabled ?: true,
                         source = USER_SOURCE,
                         installState = INSTALL_STATE_INSTALLED,
                     )
                 }
                 registryStore.write(registry)
+                invalidateIndexLocked()
+            }
+        }
+    }
+
+    /** Registers one resolved dependency and confirms it to the parent journal before clearing the child journal. */
+    internal fun registerDependencyWithParent(
+        skillId: String,
+        transaction: SkillDependencyTransactionJournal,
+    ) {
+        withMutationLock {
+            synchronized(indexLock) {
+                require(builtinStore.findBuiltin(skillId) == null) {
+                    "不能把内置 Skill 登记为依赖"
+                }
+                val registry = registryStore.readStrict()
+                val existing = registry[skillId]
+                    ?.takeIf { it.source == USER_SOURCE && it.installState == INSTALL_STATE_INSTALLED }
+                registry[skillId] = SkillRegistryEntry(
+                    enabled = existing?.enabled ?: true,
+                    source = USER_SOURCE,
+                    installState = INSTALL_STATE_INSTALLED,
+                )
+                registryStore.write(registry)
+                transaction.markDependencyCommitted(skillId)
                 invalidateIndexLocked()
             }
         }
@@ -432,6 +519,7 @@ class SkillIndexService(
         if (recovered.isEmpty()) return
         synchronized(indexLock) {
             val registry = registryStore.readStrict()
+            val newlyCreatedIds = mutableSetOf<String>()
             recovered.flatMap { it.records }.forEach { record ->
                 val snapshot = record.registrySnapshot
                 if (snapshot.entryExisted) {
@@ -442,15 +530,70 @@ class SkillIndexService(
                     )
                 } else {
                     registry.remove(snapshot.skillId)
+                    newlyCreatedIds += snapshot.skillId
                 }
             }
             registryStore.write(registry)
+            try {
+                applyRecoveredDependencyOwners(recovered, dependencyStore::restoreOwners)
+                newlyCreatedIds.forEach { skillId ->
+                    provenanceStore.remove(skillId)
+                    usageStore.remove(skillId)
+                    versionStore.removeAll(skillId)
+                }
+            } catch (failure: Throwable) {
+                // Registry was already restored; keep the journal so both recovery steps retry together.
+                throw SkillRecoveryRequiredException("Skill 依赖边或来源元数据自动恢复失败", failure)
+            }
             invalidateIndexLocked()
         }
     }
 
     internal fun isBuiltinSkillId(skillId: String): Boolean =
         synchronized(indexLock) { builtinStore.findBuiltin(skillId) != null }
+
+    /** 安装成功后登记依赖所有权；依赖目录本身由各自的安装事务持有。 */
+    internal fun recordInstalledSkillDependencies(ownerId: String, dependencyIds: Collection<String>) {
+        dependencyStore.recordOwner(ownerId, dependencyIds)
+    }
+
+    internal fun snapshotInstalledSkillDependencies(): Map<String, Set<String>> =
+        dependencyStore.readAll()
+
+    internal fun restoreInstalledSkillDependenciesSnapshot(snapshot: Map<String, Set<String>>) {
+        dependencyStore.write(snapshot)
+    }
+
+    internal fun recordInstalledSkillDependencies(ownerDependencies: Map<String, Set<String>>) {
+        dependencyStore.recordOwners(ownerDependencies)
+    }
+
+    /** Writes the admitted graph before child commits; the parent snapshot restores it on failure. */
+    internal fun replaceInstalledSkillDependenciesAtomically(ownerDependencies: Map<String, Set<String>>) {
+        if (ownerDependencies.isEmpty()) return
+        dependencyStore.recordOwners(ownerDependencies)
+    }
+
+    internal fun captureInstalledSkillDependencyOwners(
+        ownerIds: Collection<String>,
+    ): List<SkillDependencyRecoverySnapshot> = dependencyStore.captureOwners(ownerIds)
+
+    internal fun tryCaptureInstalledSkillDependencyOwners(
+        ownerIds: Collection<String>,
+    ): List<SkillDependencyRecoverySnapshot> = dependencyStore.tryCaptureOwners(ownerIds)
+
+    internal fun restoreInstalledSkillDependencyOwners(
+        snapshots: List<SkillDependencyRecoverySnapshot>,
+    ) {
+        dependencyStore.restoreOwners(snapshots)
+    }
+
+    internal fun removeParentRollbackSkillOwners(installedIds: Collection<String>) {
+        dependencyStore.removeParentRollback(installedIds)
+    }
+
+    /** 当前仍依赖该 Skill 的其他 Skill；用于卸载保护和设置页说明。 */
+    fun dependentsOf(skillId: String): Set<String> = dependencyStore.dependentsOf(skillId)
 
     private fun seedBuiltinSkillsLocked() {
         if (builtinsSeeded) return
@@ -529,11 +672,13 @@ class SkillIndexService(
         val builtinAsset = builtinAssets[id]
         return SkillIndexEntry(
             id = id,
-            name = frontmatter["name"]?.ifBlank { id } ?: id,
+            name = frontmatter["nexa-display-name"]?.ifBlank { null } ?: frontmatter["name"]?.ifBlank { id } ?: id,
             description = frontmatter["description"]?.trim().orEmpty(),
             dependencies = SkillDependencyParser.parse(frontmatter, metadata),
+            skillDependencies = SkillDependencyParser.parseDeclarations(frontmatter, metadata),
             compatibility = frontmatter["compatibility"]?.trim(),
             metadata = metadata,
+            declaration = SkillDeclarationParser.parse(frontmatter, metadata),
             rootPath = canonicalDir.absolutePath,
             skillFilePath = skillFile.absolutePath,
             hasScripts = File(canonicalDir, "scripts").isDirectory,
@@ -636,6 +781,12 @@ class SkillLoader(private val skillsRoot: File) {
 
 object SkillCompatibilityChecker {
     fun evaluate(entry: SkillIndexEntry): SkillCompatibilityResult {
+        if (entry.declaration.compatibilityProblems.isNotEmpty()) {
+            return SkillCompatibilityResult(
+                available = false,
+                reason = entry.declaration.compatibilityProblems.joinToString("；"),
+            )
+        }
         val raw = buildString {
             append(entry.compatibility.orEmpty())
             if (entry.metadata.isNotEmpty()) {

@@ -116,10 +116,13 @@ class LinuxApkAnalysisInstallerTest {
             fallbackUrls = listOf("https://fallback.invalid/fixture.bin"),
         )
         val target = File(temporaryFolder.root, artifact.fileName)
-
-        assertTrue(VerifiedArtifactDownloader(client, NoopLogger).download(artifact, target))
+        val events = mutableListOf<String>()
+        assertTrue(VerifiedArtifactDownloader(client, NoopLogger).download(artifact, target,
+            onVerifying = { events += "checksum" },
+            onProgress = { done, total -> events += "download:$done/$total" }))
         assertEquals(listOf("official.invalid", "fallback.invalid"), requestedHosts)
         assertEquals("abc", target.readText())
+        assertEquals(listOf("download:3/3", "checksum"), events)
     }
 
     @Test

@@ -6,7 +6,9 @@ import io.github.mangi.eta.agent.memory.AgentMemoryContext
 import io.github.mangi.eta.agent.prompt.PROMPT_INJECTION_MARKER
 import io.github.mangi.eta.agent.prompt.ResolvedPromptInjection
 import io.github.mangi.eta.agent.skill.SkillContext
+import io.github.mangi.eta.agent.skill.SkillDeclaration
 import io.github.mangi.eta.agent.skill.SkillIndexEntry
+import io.github.mangi.eta.agent.skill.SkillProvenance
 import io.github.mangi.eta.agent.device.RootAccessState
 import io.github.mangi.eta.agent.device.RootAccessStatus
 import org.json.JSONArray
@@ -51,7 +53,7 @@ class AgentPromptBuilderTest {
             rootAvailable = false,
             executionContext = TerminalExecutionContext(TerminalEnvironment.DEBIAN, null, "/eta/custom workspace"),
         )
-        val terminal = messages.systemContents().single { it.contains("Eta 内置文件与终端工具") }
+        val terminal = messages.systemContents().single { it.contains("Nexus 内置文件与终端工具") }
         assertTrue(terminal.contains("/eta/custom workspace"))
         assertTrue(terminal.contains("debian"))
         assertTrue(terminal.contains("identity=user"))
@@ -204,6 +206,23 @@ class AgentPromptBuilderTest {
     }
 
     @Test
+    fun composerSelectedSkillIsIncludedEvenWhenTaskDoesNotMatchItsDescription() {
+        val selected = SkillIndexEntry(
+            id = "selected-writing", name = "Writing", description = "Edit prose",
+            rootPath = "/skills/selected-writing", skillFilePath = "/skills/selected-writing/SKILL.md",
+            hasScripts = false, hasReferences = false, hasAssets = false, hasEvals = false,
+        )
+        val messages = AgentPromptBuilder.buildInitialMessages(
+            config = modelConfig(systemPrompt = "", terminalTools = false, browserTools = false),
+            prompt = "Summarize a crash log", images = emptyList(), history = emptyList(),
+            skillContext = SkillContext(installedSkills = listOf(selected), selectedSkillIds = listOf(selected.id)),
+        )
+        val skillMessage = messages.systemContents().single { it.contains("id=selected-writing") }
+        assertTrue(skillMessage.contains("用户已在输入栏明确选择"))
+        assertTrue(skillMessage.contains("先调用 skills_read"))
+    }
+
+    @Test
     fun subagentGuidanceFollowsTheSwitchWithoutChangingOtherSystemMessages() {
         val config = modelConfig("自定义系统约束", terminalTools = true, browserTools = true)
         fun contents(enabled: Boolean) = AgentPromptBuilder.buildSystemMessages(
@@ -219,6 +238,59 @@ class AgentPromptBuilderTest {
         assertFalse(disabled.any { it.contains(subagentGuidance) })
         assertEquals(1, enabled.count { it.contains(subagentGuidance) })
         assertEquals(disabled, enabled.filterNot { it.contains(subagentGuidance) })
+    }
+
+    @Test
+    fun skillCoordinationExplainsSourceVersionAndFailsClosedOnEqualPriorityConflict() {
+        val pdf = SkillIndexEntry(
+            id = "pdf-tools",
+            name = "PDF 工具",
+            description = "制作 PDF 报告",
+            declaration = SkillDeclaration(
+                version = "1.2.0",
+                priority = 2,
+                allowedTools = listOf("read_file"),
+                conflictsWith = listOf("excel-tools"),
+            ),
+            provenance = SkillProvenance(
+                skillId = "pdf-tools",
+                sourceId = "team-market",
+                sourceName = "团队市场",
+                sourceType = "https",
+                version = "1.2.0",
+            ),
+            rootPath = "/skills/pdf-tools",
+            skillFilePath = "/skills/pdf-tools/SKILL.md",
+            hasScripts = false,
+            hasReferences = false,
+            hasAssets = false,
+            hasEvals = false,
+        )
+        val excel = pdf.copy(
+            id = "excel-tools",
+            name = "Excel 表格",
+            description = "整理工作簿和表格",
+            declaration = SkillDeclaration(priority = 2),
+            provenance = null,
+            rootPath = "/skills/excel-tools",
+            skillFilePath = "/skills/excel-tools/SKILL.md",
+        )
+
+        val messages = AgentPromptBuilder.buildSystemMessages(
+            config = modelConfig("", terminalTools = false, browserTools = false),
+            skillContext = SkillContext(installedSkills = listOf(pdf, excel)),
+            memoryContext = AgentMemoryContext.DISABLED,
+            rootAvailable = false,
+            taskPrompt = "用 PDF 工具和 Excel 表格整理报告",
+        )
+        val skillMessage = messages.systemContents().single { it.contains("id=pdf-tools") }
+
+        assertTrue(skillMessage.contains("source=user"))
+        assertTrue(skillMessage.contains("version=1.2.0"))
+        assertTrue(skillMessage.contains("tools=read_file"))
+        assertTrue(skillMessage.contains("未决冲突"))
+        assertTrue(skillMessage.contains("request_user_input"))
+        assertTrue(skillMessage.contains("不会扩大工具权限"))
     }
 
     @Test
@@ -268,7 +340,7 @@ class AgentPromptBuilderTest {
     }
 
     @Test
-    fun promptInjectionPrefixIsExtraSystemMessageAndPostHistoryPrecedesCurrentUser() {
+    fun promptInjectionPrefixIsExtraSystemMessageAndPostHistoryFollowsCurrentUser() {
         val injection = ResolvedPromptInjection(
             prefixText = "用户配置的固定提示词模板：\n\n### 全局\nprefix-rule",
             postHistoryText = "用户配置的当前对话后置提示：\n\n### 全局\npost-history-rule",
@@ -297,8 +369,8 @@ class AgentPromptBuilderTest {
         assertTrue(messages.getJSONObject(postIndex).getBoolean(PROMPT_INJECTION_MARKER))
         assertTrue(prefixIndex < oldQuestionIndex)
         assertTrue(oldAnswerIndex < postIndex)
-        assertTrue(postIndex < currentIndex)
-        assertEquals(messages.length() - 1, currentIndex)
+        assertTrue(currentIndex < postIndex)
+        assertEquals(messages.length() - 1, postIndex)
 
         val durable = AgentConversationCodec.transcript(messages, 0)
         assertFalse(durable.any { it.content.contains("post-history-rule") })
@@ -332,7 +404,7 @@ class AgentPromptBuilderTest {
         val chatCurrent = chat.indexesOfContent("当前问题").single()
         assertEquals("user", chat.getJSONObject(chatPost).getString("role"))
         assertTrue(chat.indexesOfContent("旧回答").single() < chatPost)
-        assertTrue(chatPost < chatCurrent)
+        assertTrue(chatCurrent < chatPost)
 
         val responses = ResponsesRequestBuilder.build(
             modelConfig("", terminalTools = false, browserTools = false),
@@ -345,7 +417,7 @@ class AgentPromptBuilderTest {
         val responsesCurrent = responsesInput.indexesOfContent("当前问题").single()
         assertEquals("user", responsesInput.getJSONObject(responsesPost).getString("role"))
         assertTrue(responsesInput.indexesOfContent("旧回答").single() < responsesPost)
-        assertTrue(responsesPost < responsesCurrent)
+        assertTrue(responsesCurrent < responsesPost)
 
         val anthropicConfig = modelConfig("", terminalTools = false, browserTools = false).copy(
             providerId = "anthropic-test",
@@ -358,7 +430,7 @@ class AgentPromptBuilderTest {
         val anthropicCurrent = anthropicMessages.indexesOfContent("当前问题").single()
         assertEquals("user", anthropicMessages.getJSONObject(anthropicPost).getString("role"))
         assertTrue(anthropicMessages.indexesOfContent("旧回答").single() < anthropicPost)
-        assertTrue(anthropicPost <= anthropicCurrent)
+        assertTrue(anthropicCurrent <= anthropicPost)
 
         val gemini = GeminiInteractionsRequest.build(anthropicConfig.copy(
             providerType = io.github.mangi.eta.data.model.ProviderTypes.GEMINI,
@@ -368,7 +440,7 @@ class AgentPromptBuilderTest {
         val geminiInput = gemini.getJSONArray("input")
         val geminiPost = geminiInput.indexesOfContent("post-history-rule").single()
         val geminiCurrent = geminiInput.indexesOfContent("当前问题").single()
-        assertTrue(geminiPost < geminiCurrent)
+        assertTrue(geminiCurrent < geminiPost)
     }
 
     @Test
@@ -436,6 +508,45 @@ class AgentPromptBuilderTest {
         assertEquals("请解释这个问题", messages.indexesOfContent("请解释这个问题").let {
             messages.getJSONObject(it.single()).getString("content")
         })
+    }
+
+    @Test
+    fun disabledMemoryStillIncludesIndependentlyEnabledLearningForCloudAndEmbeddedModels() {
+        val base = modelConfig("保持简洁", terminalTools = false, browserTools = false)
+        val context = AgentMemoryContext.DISABLED.copy(
+            coreContent = "不可注入的核心资料",
+            scopedContent = "不可注入的项目资料",
+            reviewedContent = "不可注入的确认资料",
+            supportingContent = "不可注入的补充资料",
+            learnedContent = "发布前先检查实际版本再运行测试",
+        )
+        listOf(base, base.copy(providerId = "eta-local-model-runtime-builtin", contextWindow = 4_096)).forEach { config ->
+            val text = AgentPromptBuilder.buildSystemMessages(
+                config = config, skillContext = SkillContext.EMPTY, memoryContext = context, rootAvailable = false,
+            ).systemContents().joinToString("\n")
+
+            assertTrue(text.contains(context.learnedContent))
+            assertFalse(text.contains("不可注入"))
+        }
+    }
+
+    @Test
+    fun disabledMemoryDoesNotExposeLearningInEmbeddedRoleplay() {
+        val roleplay = io.github.mangi.eta.agent.roleplay.RoleplayRunContext(
+            "character", io.github.mangi.eta.agent.roleplay.CharacterCardCodec.create("旅人"),
+            "用户", "", contextWindow = 4_096,
+        )
+        val text = AgentPromptBuilder.buildSystemMessages(
+            config = modelConfig("", terminalTools = false, browserTools = false).copy(
+                providerId = "eta-local-model-runtime-builtin", contextWindow = 4_096,
+            ),
+            skillContext = SkillContext.EMPTY,
+            memoryContext = AgentMemoryContext.DISABLED.copy(learnedContent = "现实发布经验不应进入剧情"),
+            rootAvailable = false,
+            roleplayContext = roleplay,
+        ).systemContents().joinToString("\n")
+
+        assertFalse(text.contains("现实发布经验不应进入剧情"))
     }
 
     private fun modelConfig(

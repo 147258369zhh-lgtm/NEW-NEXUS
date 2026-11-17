@@ -45,4 +45,16 @@ class AutomationTriggerConfigTest {
             AutomationTriggerConfig.validate(AutomationTrigger.APP_OPENED, "Notes")
         }
     }
+
+    @Test fun bluetoothSourceIsOptionalButMustBeABoundedVisibleDeviceLabel() {
+        AutomationTriggerConfig.validate(AutomationTrigger.BLUETOOTH_CONNECTED, "")
+        AutomationTriggerConfig.validate(AutomationTrigger.BLUETOOTH_DISCONNECTED, "AA:BB:CC:DD:EE:FF")
+
+        assertThrows(IllegalArgumentException::class.java) {
+            AutomationTriggerConfig.validate(AutomationTrigger.BLUETOOTH_CONNECTED, "bad\u0000device")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            AutomationTriggerConfig.validate(AutomationTrigger.BLUETOOTH_CONNECTED, "x".repeat(249))
+        }
+    }
 }

@@ -35,6 +35,24 @@ class BrowserSessionRegistryTest {
     private val keys = mutableListOf<String>()
     private val context get() = RuntimeEnvironment.getApplication()
 
+    @Test
+    fun timedOutPendingMainThreadActionNeverRunsLater() {
+        val session = AgentBrowserSession()
+        val executions = java.util.concurrent.atomic.AtomicInteger()
+        val bridge = AgentBrowserSession::class.java.getDeclaredMethod("callOnMain",
+            Long::class.javaPrimitiveType, Function0::class.java).apply { isAccessible = true }
+        val task = FutureTask<Throwable?> {
+            runCatching { bridge.invoke(session, 50L, { executions.incrementAndGet() }) }.exceptionOrNull()
+        }
+        val worker = Thread(task).apply { start() }
+        try {
+            val failure = task.get(2, TimeUnit.SECONDS)
+            assertTrue(failure?.cause?.message.orEmpty().contains("本次操作未执行"))
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(0, executions.get())
+        } finally { worker.interrupt(); worker.join(1000) }
+    }
+
     @After
     fun tearDown() {
         keys.forEach(BrowserSessionRegistry::requestRemove)
@@ -60,6 +78,39 @@ class BrowserSessionRegistryTest {
         first.interruptAgentAction("run-a")
         assertTrue(interrupted(first))
         assertFalse(interrupted(second))
+    }
+
+    @Test
+    fun browserHandoffOpensTheSameConversationWithoutReloadingAndBlocksAgentActions() {
+        val key = newKey()
+        val session = BrowserSessionRegistry.get(key)
+        val view = seedPage(session, "https://login.example/account")
+        val handoff = FutureTask {
+            session.execute(context, JSONObject().put("action", "open_for_user"), "run-login", "tool-handoff")
+        }
+        val worker = Thread(handoff).apply { start() }
+        val container = FrameLayout(context)
+        try {
+            pumpUntil { handoff.isDone }
+            val result = JSONObject(handoff.get(1L, TimeUnit.SECONDS).content)
+            assertTrue(result.getBoolean("ok"))
+            assertEquals("waiting_for_user", result.getString("status"))
+            assertEquals("request_user_input", result.getString("next_tool"))
+            assertTrue(session.snapshots.value.isUserControlling)
+            val intent = shadowOf(context).nextStartedActivity
+            assertEquals(key, intent.getStringExtra("io.github.mangi.eta.extra.BROWSER_SESSION_KEY"))
+            assertEquals(0, view.loads)
+            val blocked = FutureTask {
+                session.execute(context, JSONObject().put("action", "get_page_info"), "run-login", "tool-after")
+            }
+            Thread(blocked).apply { start(); join(1_000L) }
+            assertEquals("USER_CONTROL_ACTIVE", JSONObject(blocked.get(1L, TimeUnit.SECONDS).content).getString("code"))
+        } finally {
+            session.attachTo(container, context)
+            session.detachFrom(container)
+            worker.interrupt()
+            worker.join(1_000L)
+        }
     }
 
     @Test

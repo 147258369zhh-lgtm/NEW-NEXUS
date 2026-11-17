@@ -10,6 +10,25 @@ import androidx.room.Upsert
 
 @Dao
 internal interface ConversationDao : ChunkedTextDao {
+    @Query("SELECT m.id, COALESCE((SELECT substr(content, 1, 160) FROM agent_text_chunks WHERE owner_table = 'conversation_messages' AND owner_id = m.id AND field = 'content' AND chunk_index = 0), substr(m.content, 1, 160)) AS label FROM conversation_messages m WHERE conversation_id = :id AND type = 'user' ORDER BY sort_index")
+    suspend fun questionIndex(id: String): List<ConversationQuestionIndexRow>
+    @Query("SELECT sort_index FROM conversation_messages WHERE conversation_id = :conversationId AND id = :messageId AND type = 'user' LIMIT 1")
+    suspend fun questionSortIndex(conversationId: String, messageId: String): Int?
+    @Query("SELECT * FROM conversation_messages WHERE conversation_id = :conversationId AND sort_index >= :start ORDER BY sort_index LIMIT :limit OFFSET :offset")
+    suspend fun messageRowsAfter(conversationId: String, start: Int, limit: Int, offset: Int = 0): List<ConversationMessageEntity>
+    @Query("SELECT id, title, created_at, updated_at, is_pinned FROM conversations WHERE id IN (:ids)")
+    suspend fun archiveIdentities(ids: List<String>): List<ConversationIdentity>
+
+    @Query("SELECT id, conversation_id, type, content, tool_name, arguments_summary, result_summary, tools_json " +
+        "FROM conversation_messages WHERE conversation_id IN (:ids) ORDER BY conversation_id, sort_index")
+    fun archiveMessageSearchCursor(ids: List<String>): Cursor
+
+    @Query("SELECT COALESCE((SELECT substr(content, 1, 240) FROM agent_text_chunks " +
+        "WHERE owner_table = 'conversation_messages' AND owner_id = m.id AND field = 'content' AND chunk_index = 0), " +
+        "substr(m.content, 1, 240)) FROM conversation_messages m WHERE conversation_id = :id " +
+        "AND type IN ('user', 'assistant') ORDER BY sort_index DESC LIMIT 1")
+    suspend fun archivePreview(id: String): String?
+
     @Query("SELECT EXISTS(SELECT 1 FROM conversations WHERE id = :id)")
     suspend fun conversationExists(id: String): Boolean
     @Query("SELECT * FROM conversation_branch_setups WHERE conversation_id = :id")
@@ -189,6 +208,9 @@ internal interface ConversationDao : ChunkedTextDao {
     @Query("SELECT * FROM conversation_messages WHERE conversation_id = :conversationId ORDER BY sort_index ASC LIMIT :limit OFFSET :offset")
     suspend fun messageRowsPage(conversationId: String, limit: Int, offset: Int): List<ConversationMessageEntity>
 
+    @Query("SELECT COUNT(*) FROM conversation_messages WHERE conversation_id = :conversationId AND type = 'user'")
+    fun userMessageChanges(conversationId: String): kotlinx.coroutines.flow.Flow<Int>
+
     @Query("SELECT * FROM conversation_messages WHERE conversation_id = :conversationId AND type IN ('user', 'assistant') " +
         "ORDER BY sort_index ASC LIMIT :limit OFFSET :offset")
     suspend fun legacyMessageRowsPage(conversationId: String, limit: Int, offset: Int): List<ConversationMessageEntity>
@@ -282,6 +304,7 @@ internal interface ConversationDao : ChunkedTextDao {
             insertMessageRow(row.copy(
                 content = storeText("conversation_messages", row.id, "content", row.content),
                 imagesJson = storeText("conversation_messages", row.id, "images", row.imagesJson),
+                contentPartsJson = storeText("conversation_messages", row.id, "content_parts", row.contentPartsJson),
             ))
         }
     }
@@ -289,6 +312,7 @@ internal interface ConversationDao : ChunkedTextDao {
     suspend fun restoreMessage(row: ConversationMessageEntity) = row.copy(
         content = restoreText("conversation_messages", row.id, "content", row.content),
         imagesJson = restoreText("conversation_messages", row.id, "images", row.imagesJson),
+        contentPartsJson = restoreText("conversation_messages", row.id, "content_parts", row.contentPartsJson),
     )
 
     @Upsert

@@ -15,6 +15,10 @@ import io.github.mangi.eta.data.db.ProviderModelEntity
 import io.github.mangi.eta.data.db.ProviderWithModelsSeed
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.model.ProviderAuthModes
+import io.github.mangi.eta.data.model.ModelRoleSettings
+import io.github.mangi.eta.data.model.AgentPermissionMode
+import io.github.mangi.eta.agent.approval.ApprovalLearningStore
+import io.github.mangi.eta.agent.approval.ApprovalPreferenceBackup
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.core.safeStackTrace
@@ -43,6 +47,9 @@ internal data class EtaBackupDocument(
     val catalogRevision: Int = 0,
     val selectedProviderId: String? = null,
     val selectedModelId: String? = null,
+    val modelRoles: ModelRoleSettings? = null,
+    val agentPermissionMode: AgentPermissionMode = AgentPermissionMode.SMART_APPROVAL,
+    val approvalPreferences: ApprovalPreferenceBackup? = null,
     val conversations: List<ConversationEntity> = emptyList(),
     val messages: List<ConversationMessageEntity> = emptyList(),
     val contextCheckpoints: List<ConversationContextCheckpointEntity> = emptyList(),
@@ -59,7 +66,7 @@ internal data class EtaBackupDocument(
     companion object {
         const val FORMAT = "eta-backup"
         // 旧版会把未知原生 Provider 当作 OpenAI-compatible，必须通过备份版本阻止错误恢复。
-        const val SCHEMA_VERSION = 8
+        const val SCHEMA_VERSION = 9
     }
 }
 
@@ -89,6 +96,9 @@ internal data class EtaBackupSummary(
     val restartRequired: Boolean = false,
     val includedContents: Set<EtaBackupContent> = EtaBackupContent.entries.toSet(),
     val fullArchive: Boolean = false,
+    val sourceApplicationId: String? = null,
+    val sourceVersionName: String? = null,
+    val migrationSchemaVersion: Int? = null,
 )
 
 internal class EtaBackupException(message: String, cause: Throwable? = null) :
@@ -118,6 +128,10 @@ internal object EtaBackupRepository {
             CharacterRepository.initialize(appContext)
             val database = EtaDatabase.get(appContext)
             val settings = SettingsDataStore.settings()
+            val modelRoles = if (EtaBackupContent.MODELS in contents) SettingsDataStore.modelRoleSettings() else null
+            val agentPermissionMode = if (EtaBackupContent.MODELS in contents) SettingsDataStore.agentPermissionMode()
+                else AgentPermissionMode.SMART_APPROVAL
+            val approvalPreferences = if (EtaBackupContent.MODELS in contents) ApprovalLearningStore(appContext).exportEvidence() else null
             val catalogRevision = SettingsDataStore.officialModelCatalogRevision()
             val summary = EtaBackupJsonStreams.export(appContext, output, onPhase = { phase = it }) { writer ->
                 database.withTransaction {
@@ -140,6 +154,9 @@ internal object EtaBackupRepository {
                     writer.value("catalogRevision", Int.serializer(), catalogRevision)
                     writer.value("selectedProviderId", String.serializer().nullable, settings.selectedProviderId.takeIf { EtaBackupContent.MODELS in contents })
                     writer.value("selectedModelId", String.serializer().nullable, settings.selectedModelId.takeIf { EtaBackupContent.MODELS in contents })
+                    writer.value("modelRoles", ModelRoleSettings.serializer().nullable, modelRoles)
+                    writer.value("agentPermissionMode", AgentPermissionMode.serializer(), agentPermissionMode)
+                    writer.value("approvalPreferences", ApprovalPreferenceBackup.serializer().nullable, approvalPreferences)
                     writer.value("conversationState", ConversationStateEntity.serializer().nullable, if (EtaBackupContent.CHATS in contents) dao.state() else null)
                     writer.value("memoryMd", String.serializer(), memory)
                     writer.value("memoryScopes", ListSerializer(EtaBackupMemoryScope.serializer()), memoryScopes)
@@ -361,6 +378,8 @@ internal object EtaBackupRepository {
                         throw failure
                     }
                     onCommitted()
+                    // Transport state belongs to this device/account and cannot survive a data import.
+                    EtaBackupFileTree.delete(java.io.File(appContext.noBackupFilesDir, "mcp-continuations"))
                     try {
                         phase = "clear_local_drafts"
                         // Logical JSON does not contain UI drafts. Never attach old local input to
@@ -394,6 +413,12 @@ internal object EtaBackupRepository {
                         if (restoreModels) {
                             SettingsDataStore.setSelection(document.selectedProviderId, document.selectedModelId)
                             SettingsDataStore.setOfficialModelCatalogRevision(document.catalogRevision)
+                            document.modelRoles?.let { SettingsDataStore.setModelRoleSettings(it.normalized()) }
+                            if (EtaBackupContent.MODELS in document.includedContents) {
+                                SettingsDataStore.setAgentPermissionMode(document.agentPermissionMode)
+                                document.approvalPreferences?.let { ApprovalLearningStore(appContext).restoreEvidence(it) }
+                                io.github.mangi.eta.agent.control.SettingsGrantStore(appContext).invalidateAfterBackupRestore()
+                            }
                             ProviderRepository.ensureBuiltInsMerged()
                             ProviderRepository.repairSelection()
                         }

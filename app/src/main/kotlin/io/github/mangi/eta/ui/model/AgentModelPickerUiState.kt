@@ -3,8 +3,8 @@ package io.github.mangi.eta.ui.model
 import androidx.compose.runtime.Immutable
 import io.github.mangi.eta.data.model.Model
 import io.github.mangi.eta.data.model.ProviderAuthModes
-import io.github.mangi.eta.data.model.ProviderEndpoint
 import io.github.mangi.eta.data.model.ProviderSetting
+import io.github.mangi.eta.data.model.hasUsableConnection
 import io.github.mangi.eta.data.provider.ProviderSourceRegistry
 import java.text.NumberFormat
 import java.util.Locale
@@ -59,15 +59,13 @@ internal object AgentModelPickerProjector {
         val groups = enabledProviders
             .asSequence()
             .filter {
-                ProviderAuthModes.isOAuth(it.authMode) ||
-                    (it.authMode == ProviderAuthModes.API_KEY &&
-                        (it.apiKey.isNotBlank() || ProviderEndpoint.isLocalOrPrivate(it.baseUrl)))
+                it.hasUsableConnection()
             }
             .mapNotNull { provider ->
                 val sourceType = ProviderSourceRegistry.resolve(provider)
                 val models = provider.models
                     .asSequence()
-                    .filter { it.isEnabled }
+                    .filter { it.isEnabled && (it.outputModalities.isEmpty() || it.outputModalities.any { modality -> modality.equals("text", ignoreCase = true) }) }
                     .sortedBy { it.sortOrder }
                     .map { model -> provider.toOption(model) }
                     .toList()
@@ -81,17 +79,9 @@ internal object AgentModelPickerProjector {
                 }
             }
             .toList()
-        val selectedProvider = enabledProviders.firstOrNull { it.id == selectedProviderId }
-        val selectedModel = selectedProvider
-            ?.models
-            ?.firstOrNull { it.id == selectedModelId && it.isEnabled }
-            ?.let { model -> selectedProvider.toOption(model) }
-            ?: enabledProviders.asSequence()
-                .flatMap { provider ->
-                    provider.models.asSequence()
-                        .filter { it.isEnabled }
-                        .map { model -> provider.toOption(model) }
-                }
+        val selectedModel = groups.firstOrNull { it.providerId == selectedProviderId }
+            ?.models?.firstOrNull { it.id == selectedModelId }
+            ?: groups.asSequence().flatMap { it.models.asSequence() }
                 .firstOrNull { it.id == selectedModelId }
             // A fresh install can have a usable provider without a persisted selection.
             // Keep chat composition on the same first configured model that the picker shows.

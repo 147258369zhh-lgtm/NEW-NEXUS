@@ -35,7 +35,7 @@ class AgentMetricsMigrationTest {
         createV1()
         val db = AgentMetricsDatabase.get(context)
         val detail = requireNotNull(db.dao().detail("old")) // Room validates migrated tables, keys and indices.
-        assertEquals(3, db.openHelper.readableDatabase.version)
+        assertEquals(4, db.openHelper.readableDatabase.version)
         assertEquals(10L, detail.run.metrics.inputTokens)
         assertEquals(2L, detail.models.single().metrics.outputTokens)
         assertEquals("read_file", detail.trace.single().label)
@@ -44,6 +44,8 @@ class AgentMetricsMigrationTest {
         assertNull(detail.models.single().price)
         assertFalse(detail.models.single().priceCaptured)
         assertEquals(0, detail.run.metrics.billingReportedRounds)
+        assertEquals(0, detail.run.metrics.approvalRequests)
+        assertEquals(0, detail.models.single().metrics.approvalsApproved)
         assertTrue(detail.requests.isEmpty())
         assertEquals(10L, db.dao().modelsFlow().first().single().metrics.inputTokens)
         val price = AgentTokenPrice.create("USD", "2", "8", "0", now = 200)

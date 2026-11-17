@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="nexa_soft_reboot">软重启</string>
+    <string name="nexa_soft_reboot_summary">一次性重载 Android · 需要 Root</string>
+    <string name="nexa_soft_reboot_confirm">重新加载 Android 用户空间，保留当前内核启动会话。正在运行的任务会中断。</string>
+    <string name="nexa_soft_reboot_requested">已提交软重启请求</string>
+    <string name="nexa_soft_reboot_root_required">请先完成 Root 授权，再执行软重启</string>
+    <string name="nexa_soft_reboot_unsupported">当前 Root 环境没有可用的软重启接口</string>
+    <string name="nexa_soft_reboot_busy">软重启请求正在处理</string>
+    <string name="nexa_soft_reboot_unconfirmed">未能确认软重启请求已执行，请检查 Root 状态</string>
+</resources>

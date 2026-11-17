@@ -44,7 +44,7 @@ internal object AgentRuntimeRequestConfigResolver {
             runtimeConfig.reasoningCapabilities?.normalize(entry.effectiveReasoningEffort)
                 ?: runtimeConfig.effectiveReasoningEffort
         } else runtimeConfig.effectiveReasoningEffort
-        val config = runtimeConfig.copy(
+        val resolved = runtimeConfig.copy(
             terminalTools = entry.terminalTools,
             browserTools = entry.browserTools,
             deviceDirectTools = entry.deviceDirectTools,
@@ -56,6 +56,10 @@ internal object AgentRuntimeRequestConfigResolver {
             autoCompactionEnabled = runtimeConfig.autoCompactionEnabled && entry.autoCompactionEnabled,
             supportsSearchSuggestions = entry.supportsSearchSuggestions,
         )
+        val config = if (request.operation == AgentRuntimeWire.OP_MODEL_TASK) {
+            RuntimeModelTasks.kind(request)
+            RuntimeModelTasks.restrictedConfig(resolved, entry.systemPrompt)
+        } else resolved
         val handoff = request.handoff ?: return request.copy(config = config)
         val archivePayload = AgentExternalArchivePayload.from(handoff.payload)
         return request.copy(

@@ -17,6 +17,7 @@ data class Model(
     val outputModalities: List<String> = listOf(TEXT_MODALITY),
     val attachment: Boolean? = null,
     val toolCall: Boolean? = null,
+    val tryUnknownCapabilities: Boolean = false,
     val reasoning: Boolean? = null,
     val reasoningCapabilities: ModelReasoningCapabilities? = null,
     val reasoningOverride: Boolean? = null,
@@ -29,7 +30,9 @@ data class Model(
     val createdAt: Long = System.currentTimeMillis()
 ) {
     val effectiveContextWindow: Int?
-        get() = contextWindowOverride?.takeIf { it > 0 }
+        get() = contextWindowOverride?.takeIf { it > 0 }?.let { configured ->
+            contextWindow?.takeIf { it > 0 }?.let { minOf(configured, it) } ?: configured
+        }
 
     val effectiveReasoning: Boolean?
         get() = reasoningOverride ?: reasoning
@@ -42,10 +45,10 @@ data class Model(
         }
 
     val supportsVision: Boolean
-        get() = attachment == true || inputModalities.any { it.equals(IMAGE_MODALITY, ignoreCase = true) }
+        get() = attachment ?: (inputModalities.any { it.equals(IMAGE_MODALITY, ignoreCase = true) } || tryUnknownCapabilities && isChatModel())
 
     val supportsTools: Boolean
-        get() = toolCall == true
+        get() = toolCall ?: (tryUnknownCapabilities && isChatModel())
 
     val supportsReasoning: Boolean
         get() = effectiveReasoning == true

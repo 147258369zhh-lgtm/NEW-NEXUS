@@ -9,7 +9,7 @@ import io.github.mangi.eta.data.model.ProviderSetting
 import io.github.mangi.eta.data.model.ProviderSourceTypes
 
 internal object OfficialModelCatalog {
-    internal const val CURRENT_REVISION = 4
+    internal const val CURRENT_REVISION = 6
 
     // 旧安装只补入本次新增的模型，避免恢复用户主动删除的旧预设。
     private val additionsByRevision = mapOf(
@@ -381,6 +381,7 @@ internal object OfficialModelCatalog {
     fun modelsForProvider(provider: ProviderSetting): List<Model> =
         modelsForCatalogId(catalogIdFor(provider))
             .map { it.withCatalogReasoningCapabilities(catalogIdFor(provider)) }
+            .map { it.withRuntimeContextWindow() }
             .withStableSortOrder()
 
     fun modelsAddedSince(provider: ProviderSetting, revision: Int): List<Model> {
@@ -435,6 +436,13 @@ internal object OfficialModelCatalog {
             reasoningCapabilities = reasoningCapabilities
                 ?: catalogId?.let { ReasoningCapabilityResolver.catalogCapabilities(it, modelId) }
         )
+
+    private fun Model.withRuntimeContextWindow(): Model =
+        if (contextWindowOverride == null && contextWindow != null) {
+            copy(contextWindowOverride = contextWindow)
+        } else {
+            this
+        }
 
     private fun List<Model>.withStableSortOrder(): List<Model> =
         mapIndexed { index, model -> model.copy(sortOrder = index) }

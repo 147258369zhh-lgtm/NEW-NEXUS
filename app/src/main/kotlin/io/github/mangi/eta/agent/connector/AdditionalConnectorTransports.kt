@@ -22,6 +22,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import io.github.mangi.eta.agent.capability.CapabilityHttpSession
 
 private val ConnectorJsonMedia = "application/json; charset=utf-8".toMediaType()
 
@@ -29,7 +30,15 @@ private fun connectorHttpClient(): OkHttpClient = OkHttpClient.Builder()
     .connectTimeout(10, TimeUnit.SECONDS)
     .readTimeout(30, TimeUnit.SECONDS)
     .callTimeout(45, TimeUnit.SECONDS)
+    .followRedirects(false).followSslRedirects(false)
     .build()
+
+private fun connectorJson(response: okhttp3.Response): JSONObject {
+    require(response.body.contentLength() <= 1024L * 1024L) { "连接响应超过 1 MiB" }
+    val source = response.body.source()
+    require(!source.request(1024L * 1024L + 1)) { "连接响应超过 1 MiB" }
+    return JSONObject(source.readUtf8())
+}
 
 internal class JsonRpcConnectorTransport(
     private val endpoint: String,
@@ -37,6 +46,7 @@ internal class JsonRpcConnectorTransport(
     private val security: ConnectorSecurityManager,
 ) : ConnectorTransport {
     private val client = connectorHttpClient()
+    private val http = CapabilityHttpSession(client)
 
     override val descriptor = ConnectorDescriptor(
         id = "jsonrpc:$endpoint",
@@ -50,7 +60,8 @@ internal class JsonRpcConnectorTransport(
         runCatching {
             security.validateEndpoint(endpoint)
             val response = execute("rpc.discover", JSONObject())
-            ConnectorHealth(true, if (response.optJSONObject("error") == null) "JSON-RPC 已响应" else "JSON-RPC 端点可达")
+            ConnectorHealth(response.success || response.errorCode == "JSON_RPC_ERROR",
+                if (response.success) "JSON-RPC 已响应" else if (response.errorCode == "JSON_RPC_ERROR") "JSON-RPC 端点可达" else "JSON-RPC 响应格式无效")
         }.getOrElse { ConnectorHealth(false, it.message ?: "JSON-RPC 连接失败") }
     }
 
@@ -59,25 +70,35 @@ internal class JsonRpcConnectorTransport(
         val method = request.arguments.optString("method")
         require(method.isNotBlank()) { "JSON-RPC 方法名不能为空" }
         val params = request.arguments.optJSONObject("params") ?: JSONObject()
-        return ConnectorResult(withContext(Dispatchers.IO) { execute(method, params) })
+        return withContext(Dispatchers.IO) { execute(method, params) }
     }
 
-    private fun execute(method: String, params: JSONObject): JSONObject {
+    private fun execute(method: String, params: JSONObject): ConnectorResult {
+        security.validateEndpoint(endpoint)
+        val id = UUID.randomUUID().toString()
         val body = JSONObject()
             .put("jsonrpc", "2.0")
-            .put("id", UUID.randomUUID().toString())
+            .put("id", id)
             .put("method", method)
             .put("params", params)
         val builder = Request.Builder().url(endpoint).post(body.toString().toRequestBody(ConnectorJsonMedia))
             .header("Accept", "application/json")
         bearerToken?.takeIf(String::isNotBlank)?.let { builder.header("Authorization", "Bearer $it") }
-        client.newCall(builder.build()).execute().use { response ->
+        return http.execute(builder.build()) rpc@ { response ->
             require(response.isSuccessful) { "JSON-RPC HTTP ${response.code}" }
-            return JSONObject(response.body.string())
+            val value = connectorJson(response)
+            fun invalid() = ConnectorResult(value, success = false, errorCode = "INVALID_JSON_RPC_RESPONSE", errorMessage = "JSON-RPC 响应版本、请求编号或结果格式不匹配")
+            if (value.opt("jsonrpc") != "2.0" || value.opt("id") != id || value.has("result") == value.has("error")) return@rpc invalid()
+            if (value.has("error")) {
+                val failure = value.optJSONObject("error") ?: return@rpc invalid()
+                val code = failure.opt("code") as? Number ?: return@rpc invalid()
+                if (!code.toDouble().isFinite() || code.toDouble() != code.toLong().toDouble() || failure.opt("message") !is String) return@rpc invalid()
+                ConnectorResult(value, success = false, errorCode = "JSON_RPC_ERROR", errorMessage = failure.getString("message"))
+            } else ConnectorResult(value)
         }
     }
 
-    override fun close() = client.dispatcher.executorService.shutdown()
+    override fun close() = http.close()
 }
 
 internal class GraphQlConnectorTransport(
@@ -86,6 +107,7 @@ internal class GraphQlConnectorTransport(
     private val security: ConnectorSecurityManager,
 ) : ConnectorTransport {
     private val client = connectorHttpClient()
+    private val http = CapabilityHttpSession(client)
 
     override val descriptor = ConnectorDescriptor(
         id = "graphql:$endpoint",
@@ -98,8 +120,9 @@ internal class GraphQlConnectorTransport(
     override suspend fun probe(): ConnectorHealth = withContext(Dispatchers.IO) {
         runCatching {
             security.validateEndpoint(endpoint)
-            post("query Query { __typename }", JSONObject())
-            ConnectorHealth(true, "GraphQL 端点已响应")
+            val response = post("query Query { __typename }", JSONObject())
+            ConnectorHealth(response.success || response.errorCode == "GRAPHQL_ERROR",
+                if (response.errorCode == "INVALID_GRAPHQL_RESPONSE") "GraphQL 响应格式无效" else "GraphQL 端点已响应")
         }.getOrElse { ConnectorHealth(false, it.message ?: "GraphQL 连接失败") }
     }
 
@@ -108,21 +131,31 @@ internal class GraphQlConnectorTransport(
         val query = request.arguments.optString("query")
         require(query.isNotBlank()) { "GraphQL 查询不能为空" }
         val variables = request.arguments.optJSONObject("variables") ?: JSONObject()
-        return ConnectorResult(withContext(Dispatchers.IO) { post(query, variables) })
+        return withContext(Dispatchers.IO) { post(query, variables) }
     }
 
-    private fun post(query: String, variables: JSONObject): JSONObject {
+    private fun post(query: String, variables: JSONObject): ConnectorResult {
+        security.validateEndpoint(endpoint)
         val payload = JSONObject().put("query", query).put("variables", variables)
         val builder = Request.Builder().url(endpoint).post(payload.toString().toRequestBody(ConnectorJsonMedia))
             .header("Accept", "application/json")
         bearerToken?.takeIf(String::isNotBlank)?.let { builder.header("Authorization", "Bearer $it") }
-        client.newCall(builder.build()).execute().use { response ->
+        return http.execute(builder.build()) { response ->
             require(response.isSuccessful) { "GraphQL HTTP ${response.code}" }
-            return JSONObject(response.body.string())
+            val value = connectorJson(response)
+            if (value.has("errors")) {
+                val errors = value.optJSONArray("errors")
+                if (errors == null || errors.length() == 0) ConnectorResult(value, success = false,
+                    errorCode = "INVALID_GRAPHQL_RESPONSE", errorMessage = "GraphQL 错误列表格式无效")
+                else ConnectorResult(value, success = false, errorCode = "GRAPHQL_ERROR",
+                    errorMessage = errors.optJSONObject(0)?.optString("message")?.takeIf(String::isNotBlank) ?: "GraphQL 执行失败")
+            } else if (!value.has("data")) ConnectorResult(value, success = false,
+                errorCode = "INVALID_GRAPHQL_RESPONSE", errorMessage = "GraphQL 响应缺少 data 或 errors")
+            else ConnectorResult(value)
         }
     }
 
-    override fun close() = client.dispatcher.executorService.shutdown()
+    override fun close() = http.close()
 }
 
 internal class SseConnectorTransport(
@@ -131,6 +164,7 @@ internal class SseConnectorTransport(
     private val security: ConnectorSecurityManager,
 ) : ConnectorTransport {
     private val client = connectorHttpClient()
+    private val http = CapabilityHttpSession(client)
 
     override val descriptor = ConnectorDescriptor(
         id = "sse:$endpoint",
@@ -144,7 +178,7 @@ internal class SseConnectorTransport(
         runCatching {
             security.validateEndpoint(endpoint)
             val request = request(maxEvents = 1)
-            client.newCall(request).execute().use { response ->
+            http.execute(request) { response ->
                 require(response.isSuccessful) { "SSE HTTP ${response.code}" }
                 require(response.header("Content-Type").orEmpty().startsWith("text/event-stream")) { "端点未返回 text/event-stream" }
             }
@@ -155,7 +189,7 @@ internal class SseConnectorTransport(
     override suspend fun invoke(request: ConnectorInvocation): ConnectorResult {
         security.authorize(descriptor, request, request.arguments.optBoolean("confirmed"))
         val max = request.arguments.optInt("max_events", 20).coerceIn(1, 200)
-        val events = withContext(Dispatchers.IO) { readEvents(request(max)) }
+        val events = withContext(Dispatchers.IO) { readEvents(request(max), max) }
         return ConnectorResult(json = JSONObject().put("events", events), events = events)
     }
 
@@ -166,14 +200,19 @@ internal class SseConnectorTransport(
         return builder.build()
     }
 
-    private fun readEvents(request: Request): List<JSONObject> {
+    private fun readEvents(request: Request, maximum: Int): List<JSONObject> {
         val events = mutableListOf<JSONObject>()
-        client.newCall(request).execute().use { response ->
+        http.execute(request) { response ->
             require(response.isSuccessful) { "SSE HTTP ${response.code}" }
             val source = response.body.source()
             val data = StringBuilder()
-            while (!source.exhausted() && events.size < 200) {
-                val line = source.readUtf8Line() ?: break
+            var totalBytes = 0L
+            while (events.size < maximum && !source.exhausted()) {
+                val line = try { source.readUtf8LineStrict(64L * 1024L) } catch (_: java.io.EOFException) {
+                    require(source.buffer.size <= 64L * 1024L) { "SSE 单行过大" }; source.readUtf8()
+                }
+                totalBytes += line.toByteArray(Charsets.UTF_8).size + 1
+                require(totalBytes <= 1024L * 1024L) { "SSE 响应超过 1 MiB" }
                 if (line.isBlank()) {
                     if (data.isNotEmpty()) {
                         events += runCatching { JSONObject(data.toString()) }
@@ -189,13 +228,21 @@ internal class SseConnectorTransport(
         return events
     }
 
-    override fun close() = client.dispatcher.executorService.shutdown()
+    override fun close() = http.close()
 }
 
 internal class UnixSocketConnectorTransport(
     private val socketPath: String,
     private val security: ConnectorSecurityManager,
 ) : ConnectorTransport {
+    private val lifecycleLock = Any()
+    private var activeSocket: LocalSocket? = null
+    private var closed = false
+    private fun <T> withSocket(block: (LocalSocket) -> T): T {
+        val socket = synchronized(lifecycleLock) { check(!closed) { "连接已关闭" }; LocalSocket().also { activeSocket = it } }
+        try { return socket.use(block) } finally { synchronized(lifecycleLock) { if (activeSocket === socket) activeSocket = null } }
+    }
+    override fun close() { synchronized(lifecycleLock) { closed = true; activeSocket }?.close() }
     override val descriptor = ConnectorDescriptor(
         id = "unix:$socketPath",
         name = "Unix Domain Socket",
@@ -205,7 +252,7 @@ internal class UnixSocketConnectorTransport(
     )
 
     override suspend fun probe(): ConnectorHealth = runCatching {
-        withContext(Dispatchers.IO) { LocalSocket().use { socket -> socket.connect(LocalSocketAddress(socketPath)) } }
+        withContext(Dispatchers.IO) { withSocket { socket -> socket.connect(LocalSocketAddress(socketPath)) } }
         ConnectorHealth(true, "Unix Socket 可连接")
     }.getOrElse { ConnectorHealth(false, it.message ?: "Unix Socket 连接失败") }
 
@@ -213,15 +260,20 @@ internal class UnixSocketConnectorTransport(
         security.authorize(descriptor, request, request.arguments.optBoolean("confirmed"))
         val payload = request.arguments.opt("payload") ?: JSONObject()
         return withContext(Dispatchers.IO) {
-            LocalSocket().use { socket ->
+            withSocket { socket ->
                 socket.connect(LocalSocketAddress(socketPath))
                 socket.soTimeout = 15_000
-                socket.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->
-                    writer.write(payload.toString())
-                    writer.newLine()
-                    writer.flush()
+                val writer = socket.outputStream.bufferedWriter(Charsets.UTF_8)
+                writer.write(payload.toString()); writer.newLine(); writer.flush()
+                val bytes = ByteArrayOutputStream()
+                val buffer = ByteArray(8192)
+                while (true) {
+                    val count = socket.inputStream.read(buffer)
+                    if (count < 0) break
+                    require(bytes.size() + count <= 256 * 1024) { "Socket 响应超过 256 KiB" }
+                    bytes.write(buffer, 0, count)
                 }
-                val text = socket.inputStream.bufferedReader(Charsets.UTF_8).readText().take(256 * 1024)
+                val text = bytes.toString(Charsets.UTF_8.name())
                 ConnectorResult(
                     json = runCatching { JSONObject(text) }.getOrElse { JSONObject().put("response", text) },
                     text = text,
@@ -236,6 +288,9 @@ internal class ShellConnectorTransport(
     private val security: ConnectorSecurityManager,
 ) : ConnectorTransport {
     private val appContext = context.applicationContext
+    private val lifecycleLock = Any()
+    private var closed = false
+    private var activeProcess: Process? = null
 
     override val descriptor = ConnectorDescriptor(
         id = "shell:local",
@@ -256,6 +311,10 @@ internal class ShellConnectorTransport(
             .directory(File(appContext.filesDir, "workspace").apply { mkdirs() })
             .redirectErrorStream(true)
             .start()
+        synchronized(lifecycleLock) {
+            if (closed) { process.destroyForcibly(); error("连接已关闭") }
+            activeProcess = process
+        }
         val reader = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "eta-connector-shell-reader").apply { isDaemon = true } }
         try {
             val bytes = reader.submit<ByteArray> {
@@ -282,7 +341,13 @@ internal class ShellConnectorTransport(
             reader.shutdownNow()
             process.destroy()
             if (process.isAlive) process.destroyForcibly()
+            synchronized(lifecycleLock) { if (activeProcess === process) activeProcess = null }
         }
+    }
+
+    override fun close() {
+        val process = synchronized(lifecycleLock) { closed = true; activeProcess }
+        process?.destroyForcibly()
     }
 }
 

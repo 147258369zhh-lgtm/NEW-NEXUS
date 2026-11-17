@@ -18,7 +18,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.mangi.eta.R
 import io.github.mangi.eta.data.repository.LanguageSettingsRepository
-import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
+import io.github.mangi.eta.ui.components.NexusSettingsDropdownPreference as OverlayDropdownPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable

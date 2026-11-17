@@ -63,5 +63,10 @@ class AutomationFilePipelineTest {
         assertEquals("new-report.xlsx", imported.getString("name")); assertTrue(imported.getBoolean("isCopy"))
         assertArrayEquals(bytes, File(imported.getString("importedPath")).readBytes())
         assertArrayEquals(bytes, context.contentResolver.openInputStream(uri)!!.use { it.readBytes() })
+        // A WAIT resume keeps the original imported bytes even if the external file changed.
+        context.contentResolver.openOutputStream(uri)!!.use { it.write(byteArrayOf(9, 8, 7)) }
+        val resumed = AutomationInputFiles.import(context, run.id, payload)
+        assertEquals(imported.getString("importedPath"), resumed.getString("importedPath"))
+        assertArrayEquals(bytes, File(resumed.getString("importedPath")).readBytes())
     }
 }

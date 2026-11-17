@@ -27,11 +27,11 @@ internal object AgentTaskWorkScheduler {
         )
     }
 
-    fun checkNow(context: Context) {
+    fun checkNow(context: Context): androidx.work.Operation {
         val request = OneTimeWorkRequestBuilder<AgentTaskWorker>()
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.MINUTES)
             .build()
-        WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
+        return WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
             CHECK_NOW_WORK_NAME,
             ExistingWorkPolicy.APPEND_OR_REPLACE,
             request,
@@ -41,7 +41,8 @@ internal object AgentTaskWorkScheduler {
     /** Refreshes the exact next wake-up after task definitions or schedules change. */
     suspend fun refreshNextDeadline(context: Context) {
         val dao = AgentTaskDatabase.get(context).agentTaskDao()
-        val nextRunAt = listOfNotNull(dao.earliestNextRunAt(), dao.earliestQueuedAt()).minOrNull()
+        val queuedAt = if (dao.executingCount() < AgentTaskSchedulerSettings.maxConcurrentRuns(context)) dao.earliestQueuedAt() else null
+        val nextRunAt = listOfNotNull(dao.earliestNextRunAt(), queuedAt, dao.earliestLeaseExpiry()).minOrNull()
         if (nextRunAt == null) {
             WorkManager.getInstance(context.applicationContext)
                 .cancelUniqueWork(NEXT_DEADLINE_WORK_NAME)
@@ -52,7 +53,7 @@ internal object AgentTaskWorkScheduler {
 
     private fun scheduleAt(context: Context, epochMillis: Long) {
         val delay = max(0L, epochMillis - System.currentTimeMillis())
-        val request = OneTimeWorkRequestBuilder<AgentTaskWorker>()
+        val request = OneTimeWorkRequestBuilder<AgentTaskDeadlineWorker>()
             .setInitialDelay(delay, TimeUnit.MILLISECONDS)
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 15, TimeUnit.MINUTES)
             .build()

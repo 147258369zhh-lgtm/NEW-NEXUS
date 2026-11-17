@@ -4,11 +4,15 @@ import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.agent.roleplay.RoleplayRunContext
 import io.github.mangi.eta.agent.subagent.AgentSubagentToolCatalog
+import io.github.mangi.eta.agent.subagent.SubagentConcurrencyGate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -16,8 +20,7 @@ import org.json.JSONObject
  * 单次 Agent run 的纯编排循环。
  *
  * 一次 assistant 响应及其完整工具批次构成一个 turn；
- * steering 只在 turn 结束后注入，不能用取消网络或关闭工具资源来模拟。循环不设置本地轮次上限，
- * 由模型自然结束、取消或错误终止。
+ * steering 在 turn 结束后注入；Run 预算控制每次模型请求、工具批次与总时长。
  */
 internal class AgentLoop(
     private val config: AgentModelClient.ModelConfig,
@@ -41,6 +44,13 @@ internal class AgentLoop(
     initialSupplementIndex: Int = 0,
     private val initialRound: Int = 1,
     private val metricsScope: io.github.mangi.eta.agent.runtime.AgentMetricScope? = null,
+    private val budgetGuard: AgentRunBudgetGuard = AgentRunBudgetGuard(AgentRunBudgets.default(), initialRound),
+    private val maxParallelAgents: Int = io.github.mangi.eta.data.model.SubagentSettings.DEFAULT_MAX_PARALLEL_AGENTS,
+    /** 本地 ToolDescriptor 决定的批次并发槽位；默认全部串行，未知工具不会被动并行。 */
+    private val toolBatchSlot: (String) -> ToolBatchSlot = { ToolBatchSlot.SERIAL },
+    private val compactionConfig: AgentModelClient.ModelConfig = config,
+    private val compactionProvider: AgentProviderClient = provider,
+    private val captureModelMedia: (Int, List<AgentModelClient.ToolFile>) -> List<io.github.mangi.eta.agent.runtime.AgentArtifactReference> = { _, _ -> emptyList() },
 ) {
     data class Result(
         val content: String,
@@ -65,8 +75,20 @@ internal class AgentLoop(
         { sensitiveToolCallIds }, onEvent, onContextSnapshot, { transcript.length() },
         roleplay = roleplayContext != null,
         metricsScope = metricsScope,
+        compactionConfig = compactionConfig,
+        compactionProvider = compactionProvider,
     )
     private var supplementIndex = initialSupplementIndex
+
+    /** Capture the submitted assistant call before entering a potentially blocking input tool. */
+    private fun executeWithInvocation(call: AgentModelClient.ToolCall): AgentModelClient.ToolResult {
+        val captured = if (call.name == "request_user_input" || call.name.startsWith("mcp_")) synchronized(toolBatchLock) {
+            AgentConversationCodec.encodeTranscriptForStorage(AgentConversationCodec.transcript(messages, systemCount, sensitiveToolCallIds))
+        } else ""
+        return io.github.mangi.eta.agent.runtime.RuntimeInvocationScope.withToolInvocation(
+            io.github.mangi.eta.agent.runtime.RuntimeInvocationScope.ToolInvocation(call.id, call.name, config.providerId, config.model, captured),
+        ) { toolExecutor.execute(call) }
+    }
 
     fun contextSnapshot(): AgentContextSnapshot? = context.snapshot()
 
@@ -98,6 +120,7 @@ internal class AgentLoop(
 
         while (true) {
             runController.throwIfCancelled()
+            budgetGuard.checkRound(round)
             if (purpose.acceptsSteering) appendPendingSteeringMessage()
             var responseOutputStarted = false
 
@@ -114,24 +137,28 @@ internal class AgentLoop(
                 roundTools.optJSONObject(index)?.optJSONObject("function")?.optString("name")
             }
             publishTranscript()
-            if (purpose.allowsTools) context.compact()
-            val requestMessages = AssistantScreenContextProjection.project(
-                roleplayContext?.projectMessages(messages) ?: messages,
-            )
+            if (purpose.allowsTools) context.compact(tools = roundTools)
             var roundInputTokens: Int? = null
             val reasoningLengthBeforeRound = accumulatedReasoning.length
             var completedRound: AgentModelRetry.Result? = null
             try {
                 while (completedRound == null) {
+                    val requestMessages = AssistantScreenContextProjection.project(
+                        roleplayContext?.projectMessages(messages) ?: messages,
+                    )
                     var hostedToolStarted = false
                     try {
                         completedRound = modelRetry.complete(
                             initialRound = round,
-                            request = ProviderRequest(config, requestMessages, roundTools, sessionId, purpose),
+                            request = ProviderRequest(config, requestMessages, roundTools, sessionId, purpose,
+                                contextOutputTokenCeiling = ContextBudgetPolicy.forCompaction(config.knownContextWindow).outputReserveTokens),
                             provider = provider,
                             controller = runController,
                             onEvent = { event ->
-                                if (event is AgentEvent.RoundStarted) roundInputTokens = null
+                                if (event is AgentEvent.RoundStarted) {
+                                    budgetGuard.checkRound(event.round)
+                                    roundInputTokens = null
+                                }
                                 onEvent(event)
                             },
                             onProviderEvent = { attemptRound, providerEvent ->
@@ -146,7 +173,10 @@ internal class AgentLoop(
                                     // may still be compacted and retried safely.
                                     responseOutputStarted = true
                                 }
-                                if (providerEvent is ProviderEvent.HostedToolStarted) hostedToolStarted = true
+                                if (providerEvent is ProviderEvent.HostedToolStarted) {
+                                    hostedToolStarted = true
+                                    budgetGuard.beforeHostedToolCall()
+                                }
                                 if (!purpose.allowsTools && (providerEvent is ProviderEvent.HostedToolStarted ||
                                         providerEvent is ProviderEvent.SearchSuggestions ||
                                         providerEvent is ProviderEvent.BlockStart && providerEvent.kind == AssistantBlockKind.TOOL_CALL)) {
@@ -180,7 +210,7 @@ internal class AgentLoop(
                             overflowCompactionAttempted = true
                             accumulatedReasoning.setLength(reasoningLengthBeforeRound)
                             roundInputTokens = null
-                            context.compact(force = true)
+                            context.compact(force = true, tools = roundTools)
                             round += 1
                             continue
                         }
@@ -205,7 +235,20 @@ internal class AgentLoop(
             if (purpose == ProviderRequestPurpose.REPLY_REWRITE && providerResponse.stopReason != AssistantStopReason.END_TURN) {
                 throw AgentModelFailure("REPLY_REWRITE_INCOMPLETE", false, "模型未返回完整的改写回复；原回复未改变。")
             }
+            if (purpose in setOf(ProviderRequestPurpose.MEMORY_EXTRACTION, ProviderRequestPurpose.TRANSCRIPT_REFINE) &&
+                providerResponse.stopReason != AssistantStopReason.END_TURN) {
+                throw AgentModelFailure("MODEL_TASK_INCOMPLETE", false, "整理模型未完整返回，原始内容已保留。")
+            }
             val assistantReasoning = assistantMessage.optString("reasoning_content")
+            val media = ProviderMediaOutput.takeFiles(assistantMessage)
+            val modelArtifacts = if (media.isEmpty()) emptyList() else captureModelMedia(round, media)
+            if (media.isNotEmpty() && modelArtifacts.isEmpty() && assistantMessage.optString("content").isBlank() && toolCalls.isEmpty()) {
+                throw AgentModelFailure("MODEL_MEDIA_CAPTURE_FAILED", false, "模型返回的媒体未能保存，请重试。")
+            }
+            if (modelArtifacts.isNotEmpty() && assistantMessage.optString("content").isBlank() && toolCalls.isEmpty()) {
+                // Keep a readable transcript and terminal result for a media-only response.
+                assistantMessage.put("content", modelArtifacts.joinToString("\n") { it.name })
+            }
             if (
                 assistantReasoning.isNotBlank() &&
                 accumulatedReasoning.length == reasoningLengthBeforeRound
@@ -225,13 +268,18 @@ internal class AgentLoop(
                     contentChars = assistantMessage.optString("content").length,
                     reasoningContent = assistantReasoning,
                     toolNames = toolCalls.map { it.name },
+                    artifacts = modelArtifacts,
                 )
             )
 
             if (toolCalls.isNotEmpty()) {
-                val outcomes = executeToolBatch(round, toolCalls, providerResponse.stopReason)
-                outcomes.forEach { outcome ->
+                // A batch can stop on a local approval gate. Publish the assistant tool call before
+                // executing anything so a paused run can persist what it asked for and what already
+                // happened, instead of replaying finished work after approval.
+                publishTranscript()
+                val outcomes = executeToolBatch(round, toolCalls, providerResponse.stopReason) { outcome ->
                     appendMessage(AgentConversationCodec.toolResultMessage(outcome.call, outcome.result))
+                    publishTranscript()
                 }
                 publishTranscript()
                 appendToolImages(round, outcomes)
@@ -249,13 +297,13 @@ internal class AgentLoop(
             }
 
             val content = assistantMessage.optString("content").trim()
-            if (content.isBlank() || content == "null") {
+            if ((content.isBlank() || content == "null") && modelArtifacts.isEmpty()) {
                 val finishReason = assistantMessage.optString("finish_reason")
                 error("模型接口第 $round 轮返回为空${finishReason.takeIf { it.isNotBlank() }?.let { "：$it" }.orEmpty()}")
             }
 
             publishTranscript()
-            if (purpose.allowsTools) context.compact(final = true)
+            if (purpose.allowsTools) context.compact(final = true, tools = roundTools)
             onEvent(AgentEvent.RunFinished(round = round, contentChars = content.length))
             return Result(
                 content = content,
@@ -267,8 +315,10 @@ internal class AgentLoop(
 
     private fun unexpectedToolFailure() = if (purpose == ProviderRequestPurpose.FALLBACK) {
         AgentModelFailure("FALLBACK_TOOLS_DISABLED", false, "备用模型请求了工具，已停止；本次未执行工具。")
-    } else {
+    } else if (purpose == ProviderRequestPurpose.REPLY_REWRITE) {
         AgentModelFailure("REPLY_REWRITE_TOOL_CALL", false, "改写回复时模型请求了工具，已停止；原回复未改变。")
+    } else {
+        AgentModelFailure("MODEL_TASK_TOOL_CALL", false, "整理模型请求了工具，已停止；本次未执行工具。")
     }
 
     /**
@@ -296,6 +346,7 @@ internal class AgentLoop(
     private fun validateChatResponse(response: ProviderResponse) {
         val message = response.assistantMessage
         if (AgentConversationCodec.parseToolCalls(message).isNotEmpty()) return
+        if (ProviderMediaOutput.hasFiles(message)) return
         val content = message.optString("content").trim()
         if (content.isNotBlank() && content != "null") return
         throw when (response.stopReason) {
@@ -330,6 +381,7 @@ internal class AgentLoop(
         round: Int,
         toolCalls: List<AgentModelClient.ToolCall>,
         stopReason: AssistantStopReason,
+        onOutcome: (ToolOutcome) -> Unit,
     ): List<ToolOutcome> {
         if (stopReason != AssistantStopReason.TOOL_USE) {
             return toolCalls.map { call ->
@@ -342,7 +394,7 @@ internal class AgentLoop(
                         round, call, "UNEXPECTED_TOOL_CALL",
                         "模型在 ${stopReason.name} 终止状态下返回了工具调用；本批调用未执行，请重新规划。",
                     )
-                }
+                }.also(onOutcome)
             }
         }
 
@@ -361,13 +413,28 @@ internal class AgentLoop(
                     index += 1
                 }
                 if (parallelBatch.size == 1) {
-                    outcomes += executeTool(round, parallelBatch.single())
+                    outcomes += executeTool(round, parallelBatch.single(), onOutcome)
                 } else {
-                    outcomes += executeParallelSubagents(round, parallelBatch)
+                    outcomes += executeParallelSubagents(round, parallelBatch, onOutcome)
                 }
             } else {
-                outcomes += executeTool(round, current.copy(round = round))
-                index += 1
+                val readRun = ToolBatchScheduler.parallelReadRun(
+                    calls = toolCalls,
+                    start = index,
+                    isAvailable = { it in availableToolNames },
+                    slotOf = toolBatchSlot,
+                )
+                if (readRun == null) {
+                    outcomes += executeTool(round, current.copy(round = round), onOutcome)
+                    index += 1
+                } else {
+                    outcomes += executeParallelReadTools(
+                        round,
+                        readRun.map { toolCalls[it].copy(round = round) },
+                        onOutcome,
+                    )
+                    index = readRun.last + 1
+                }
             }
         }
         return outcomes
@@ -376,8 +443,10 @@ internal class AgentLoop(
     private fun executeParallelSubagents(
         round: Int,
         calls: List<AgentModelClient.ToolCall>,
+        onOutcome: (ToolOutcome) -> Unit,
     ): List<ToolOutcome> {
         runController.throwIfCancelled()
+        budgetGuard.reserveToolCalls(calls.size)
         if (calls.isNotEmpty()) sideEffectfulToolStarted = true
         calls.forEach { toolCall ->
             synchronized(toolBatchLock) {
@@ -392,12 +461,50 @@ internal class AgentLoop(
                 )
             }
         }
-        val outcomes = runBlocking(Dispatchers.IO) {
+        val completed = java.util.concurrent.atomic.AtomicReferenceArray<ToolOutcome?>(calls.size)
+        val limit = maxParallelAgents.coerceIn(1, 8)
+        val permits = Semaphore(limit)
+        val waiting = AtomicInteger(0)
+        val outcomes = try { runBlocking(Dispatchers.IO) {
             supervisorScope {
-                calls.map { toolCall ->
+                calls.mapIndexed { index, toolCall ->
                     async {
+                        val waitsForPermit = permits.availablePermits <= 0
+                        if (waitsForPermit) {
+                            val queuePosition = waiting.incrementAndGet()
+                            val type = runCatching { JSONObject(toolCall.argumentsJson).optString("subagent_type") }
+                                .getOrDefault("").ifBlank { "subagent" }
+                            onEvent(AgentEvent.SubagentQueued(round, toolCall.id, type, limit, queuePosition))
+                        }
+                        val waitStarted = System.nanoTime()
+                        var holdsQueuedSlot = waitsForPermit
                         val result = try {
-                            toolExecutor.execute(toolCall)
+                            permits.withPermit {
+                                if (holdsQueuedSlot) {
+                                    holdsQueuedSlot = false
+                                    waiting.decrementAndGet()
+                                }
+                                val waitedMillis = if (waitsForPermit) (System.nanoTime() - waitStarted) / 1_000_000 else 0L
+                                if (waitsForPermit) {
+                                    val type = runCatching { JSONObject(toolCall.argumentsJson).optString("subagent_type") }
+                                        .getOrDefault("").ifBlank { "subagent" }
+                                    onEvent(AgentEvent.SubagentAdmitted(round, toolCall.id, type, waitedMillis))
+                                }
+                                SubagentConcurrencyGate.shared.withPermit(
+                                    controller = runController,
+                                    onQueued = { position ->
+                                        onEvent(AgentEvent.SubagentQueued(
+                                            round, toolCall.id, subagentType(toolCall),
+                                            SubagentConcurrencyGate.DEFAULT_GLOBAL_LIMIT, position,
+                                        ))
+                                    },
+                                    onAdmitted = { waitedMillis ->
+                                        onEvent(AgentEvent.SubagentAdmitted(
+                                            round, toolCall.id, subagentType(toolCall), waitedMillis,
+                                        ))
+                                    },
+                                ) { executeWithInvocation(toolCall) }
+                            }
                         } catch (throwable: Exception) {
                             if (runController.isCancelled) {
                                 AgentModelClient.ToolResult(
@@ -416,7 +523,15 @@ internal class AgentLoop(
                                         .toString(),
                                 )
                             }
+                        } finally {
+                            // 取消或异常时排队位置必须回收，迟到调用不会让后续排队序号一直虚高。
+                            if (holdsQueuedSlot) {
+                                holdsQueuedSlot = false
+                                waiting.decrementAndGet()
+                            }
                         }
+                        val outcome = ToolOutcome(toolCall, result)
+                        completed.set(index, outcome)
                         synchronized(toolBatchLock) {
                             if (result.sensitive || AgentSensitiveToolPolicy.isSensitive(toolCall.name)) {
                                 sensitiveToolCallIds += toolCall.id
@@ -425,18 +540,105 @@ internal class AgentLoop(
                                 emitToolFinished(round, toolCall, result)
                             }
                         }
-                        ToolOutcome(toolCall, result)
+                        outcome
                     }
                 }.awaitAll()
             }
+        } } finally {
+            // Retain settled results even if another child or cancellation terminates the batch.
+            for (index in calls.indices) completed.get(index)?.let(onOutcome)
         }
         runController.throwIfCancelled()
         return outcomes
     }
 
+    /**
+     * 只读工具按本地并发键同时执行：不同资源键的调用可以重叠，结果仍按模型给出的顺序
+     * 写回 transcript。已结算的结果先落账；取消后尚未启动的调用只留下显式回执，
+     * 不会在执行器之外静默丢失，也不会再次执行。
+     */
+    private fun executeParallelReadTools(
+        round: Int,
+        calls: List<AgentModelClient.ToolCall>,
+        onOutcome: (ToolOutcome) -> Unit,
+    ): List<ToolOutcome> {
+        runController.throwIfCancelled()
+        budgetGuard.reserveToolCalls(calls.size)
+        calls.forEach { toolCall ->
+            synchronized(toolBatchLock) {
+                onEvent(
+                    AgentEvent.ToolStarted(
+                        round = round,
+                        toolCallId = toolCall.id,
+                        name = toolCall.name,
+                        argsPreview = traceFormatter.summarizeArguments(toolCall),
+                        command = traceFormatter.displayCommand(toolCall),
+                    ),
+                )
+            }
+        }
+        val completed = java.util.concurrent.atomic.AtomicReferenceArray<ToolOutcome?>(calls.size)
+        val outcomes = try {
+            runBlocking(Dispatchers.IO) {
+                supervisorScope {
+                    calls.mapIndexed { index, toolCall ->
+                        async {
+                            val result = if (runController.isCancelled) {
+                                cancelledToolResult()
+                            } else {
+                                try {
+                                    executeWithInvocation(toolCall)
+                                } catch (throwable: Exception) {
+                                    if (runController.isCancelled ||
+                                        throwable is kotlin.coroutines.cancellation.CancellationException
+                                    ) {
+                                        cancelledToolResult()
+                                    } else {
+                                        AgentModelClient.ToolResult(
+                                            content = JSONObject()
+                                                .put("ok", false)
+                                                .put("code", "TOOL_ERROR")
+                                                .put("message", throwable.message ?: throwable.javaClass.simpleName)
+                                                .toString(),
+                                        )
+                                    }
+                                }
+                            }
+                            val outcome = ToolOutcome(toolCall, result)
+                            completed.set(index, outcome)
+                            synchronized(toolBatchLock) {
+                                if (result.sensitive || AgentSensitiveToolPolicy.isSensitive(toolCall.name)) {
+                                    sensitiveToolCallIds += toolCall.id
+                                }
+                                if (!runController.isCancelled) {
+                                    emitToolFinished(round, toolCall, result)
+                                }
+                            }
+                            outcome
+                        }
+                    }.awaitAll()
+                }
+            }
+        } finally {
+            // 与子 Agent 批次一致：中断时已结算的只读结果仍按原顺序进入 transcript。
+            for (index in calls.indices) completed.get(index)?.let(onOutcome)
+        }
+        runController.throwIfCancelled()
+        return outcomes
+    }
+
+    private fun cancelledToolResult(): AgentModelClient.ToolResult = AgentModelClient.ToolResult(
+        content = JSONObject()
+            .put("ok", false)
+            .put("code", "TOOL_CANCELLED")
+            .put("message", "已停止；该只读调用未执行")
+            .toString(),
+    )
+
     private fun executeTool(
         round: Int,
         toolCall: AgentModelClient.ToolCall,
+        onOutcome: (ToolOutcome) -> Unit,
     ): ToolOutcome {
         runController.throwIfCancelled()
         if (toolCall.name !in availableToolNames) {
@@ -445,9 +647,10 @@ internal class AgentLoop(
                 toolCall = toolCall,
                 code = "TOOL_NOT_AVAILABLE",
                 message = "工具未在本轮能力目录中提供，请使用当前可用工具",
-            )
+            ).also(onOutcome)
         }
         val roundCall = if (toolCall.round == round) toolCall else toolCall.copy(round = round)
+        budgetGuard.beforeToolCall()
         // 即使工具随后失败，也可能已经产生外部副作用；后续模型溢出不得自动重放。
         sideEffectfulToolStarted = true
         onEvent(
@@ -461,7 +664,24 @@ internal class AgentLoop(
         )
 
         val result = try {
-            toolExecutor.execute(roundCall)
+            if (roundCall.name == AgentSubagentToolCatalog.TOOL_NAME) {
+                SubagentConcurrencyGate.shared.withPermit(
+                    controller = runController,
+                    onQueued = { position ->
+                        onEvent(AgentEvent.SubagentQueued(
+                            round, roundCall.id, subagentType(roundCall),
+                            SubagentConcurrencyGate.DEFAULT_GLOBAL_LIMIT, position,
+                        ))
+                    },
+                    onAdmitted = { waitedMillis ->
+                        onEvent(AgentEvent.SubagentAdmitted(
+                            round, roundCall.id, subagentType(roundCall), waitedMillis,
+                        ))
+                    },
+                ) { executeWithInvocation(roundCall) }
+            } else {
+                executeWithInvocation(roundCall)
+            }
         } catch (throwable: Exception) {
             runController.throwIfCancelled()
             AgentModelClient.ToolResult(
@@ -476,9 +696,15 @@ internal class AgentLoop(
             sensitiveToolCallIds += roundCall.id
         }
 
-        emitToolFinished(round, roundCall, result)
-        return ToolOutcome(roundCall, result)
+        val outcome = ToolOutcome(roundCall, result)
+        try { emitToolFinished(round, roundCall, result) }
+        finally { onOutcome(outcome) }
+        return outcome
     }
+
+    private fun subagentType(toolCall: AgentModelClient.ToolCall): String =
+        runCatching { JSONObject(toolCall.argumentsJson).optString("subagent_type") }
+            .getOrDefault("").ifBlank { "subagent" }
 
     private fun rejectedToolOutcome(
         round: Int,
@@ -513,6 +739,19 @@ internal class AgentLoop(
         toolCall: AgentModelClient.ToolCall,
         result: AgentModelClient.ToolResult,
     ) {
+        val artifact = if (toolCall.name in setOf("write_file", "edit_file", "copy_file", "move_file", "voice_synthesize", "deliver_file")) runCatching { JSONObject(result.content) }
+            .getOrNull()?.takeIf { it.optBoolean("ok") && it.optString("artifact_id").matches(Regex("[A-Za-z0-9][A-Za-z0-9._:-]{0,255}")) }
+            else null
+        val artifacts = result.artifacts.ifEmpty { artifact?.let {
+            listOf(io.github.mangi.eta.agent.runtime.AgentArtifactReference(it.getString("artifact_id"),
+                it.optString("path").substringAfterLast('/').substringAfterLast('\\').take(255).ifBlank { "文件" },
+                io.github.mangi.eta.data.repository.NexusArtifactMedia.mimeType(it.optString("mime_type"), it.optString("path"))))
+        }.orEmpty() }
+        val workflow = if (toolCall.name in setOf("plan_manage", "goal_manage", "notepad_manage"))
+            runCatching { JSONObject(result.content) }.getOrNull()?.takeIf { it.optBoolean("ok") }
+                ?.optString("execution_reference")?.takeIf {
+                    it.matches(Regex("nexus-workflow://[a-f0-9]{64}/(?:plan|goal|notepad)/[a-f0-9]{64}"))
+                } else null
         onEvent(
             AgentEvent.ToolFinished(
                 round = round,
@@ -522,7 +761,12 @@ internal class AgentLoop(
                 imageCount = result.images.size,
                 imageBytes = result.images.sumOf { it.bytes },
                 success = traceFormatter.isSuccessResult(result),
+                effectUnknown = traceFormatter.isUnconfirmedResult(result),
                 command = result.command,
+                artifactId = artifacts.firstOrNull()?.id,
+                artifactName = artifacts.firstOrNull()?.name,
+                artifacts = artifacts,
+                workflowReference = workflow,
             )
         )
     }

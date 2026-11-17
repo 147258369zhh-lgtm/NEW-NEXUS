@@ -1,0 +1,8 @@
+<resources>
+    <string name="message_typography_title">Message typography</string>
+    <string name="message_typography_style">Style</string>
+    <string name="message_typography_preset">Preset</string>
+    <string name="message_typography_font">Chat font</string>
+    <string name="message_typography_summary">Chat font, spacing, code and tables</string>
+    <string name="message_typography_reset">Restore defaults</string>
+</resources>

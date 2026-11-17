@@ -16,6 +16,7 @@ import io.github.mangi.eta.agent.skill.SkillVersionRestoreOutcome
 import io.github.mangi.eta.agent.skill.SkillVersionService
 import io.github.mangi.eta.ui.model.AgentSkillsUiState
 import io.github.mangi.eta.ui.model.SkillItemUi
+import io.github.mangi.eta.ui.model.SkillEditorUi
 import io.github.mangi.eta.ui.model.SkillNoticeUi
 import io.github.mangi.eta.ui.model.SkillReplacementUi
 import io.github.mangi.eta.ui.model.SkillVersionUi
@@ -40,6 +41,34 @@ internal class AgentSkillsStore(
 
     var skillsState by mutableStateOf(AgentSkillsUiState(isLoading = true))
         private set
+
+    fun closeEditor() { skillsState = skillsState.copy(editor = null) }
+
+    fun openEditor(id: String) {
+        if (skillsState.busySkillId != null || skillsState.isImporting) return
+        skillsState = skillsState.copy(busySkillId = id)
+        scope.launch(Dispatchers.IO) {
+            val result = runCatching { SkillRuntime.createIndexService(appContext).readForEdit(id) }
+            withContext(Dispatchers.Main) {
+                skillsState = skillsState.copy(busySkillId = null,
+                    editor = result.getOrNull()?.let { SkillEditorUi(id, it.name, it.body, it.revision) },
+                    notice = result.exceptionOrNull()?.let { newSkillNotice("无法打开 Skill", it.message ?: "读取失败", true) })
+            }
+        }
+    }
+
+    fun saveEditor(id: String, name: String, body: String, revision: String) {
+        if (skillsState.busySkillId != null || skillsState.editor?.id != id) return
+        skillsState = skillsState.copy(busySkillId = id)
+        scope.launch(Dispatchers.IO) {
+            val result = runCatching { SkillRuntime.createIndexService(appContext).saveEdit(id, name, body, revision) }
+            withContext(Dispatchers.Main) {
+                skillsState = skillsState.copy(busySkillId = null, editor = if (result.isSuccess) null else skillsState.editor,
+                    notice = result.exceptionOrNull()?.let { newSkillNotice("无法保存 Skill", it.message ?: "保存失败", true) })
+                if (result.isSuccess) refreshSkills()
+            }
+        }
+    }
 
     fun refreshSkills() {
         scope.launch(Dispatchers.IO) {
@@ -69,6 +98,7 @@ internal class AgentSkillsStore(
                 .getOrDefault(emptyList())
                 .groupBy { it.skillId }
             val items = entries.map { entry ->
+                val compatibility = io.github.mangi.eta.agent.skill.SkillCompatibilityChecker.evaluate(entry)
                 val capabilities = buildList {
                     if (entry.hasScripts) add("scripts")
                     if (entry.hasReferences) add("references")
@@ -101,15 +131,17 @@ internal class AgentSkillsStore(
                 val blocked = prerequisites.filter { it.status == SkillPrerequisiteStatus.BLOCKED }
                 val unverified = prerequisites.filter { it.status == SkillPrerequisiteStatus.UNVERIFIED }
                 val prerequisiteLabel = when {
+                    !compatibility.available -> "当前不兼容"
                     blocked.isNotEmpty() -> blocked.size.toString() + " 项依赖未满足"
                     unverified.isNotEmpty() -> unverified.size.toString() + " 项依赖待确认"
                     prerequisites.isNotEmpty() -> "依赖已就绪"
                     else -> null
                 }
-                val prerequisiteDetail = prerequisites
+                val dependencyDetail = prerequisites
                     .take(4)
                     .joinToString("；") { report -> report.requirement + " · " + report.detail }
                     .ifBlank { null }
+                val prerequisiteDetail = listOfNotNull(compatibility.reason, dependencyDetail).joinToString("；").ifBlank { null }
                 SkillItemUi(
                     id = entry.id,
                     name = entry.name,
@@ -133,7 +165,7 @@ internal class AgentSkillsStore(
                     dependencies = entry.dependencies,
                     prerequisiteLabel = prerequisiteLabel,
                     prerequisiteDetail = prerequisiteDetail,
-                    setupRequired = blocked.isNotEmpty(),
+                    setupRequired = blocked.isNotEmpty() || !compatibility.available,
                     versions = versions[entry.id].orEmpty().map { backup ->
                         SkillVersionUi(
                             id = backup.id,
@@ -156,7 +188,9 @@ internal class AgentSkillsStore(
         skillsState = skillsState.copy(busySkillId = skillId)
         scope.launch(Dispatchers.IO) {
             val succeeded = runCatching {
-                SkillRuntime.createIndexService(appContext).setSkillEnabled(skillId, enabled)
+                io.github.mangi.eta.agent.control.NexusSettingsControlPlane.get(appContext).applyJson(
+                    "settings.skill.enabled", org.json.JSONObject().put("skillId", skillId).put("enabled", enabled),
+                    io.github.zhh_lgtm.nexus.application.api.SettingsActorKind.LOCAL_USER, "skills_settings")
             }.isSuccess
             withContext(Dispatchers.Main) {
                 skillsState = skillsState.copy(
@@ -184,8 +218,24 @@ internal class AgentSkillsStore(
         val skillName = skill.name.safeSkillDisplayName()
         skillsState = skillsState.copy(busySkillId = skillId, notice = null)
         scope.launch(Dispatchers.IO) {
+            val indexService = runCatching { SkillRuntime.createIndexService(appContext) }.getOrNull()
+            val dependents = indexService?.dependentsOf(skillId).orEmpty()
+            if (dependents.isNotEmpty()) {
+                withContext(Dispatchers.Main) {
+                    skillsState = skillsState.copy(
+                        busySkillId = null,
+                        notice = newSkillNotice(
+                            title = "无法卸载共享依赖",
+                            message = "仍有 Skill 依赖该组件：" +
+                                dependents.sorted().joinToString() + "。请先卸载依赖方。",
+                            isError = true,
+                        ),
+                    )
+                }
+                return@launch
+            }
             val succeeded = runCatching {
-                SkillRuntime.createIndexService(appContext).deleteSkill(skillId)
+                indexService?.deleteSkill(skillId) ?: false
             }.getOrDefault(false)
             withContext(Dispatchers.Main) {
                 skillsState = skillsState.copy(
@@ -384,7 +434,7 @@ internal class AgentSkillsStore(
                 skillsState = skillsState.copy(
                     isImporting = false,
                     replacement = null,
-                    notice = skillZipFailureNotice(outcome.code),
+                    notice = skillZipFailureNotice(outcome.code, outcome.message),
                 )
                 if (outcome.code == SkillZipImportOutcome.FailureCode.RECOVERY_REQUIRED) {
                     refreshSkills()
@@ -393,8 +443,12 @@ internal class AgentSkillsStore(
         }
     }
 
-    private fun skillZipFailureNotice(code: SkillZipImportOutcome.FailureCode): SkillNoticeUi {
-        val message = when (code) {
+    private fun skillZipFailureNotice(
+        code: SkillZipImportOutcome.FailureCode,
+        detail: String? = null,
+    ): SkillNoticeUi {
+        val message = detail?.takeIf { code == SkillZipImportOutcome.FailureCode.DEPENDENCY_SETUP_REQUIRED }
+            ?: when (code) {
             SkillZipImportOutcome.FailureCode.INVALID_ARCHIVE -> appContext.getString(R.string.state_ui_the_selected_file_is_not_a_valid_zip_package_bff052)
             SkillZipImportOutcome.FailureCode.ARCHIVE_LIMIT_EXCEEDED -> appContext.getString(R.string.state_ui_the_skill_pack_exceeds_the_safe_size_or_file_num_42e151)
             SkillZipImportOutcome.FailureCode.UNSAFE_ARCHIVE -> appContext.getString(R.string.state_ui_the_skill_pack_contains_an_unsafe_file_path_and__d8cfc0)
@@ -411,6 +465,8 @@ internal class AgentSkillsStore(
                 appContext.getString(R.string.state_skill_version_backup_failed_before_update)
             SkillZipImportOutcome.FailureCode.RECOVERY_REQUIRED ->
                 appContext.getString(R.string.state_ui_the_installation_failed_and_automatic_recovery_d_0d9e01)
+            SkillZipImportOutcome.FailureCode.DEPENDENCY_SETUP_REQUIRED ->
+                "本地 ZIP 声明的 Skill 依赖无法从已配置且可校验的来源安装，根 Skill 未安装。"
         }
         return newSkillNotice(
             title = appContext.getString(R.string.state_unable_to_install_skill_0ec70b),

@@ -20,6 +20,8 @@ import org.json.JSONObject
 internal class McpHttpClient(
     private val server: McpServerSetting,
     private val bearerToken: String?,
+    private val elicitation: ((JSONObject) -> JSONObject)? = null,
+    private val recovery: McpRecoveryContext? = null,
 ) : McpClient {
     data class Discovery(
         val protocolVersion: String,
@@ -72,12 +74,14 @@ internal class McpHttpClient(
     private val toolHeadersByName = mutableMapOf<String, McpToolHeaders>()
     private val lifecycleLock = Any()
     private var activeCall: Call? = null
+    private val reverseCalls = mutableSetOf<Call>()
     private var closed = false
     @Volatile
     private var negotiatedVersion: String? = null
     @Volatile
     private var legacySessionId: String? = null
     private var serverCapabilities: JSONObject? = null
+    override val protocolVersion: String? get() = negotiatedVersion
 
     override fun discoverTools(): Discovery {
         val requestedMode = server.protocolMode
@@ -91,11 +95,15 @@ internal class McpHttpClient(
     }
 
     override fun callTool(tool: McpToolDefinition, arguments: JSONObject): JSONObject {
-        val version = negotiatedVersion ?: when (
-            server.lastProtocolVersion ?: server.protocolMode
-        ) {
-            in SUPPORTED_LEGACY_PROTOCOL_VERSIONS -> initializeLegacy()
-            else -> McpProtocolMode.LATEST.also { negotiatedVersion = it }
+        val version = negotiatedVersion ?: when (server.protocolMode) {
+            McpProtocolMode.LEGACY -> initializeLegacy()
+            McpProtocolMode.LATEST -> McpProtocolMode.LATEST.also { negotiatedVersion = it }
+            else -> when (server.lastProtocolVersion) {
+                in SUPPORTED_LEGACY_PROTOCOL_VERSIONS -> initializeLegacy()
+                McpProtocolMode.LATEST -> McpProtocolMode.LATEST.also { negotiatedVersion = it }
+                // Negotiate with a read, before submitting a potentially effectful tool.
+                else -> discoverTools().protocolVersion
+            }
         }
         val parameterHeaders = if (version == McpProtocolMode.LATEST) {
             toolHeadersByName.getOrPut(tool.name) {
@@ -104,25 +112,25 @@ internal class McpHttpClient(
         } else {
             emptyMap()
         }
-        fun invoke(sessionId: String?): JSONObject = unwrapResult(
-            requireNotNull(
-                request(
-                    method = "tools/call",
-                    name = tool.name,
-                    params = JSONObject()
-                        .put("name", tool.name)
-                        .put("arguments", arguments),
-                    protocolVersion = version,
-                    sessionId = sessionId,
-                    additionalHeaders = parameterHeaders,
-                ).json,
-            ) { "MCP 工具返回为空" },
-        )
-        return if (version in SUPPORTED_LEGACY_PROTOCOL_VERSIONS) {
-            withLegacySessionRetry(::invoke)
-        } else {
-            invoke(sessionId = null)
+        val base = JSONObject().put("name", tool.name).put("arguments", arguments)
+        fun invoke(sessionId: String?): JSONObject {
+            fun send(params: JSONObject): JSONObject = unwrapResult(requireNotNull(request("tools/call", params, version, sessionId, tool.name, parameterHeaders).json) { "MCP 工具返回为空" })
+            val initial = send(base)
+            return if (version == McpProtocolMode.LATEST) McpInputRoundTrips.complete(initial, base, elicitation, recovery, "tools/call", ::send) else initial
         }
+        // An effectful call is never blindly repeated after a lost/expired legacy session.
+        if (version in SUPPORTED_LEGACY_PROTOCOL_VERSIONS) initializeLegacy()
+        return invoke(if (version in SUPPORTED_LEGACY_PROTOCOL_VERSIONS) legacySessionId else null)
+    }
+
+    override fun resumeRequest(method: String, params: JSONObject): JSONObject {
+        require(server.protocolMode != McpProtocolMode.LEGACY && method in setOf("tools/call", "resources/read", "prompts/get"))
+        require(params.optString("requestState").isNotEmpty()) { "MCP_OPAQUE_STATE_REQUIRED" }
+        negotiatedVersion = McpProtocolMode.LATEST
+        val headers = if (method == "tools/call") recovery?.tool?.definition?.let {
+            McpToolHeaders.fromSchema(JSONObject(it.inputSchemaJson)).extract(params.getJSONObject("arguments"))
+        }.orEmpty() else emptyMap()
+        return unwrapResult(requireNotNull(request(method, params, McpProtocolMode.LATEST, null, params.optString("name").takeIf(String::isNotBlank), headers).json))
     }
 
     /** Optional MCP resources and prompt templates are browsed separately from model tools. */
@@ -149,13 +157,17 @@ internal class McpHttpClient(
     }
 
     override fun readResourcePreview(uri: String): ContentPreview {
+        return McpContentPreview.fromResources(readResourceContents(uri), MAX_RESOURCE_READ_BYTES)
+    }
+
+    override fun readResourceContents(uri: String): JSONArray {
         require(uri.isNotBlank() && uri.length <= MAX_URI_CHARS) { "MCP 资源地址无效" }
+        require(uri.none(Char::isISOControl)) { "MCP 资源地址无效" }
         val result = catalogRequest(
             method = "resources/read",
             params = JSONObject().put("uri", uri),
         )
-        val contents = result.optJSONArray("contents") ?: error("MCP 资源响应缺少 contents")
-        return McpContentPreview.fromResources(contents, MAX_RESOURCE_READ_BYTES)
+        return result.optJSONArray("contents") ?: error("MCP 资源响应缺少 contents")
     }
 
     override fun getPrompt(prompt: PromptSummary, arguments: Map<String, String>): ContentPreview {
@@ -179,25 +191,29 @@ internal class McpHttpClient(
         val call: Call?
         val sessionId: String?
         val protocolVersion: String?
+        val nested: List<Call>
         synchronized(lifecycleLock) {
             if (closed) return
             closed = true
             call = activeCall
             activeCall = null
+            nested = reverseCalls.toList()
+            reverseCalls.clear()
             sessionId = legacySessionId
             legacySessionId = null
             protocolVersion = negotiatedVersion
         }
         call?.cancel()
+        nested.forEach(Call::cancel)
         if (sessionId != null && protocolVersion in SUPPORTED_LEGACY_PROTOCOL_VERSIONS) {
             releaseLegacySession(sessionId, requireNotNull(protocolVersion))
         }
     }
 
     private fun discoverLatest(): Discovery {
-        negotiatedVersion = McpProtocolMode.LATEST
         return try {
             val listed = listTools(McpProtocolMode.LATEST, sessionId = null)
+            negotiatedVersion = McpProtocolMode.LATEST
             Discovery(McpProtocolMode.LATEST, listed.tools, listed.cacheTtlMs)
         } catch (failure: McpHttpStatusException) {
             if (
@@ -248,7 +264,12 @@ internal class McpHttpClient(
         fun invoke(sessionId: String?): JSONObject {
             val response = request(method, params, version, sessionId, name).json
                 ?: error("MCP $method 返回为空")
-            val result = unwrapResult(response)
+            val initial = unwrapResult(response)
+            val result = if (version == McpProtocolMode.LATEST && method in setOf("resources/read", "prompts/get")) {
+                McpInputRoundTrips.complete(initial, params, elicitation, recovery, method) { retry ->
+                    unwrapResult(requireNotNull(request(method, retry, version, sessionId, name).json))
+                }
+            } else initial
             if (version == McpProtocolMode.LATEST) {
                 if (!result.has("resultType") || result.isNull("resultType")) {
                     throw McpProtocolCompatibilityException(IOException("MCP $method 返回了旧协议结果"))
@@ -368,7 +389,7 @@ internal class McpHttpClient(
             method = "initialize",
             params = JSONObject()
                 .put("protocolVersion", McpProtocolMode.LEGACY)
-                .put("capabilities", JSONObject())
+                .put("capabilities", McpInputRoundTrips.capabilities(elicitation != null))
                 .put(
                     "clientInfo",
                     JSONObject().put("name", "Nexus").put("version", CLIENT_VERSION),
@@ -484,7 +505,7 @@ internal class McpHttpClient(
                         "io.modelcontextprotocol/clientInfo",
                         JSONObject().put("name", "Nexus").put("version", CLIENT_VERSION),
                     )
-                    .put("io.modelcontextprotocol/clientCapabilities", JSONObject()),
+                    .put("io.modelcontextprotocol/clientCapabilities", McpInputRoundTrips.capabilities(elicitation != null)),
             )
         }
         val body = JSONObject()
@@ -516,7 +537,8 @@ internal class McpHttpClient(
             }
             .applyAuthorization()
             .build()
-        return execute(httpRequest, expectsBody = true, expectedId = id)
+        return execute(httpRequest, expectsBody = true, expectedId = id,
+            maxResponseBytes = if (method in setOf("tools/call", "resources/read")) MAX_MEDIA_RESPONSE_BYTES else MAX_RESPONSE_BYTES)
     }
 
     private fun notification(
@@ -544,8 +566,9 @@ internal class McpHttpClient(
         request: Request,
         expectsBody: Boolean,
         expectedId: Long?,
+        maxResponseBytes: Long = MAX_RESPONSE_BYTES,
     ): WireResponse {
-        val call = AgentHttpClient.client.newCall(request)
+        val call = toolHttpClient.newCall(request)
         synchronized(lifecycleLock) {
             check(!closed) { "MCP 客户端已关闭" }
             check(activeCall == null) { "MCP 客户端正在执行其他请求" }
@@ -556,9 +579,9 @@ internal class McpHttpClient(
                 val sessionId = response.header(HEADER_SESSION_ID)
                 if (response.isSuccessful && !expectsBody) return WireResponse(null, sessionId)
                 val json = if (response.isSuccessful) {
-                    response.readWireJson(expectedId)
+                    response.readWireJson(expectedId, maxResponseBytes)
                 } else {
-                    runCatching { response.readWireJson(expectedId) }.getOrNull()
+                    runCatching { response.readWireJson(expectedId, MAX_RESPONSE_BYTES) }.getOrNull()
                 }
                 if (!response.isSuccessful) {
                     throw McpHttpStatusException(
@@ -594,7 +617,7 @@ internal class McpHttpClient(
             .header(HEADER_SESSION_ID, sessionId)
             .applyAuthorization()
             .build()
-        AgentHttpClient.client.newCall(request).enqueue(
+        toolHttpClient.newCall(request).enqueue(
             object : Callback {
                 override fun onFailure(call: Call, e: IOException) = Unit
 
@@ -614,50 +637,58 @@ internal class McpHttpClient(
     private fun unwrapResult(response: JSONObject): JSONObject =
         response.optJSONObject("result") ?: error("MCP 响应缺少 result")
 
-    private fun Response.readWireJson(expectedId: Long?): JSONObject? =
+    private fun Response.readWireJson(expectedId: Long?, maxBytes: Long = MAX_RESPONSE_BYTES): JSONObject? =
         if (header("Content-Type").orEmpty().contains("text/event-stream", ignoreCase = true)) {
-            readSseJson(expectedId)
+            readSseJson(expectedId, maxBytes)
         } else {
-            readBoundedBody().takeIf(String::isNotBlank)?.let(::JSONObject)
+            readBoundedBody(maxBytes).takeIf(String::isNotBlank)?.let(::JSONObject)
         }
 
-    private fun Response.readBoundedBody(): String {
+    private fun Response.readBoundedBody(maxBytes: Long = MAX_RESPONSE_BYTES): String {
         val bytes = body.source().use { source ->
             val buffer = Buffer()
-            while (buffer.size <= MAX_RESPONSE_BYTES) {
+            while (buffer.size <= maxBytes) {
                 val read = source.read(
                     buffer,
-                    minOf(8_192L, MAX_RESPONSE_BYTES + 1L - buffer.size),
+                    minOf(8_192L, maxBytes + 1L - buffer.size),
                 )
                 if (read == -1L) break
             }
             buffer.readByteArray()
         }
-        require(bytes.size <= MAX_RESPONSE_BYTES) { "MCP 响应超过大小限制" }
+        require(bytes.size <= maxBytes) { "MCP 响应超过大小限制" }
         return bytes.toString(Charsets.UTF_8)
     }
 
     private fun Response.safeErrorSummary(): String =
         message.take(MAX_ERROR_CHARS).ifBlank { "HTTP $code" }
 
-    private fun Response.readSseJson(expectedId: Long?): JSONObject? {
+    private fun Response.readSseJson(expectedId: Long?, maxBytes: Long = MAX_RESPONSE_BYTES): JSONObject? {
         val source = body.source()
         val dataLines = mutableListOf<String>()
         var totalBytes = 0L
+        var reverseCount = 0
 
         fun consumeEvent(): JSONObject? {
             if (dataLines.isEmpty()) return null
             val json = runCatching { JSONObject(dataLines.joinToString("\n")) }.getOrNull()
             dataLines.clear()
+            if (json?.has("method") == true && json.has("id")) {
+                require(++reverseCount <= 8) { "MCP_REVERSE_REQUEST_LIMIT" }
+                val version = request.header(HEADER_PROTOCOL_VERSION)
+                val reply = McpInputRoundTrips.reverseReply(json, elicitation, version)
+                sendServerReply(reply, header(HEADER_SESSION_ID) ?: legacySessionId, version ?: McpProtocolMode.LEGACY)
+                return null
+            }
             return json?.takeIf { candidate ->
                 expectedId == null || candidate.opt("id")?.toString() == expectedId.toString()
             }
         }
 
         while (true) {
-            val line = source.readBoundedSseLine(MAX_RESPONSE_BYTES - totalBytes) ?: break
+            val line = source.readBoundedSseLine(maxBytes - totalBytes) ?: break
             totalBytes += line.toByteArray().size + 1L
-            require(totalBytes <= MAX_RESPONSE_BYTES) { "MCP 响应超过大小限制" }
+            require(totalBytes <= maxBytes) { "MCP 响应超过大小限制" }
             when {
                 line.isEmpty() -> consumeEvent()?.let { return it }
                 line.startsWith(":") -> Unit
@@ -665,6 +696,17 @@ internal class McpHttpClient(
             }
         }
         return consumeEvent()
+    }
+
+    /** A legacy server request is answered on the same authenticated HTTP session. */
+    private fun sendServerReply(reply: JSONObject, sessionId: String?, version: String) {
+        val outgoing = Request.Builder().url(endpoint).post(reply.toString().toRequestBody(JSON_MEDIA_TYPE))
+            .header("Accept", "application/json, text/event-stream").header(HEADER_PROTOCOL_VERSION, version)
+            .apply { sessionId?.let { header(HEADER_SESSION_ID, it) } }.applyAuthorization().build()
+        val call = toolHttpClient.newCall(outgoing)
+        synchronized(lifecycleLock) { check(!closed); reverseCalls += call }
+        try { call.execute().use { check(it.isSuccessful) { "MCP_ELICITATION_REPLY_FAILED" } } }
+        finally { synchronized(lifecycleLock) { reverseCalls.remove(call) } }
     }
 
     private fun okio.BufferedSource.readBoundedSseLine(remainingBytes: Long): String? {
@@ -688,6 +730,11 @@ internal class McpHttpClient(
         if (has(key) && !isNull(key)) optLong(key) else null
 
     private companion object {
+        val toolHttpClient by lazy {
+            AgentHttpClient.client.newBuilder().retryOnConnectionFailure(false)
+                .followRedirects(false).followSslRedirects(false)
+                .callTimeout(10, java.util.concurrent.TimeUnit.MINUTES).readTimeout(120, java.util.concurrent.TimeUnit.SECONDS).build()
+        }
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         const val CLIENT_VERSION = "1"
         const val HEADER_PROTOCOL_VERSION = "MCP-Protocol-Version"
@@ -695,6 +742,7 @@ internal class McpHttpClient(
         const val HEADER_NAME = "Mcp-Name"
         const val HEADER_SESSION_ID = "Mcp-Session-Id"
         const val MAX_RESPONSE_BYTES = 1_048_576L
+        const val MAX_MEDIA_RESPONSE_BYTES = 12L * 1024 * 1024
         const val MAX_ERROR_CHARS = 200
         const val MAX_TITLE_CHARS = 160
         const val MAX_DESCRIPTION_CHARS = 2_000

@@ -6,6 +6,7 @@ import org.json.JSONObject
 internal data class AgentUiHandoffPayload(
     val conversationId: String,
     val workflowMode: String = "CHAT",
+    val selectedSkillIds: List<String> = emptyList(),
     val promptSupplement: Supplement? = null,
     val supplements: List<Supplement> = emptyList(),
 ) {
@@ -27,6 +28,7 @@ internal data class AgentUiHandoffPayload(
             .put("version", VERSION)
             .put("conversationId", conversationId)
             .put("workflowMode", workflowMode)
+            .put("selectedSkillIds", JSONArray().also { array -> selectedSkillIds.forEach { array.put(it) } })
             .also { json ->
                 promptSupplement?.let { json.put("promptSupplement", it.toJson()) }
             }
@@ -60,6 +62,9 @@ internal data class AgentUiHandoffPayload(
                 AgentUiHandoffPayload(
                     conversationId = json.optString("conversationId"),
                     workflowMode = json.optString("workflowMode", "CHAT"),
+                    selectedSkillIds = json.optJSONArray("selectedSkillIds")?.let { array ->
+                        (0 until array.length()).mapNotNull { index -> array.optString(index).takeIf(String::isNotBlank) }
+                    }.orEmpty(),
                     promptSupplement = json.optJSONObject("promptSupplement")
                         ?.toSupplement(defaultIndex = 1),
                     supplements = (0 until supplementsJson.length()).mapNotNull { index ->

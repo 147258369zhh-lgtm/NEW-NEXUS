@@ -31,7 +31,7 @@ class ProviderRequestHeadersTest {
         val headers = builder.build()
         assertEquals("xai-grok-cli", headers["X-XAI-Token-Auth"])
         assertEquals("grok-fixture", headers["x-grok-model-override"])
-        assertEquals("Eta", headers["User-Agent"])
+        assertEquals("Nexus", headers["User-Agent"])
         assertNull(headers["x-grok-client-version"])
     }
 
@@ -56,7 +56,7 @@ class ProviderRequestHeadersTest {
         val next = headers("https://opencode.ai/zen/go/v1", "conversation-2")
         assertEquals(first["x-opencode-session"], retry["x-opencode-session"])
         assertNotEquals(first["x-opencode-session"], next["x-opencode-session"])
-        assertEquals("Eta", first["User-Agent"])
+        assertEquals("Nexus", first["User-Agent"])
     }
 
     @Test

@@ -33,7 +33,6 @@ import kotlin.coroutines.resume
 
 internal object AutomationTriggers {
     @Volatile private var cachedLocation: Location? = null
-    @Volatile private var cachedLocationAt: Long = 0L
 
     fun state(context: Context): AutomationState {
         val battery = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
@@ -62,12 +61,16 @@ internal object AutomationTriggers {
         )
     }
 
-    fun signal(context: Context, type: AutomationTrigger, key: String) {
-        val work = OneTimeWorkRequestBuilder<AgentTaskWorker>().setInputData(workDataOf("eventType" to type.name, "eventKey" to key.take(200))).build()
+    fun signal(context: Context, type: AutomationTrigger, key: String, payload: JSONObject = JSONObject()) {
+        val work = OneTimeWorkRequestBuilder<AgentTaskWorker>().setInputData(workDataOf(
+            "eventType" to type.name,
+            "eventKey" to key.take(200),
+            "eventPayload" to payload.toString().take(8_192),
+        )).build()
         WorkManager.getInstance(context).enqueueUniqueWork("automation-event-${type.name}-${skillRevision(key.toByteArray()).take(20)}", ExistingWorkPolicy.KEEP, work)
     }
 
-    suspend fun poll(context: Context, eventType: String? = null, eventKey: String = "") {
+    suspend fun poll(context: Context, eventType: String? = null, eventKey: String = "", eventPayload: JSONObject = JSONObject()) {
         val db = AgentTaskDatabase.get(context); val dao = db.agentTaskDao(); val triggers = db.triggerDao()
         val state = state(context)
         for (trigger in triggers.all().filter { it.enabled }) {
@@ -77,14 +80,7 @@ internal object AutomationTriggers {
             try {
                 when (type) {
                     AutomationTrigger.FILE_CREATED, AutomationTrigger.FILE_CHANGED -> pollFiles(context, trigger, type, state)
-                    AutomationTrigger.TASK_SUCCEEDED, AutomationTrigger.TASK_FAILED -> {
-                        val desired = if (type == AutomationTrigger.TASK_SUCCEEDED) AgentTaskState.SUCCEEDED else AgentTaskState.FAILED
-                        val completed = dao.runsForDefinition(trigger.source).filter { it.state == desired }
-                            .sortedWith(compareBy<AgentTaskRunEntity> { it.finishedAt ?: 0 }.thenBy { it.id })
-                        val last = completed.drop(completed.indexOfFirst { it.id == trigger.cursor } + 1).firstOrNull()
-                        if (last != null && last.id != trigger.cursor) fire(context, trigger, last.id,
-                            JSONObject().put("sourceTask", trigger.source).put("sourceRun", last.id), state, last.id)
-                    }
+                    AutomationTrigger.TASK_SUCCEEDED, AutomationTrigger.TASK_FAILED -> pollTaskCompletion(context, trigger, state)
                     AutomationTrigger.STATE -> {
                         val matches = AutomationSpec.parse(definition.policyJson).condition.matches(state)
                         if (!matches && trigger.cursor != "false") triggers.save(trigger.copy(cursor = "false"))
@@ -100,12 +96,117 @@ internal object AutomationTriggers {
                     AutomationTrigger.HEADSET_CONNECTED, AutomationTrigger.HEADSET_DISCONNECTED,
                     AutomationTrigger.AIRPLANE_MODE_ON, AutomationTrigger.AIRPLANE_MODE_OFF,
                     -> pollEdgeState(context, trigger, type, state, eventKey)
-                    else -> if (eventType == type.name && eventKey.isNotBlank()) fire(context, trigger, eventKey, JSONObject(), state, eventKey)
+                    else -> if (eventType == type.name && eventKey.isNotBlank() &&
+                        AutomationEventMatcher.matches(trigger, type, eventPayload)
+                    ) fire(context, trigger, eventKey, JSONObject(eventPayload.toString()), state, eventKey)
                 }
             } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
             catch (failure: Exception) {
                 val reason = failure.message?.replace(Regex("\\s+"), " ")?.take(160)
                 triggers.save(trigger.copy(detail = listOfNotNull("触发检查失败，请检查目录授权或配置", reason).joinToString("：")))
+            }
+        }
+    }
+
+    internal suspend fun pollTaskCompletion(context: Context, trigger: AutomationTriggerEntity, state: AutomationState) {
+        val db = AgentTaskDatabase.get(context)
+        val desired = if (trigger.type == AutomationTrigger.TASK_SUCCEEDED.name) AgentTaskState.SUCCEEDED else AgentTaskState.FAILED
+        if (TaskDependencyConfig.isConfig(trigger.source)) {
+            pollTaskDependencies(context, trigger, state, TaskDependencyConfig.parse(trigger.source), desired)
+            return
+        }
+        val completed = db.agentTaskDao().runsForDefinition(trigger.source).filter { it.state == desired }
+        val frontier = TaskCompletionCursor.parse(trigger.cursor)
+            ?: completed.firstOrNull { it.id == trigger.cursor }?.let { TaskCompletionCursor.legacy(it, completed) }
+            ?: if (trigger.cursor.isBlank()) TaskCompletionCursor(0, emptySet()) else {
+                // A deleted legacy cursor cannot establish which surviving history was consumed.
+                db.withTransaction {
+                    val current = db.triggerDao().get(trigger.id)
+                    if (current?.cursor == trigger.cursor) db.triggerDao().save(current.copy(
+                        cursor = TaskCompletionCursor.baseline(completed, System.currentTimeMillis()).encode(),
+                        detail = "已重建任务链基线，等待新的完成事件",
+                    ))
+                }
+                return
+            }
+        val next = completed.filter(frontier::accepts)
+            .minWithOrNull(compareBy<AgentTaskRunEntity> { it.finishedAt }.thenBy { it.id })
+        if (next != null) {
+            fire(context, trigger, next.id,
+                JSONObject().put("sourceTask", trigger.source).put("sourceRun", next.id), state, frontier.advance(next).encode())
+        } else if (trigger.cursor != frontier.encode()) {
+            db.withTransaction {
+                val current = db.triggerDao().get(trigger.id)
+                if (current?.cursor == trigger.cursor) db.triggerDao().save(current.copy(cursor = frontier.encode()))
+            }
+        }
+    }
+
+    private suspend fun pollTaskDependencies(
+        context: Context,
+        trigger: AutomationTriggerEntity,
+        state: AutomationState,
+        config: TaskDependencyConfig,
+        desired: AgentTaskState,
+    ) {
+        val db = AgentTaskDatabase.get(context)
+        val dao = db.agentTaskDao()
+        val currentConfig = runCatching { JSONObject(trigger.cursor).optString("config") }.getOrNull()
+        val cursors = runCatching { JSONObject(trigger.cursor).optJSONObject("sources") }.getOrNull()
+        // If a configuration was changed outside the repository, establish a safe baseline first.
+        if (currentConfig != config.encode() || cursors == null) {
+            val sources = JSONObject()
+            config.taskIds.forEach { id ->
+                val completed = dao.runsForDefinition(id).filter { it.state == desired }
+                sources.put(id, TaskCompletionCursor.baseline(completed, System.currentTimeMillis()).encode())
+            }
+            val baselineCursor = JSONObject().put("config", config.encode()).put("sources", sources).toString()
+            db.withTransaction {
+                val live = db.triggerDao().get(trigger.id)
+                if (live?.cursor == trigger.cursor) db.triggerDao().save(live.copy(cursor = baselineCursor,
+                    detail = "已建立任务依赖基线，等待新的完成事件"))
+            }
+            return
+        }
+        val frontiers = linkedMapOf<String, TaskCompletionCursor>()
+        val candidates = linkedMapOf<String, AgentTaskRunEntity>()
+        for (sourceId in config.taskIds) {
+            val completed = dao.runsForDefinition(sourceId).filter { it.state == desired }
+            val raw = cursors.optString(sourceId)
+            val frontier = TaskCompletionCursor.parse(raw)
+                ?: completed.firstOrNull { it.id == raw }?.let { TaskCompletionCursor.legacy(it, completed) }
+                ?: run {
+                    val reset = JSONObject().put("config", config.encode()).put("sources", JSONObject().apply {
+                        config.taskIds.forEach { id -> put(id, TaskCompletionCursor.baseline(
+                            dao.runsForDefinition(id).filter { it.state == desired }, System.currentTimeMillis()).encode()) }
+                    }).toString()
+                    db.withTransaction {
+                        val live = db.triggerDao().get(trigger.id)
+                        if (live?.cursor == trigger.cursor) db.triggerDao().save(live.copy(cursor = reset, detail = "已重建任务链基线，等待新的完成事件"))
+                    }
+                    return
+                }
+            frontiers[sourceId] = frontier
+            completed.filter(frontier::accepts).minWithOrNull(compareBy<AgentTaskRunEntity> { it.finishedAt }.thenBy { it.id })
+                ?.let { candidates[sourceId] = it }
+        }
+        val consumed = TaskDependencyConfig.selectCompletions(config.taskIds, candidates, config.mode)
+        if (consumed != null) {
+            val runIds = consumed.entries.associate { it.key to it.value.id }
+            val advanced = JSONObject(cursors.toString()).apply {
+                consumed.forEach { (sourceId, run) -> put(sourceId, frontiers.getValue(sourceId).advance(run).encode()) }
+            }
+            val next = JSONObject().put("config", config.encode()).put("sources", advanced).toString()
+            val eventKey = runIds.toSortedMap().entries.joinToString("|") { "${it.key}:${it.value}" }
+            val payload = JSONObject().put("sourceRuns", JSONObject(runIds)).put("mode", config.mode.name)
+            fire(context, trigger, eventKey, payload, state, next)
+        } else {
+            val encoded = JSONObject().put("config", config.encode()).put("sources", JSONObject().apply {
+                frontiers.forEach { (id, cursor) -> put(id, cursor.encode()) }
+            }).toString()
+            if (encoded != trigger.cursor) db.withTransaction {
+                val live = db.triggerDao().get(trigger.id)
+                if (live?.cursor == trigger.cursor) db.triggerDao().save(live.copy(cursor = encoded))
             }
         }
     }
@@ -203,7 +304,7 @@ internal object AutomationTriggers {
         while (events.hasNextEvent()) {
             events.getNextEvent(event)
             if (event.eventType != UsageEvents.Event.ACTIVITY_RESUMED || event.packageName != trigger.source) continue
-            fire(
+            val queued = fire(
                 context,
                 trigger,
                 "usage:${event.packageName}:${event.timeStamp}:${event.className}",
@@ -212,10 +313,12 @@ internal object AutomationTriggers {
                     .put("activity", event.className)
                     .put("openedAt", event.timeStamp),
                 state,
-                now.toString(),
+                event.timeStamp.toString(),
             )
-            val latest = dao.get(trigger.id) ?: return
-            dao.save(latest.copy(cursor = now.toString(), detail = "已检测到应用打开"))
+            if (queued) {
+                val latest = dao.get(trigger.id) ?: return
+                dao.save(latest.copy(detail = "已记录应用打开事件"))
+            }
             return
         }
         dao.save(trigger.copy(cursor = now.toString(), detail = "等待打开指定应用"))
@@ -277,11 +380,16 @@ internal object AutomationTriggers {
             )
             return
         }
+        val inside = AutomationLocationPolicy.isInside(location, area)
+        if (inside == null) {
+            AgentTaskDatabase.get(context).triggerDao().save(trigger.copy(detail = "等待更准确的定位，区域边界未确认"))
+            return
+        }
         val distance = FloatArray(1)
         Location.distanceBetween(location.latitude, location.longitude, area.latitude, area.longitude, distance)
         val matches = when (type) {
-            AutomationTrigger.LOCATION_ENTER -> distance[0] <= area.radiusMeters
-            AutomationTrigger.LOCATION_EXIT -> distance[0] > area.radiusMeters
+            AutomationTrigger.LOCATION_ENTER -> inside
+            AutomationTrigger.LOCATION_EXIT -> !inside
             else -> false
         }
         val previous = trigger.cursor.toBooleanStrictOrNull()
@@ -308,13 +416,13 @@ internal object AutomationTriggers {
         val coarse = ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
         if (!fine && !coarse) return null
         val manager = context.getSystemService(LocationManager::class.java)
-        val recent = cachedLocation?.takeIf { System.currentTimeMillis() - cachedLocationAt <= 60_000L }
-        if (recent != null) return recent
         val providers = buildList {
             if (manager.isProviderEnabled(LocationManager.GPS_PROVIDER)) add(LocationManager.GPS_PROVIDER)
             if (manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) add(LocationManager.NETWORK_PROVIDER)
             if (isEmpty()) manager.getProviders(true).firstOrNull()?.let(::add)
         }
+        if (providers.isEmpty()) return null
+        cachedLocation?.takeIf { AutomationLocationPolicy.isRecent(it) }?.let { return it }
         for (provider in providers) {
             val fresh = withTimeoutOrNull(6_000L) {
                 suspendCancellableCoroutine<Location?> { continuation ->
@@ -331,17 +439,15 @@ internal object AutomationTriggers {
                     }
                 }
             }
-            if (fresh != null) {
+            if (fresh != null && AutomationLocationPolicy.isRecent(fresh)) {
                 cachedLocation = fresh
-                cachedLocationAt = System.currentTimeMillis()
                 return fresh
             }
         }
         return manager.getProviders(true).mapNotNull { provider ->
             runCatching { manager.getLastKnownLocation(provider) }.getOrNull()
-        }.maxByOrNull { it.time }?.also {
+        }.filter { AutomationLocationPolicy.isRecent(it) }.maxByOrNull { it.elapsedRealtimeNanos }?.also {
             cachedLocation = it
-            cachedLocationAt = System.currentTimeMillis()
         }
     }
 
@@ -397,20 +503,20 @@ internal object AutomationTriggers {
             val definition = db.agentTaskDao().definition(trigger.definitionId) ?: return@withTransaction false
             val now = System.currentTimeMillis()
             if (!trigger.enabled || !definition.enabled || trigger.cursor != snapshot.cursor || trigger.cursor == nextCursor) return@withTransaction false
-            if (now - trigger.lastFiredAt < trigger.cooldownSeconds * 1000L || db.agentTaskDao().activeCount(definition.id) > 0) return@withTransaction false
+            if (now - trigger.lastFiredAt < trigger.cooldownSeconds * 1000L) return@withTransaction false
             val spec = AutomationSpec.parse(definition.policyJson)
             if (db.agentTaskDao().runsForDefinition(definition.id).count { it.createdAt > now - 86400000 && it.idempotencyKey.startsWith("event:") } >= spec.maxEventRunsPerDay) {
                 db.triggerDao().save(trigger.copy(detail = "已达到每日事件运行上限")); return@withTransaction false
             }
-            if (!spec.condition.matches(state)) {
-                db.triggerDao().save(trigger.copy(detail = "等待设备条件满足")); return@withTransaction false
-            }
+            val conditionsMet = spec.condition.matches(state)
             val runId = UUID.randomUUID().toString()
             val inserted = db.agentTaskDao().insertRunIfAbsent(AgentTaskRunEntity(id = runId, definitionId = definition.id,
                 scheduleId = null, scheduledFor = now, attempt = 1, idempotencyKey = "event:${trigger.id}:${skillRevision(eventKey.toByteArray())}",
                 state = AgentTaskState.QUEUED, createdAt = now, updatedAt = now))
+            val waitReason = if (conditionsMet) "" else spec.condition.mismatch(state)?.take(140) ?: "状态未就绪"
             // Duplicate delivery advances the cursor too, without creating another execution.
-            db.triggerDao().save(trigger.copy(cursor = nextCursor, lastFiredAt = now, detail = "已触发"))
+            db.triggerDao().save(trigger.copy(cursor = nextCursor, lastFiredAt = now,
+                detail = if (conditionsMet) "已触发" else "事件已记录，等待设备条件满足：$waitReason"))
             if (inserted >= 0) db.agentTaskDao().appendEvent(runId, "TRIGGER", payload.put("type", trigger.type).toString(), now)
             true
         }
@@ -418,7 +524,9 @@ internal object AutomationTriggers {
 
     fun requireAcyclic(triggers: List<AutomationTriggerEntity>) {
         val edges = triggers.filter { it.type in setOf(AutomationTrigger.TASK_SUCCEEDED.name, AutomationTrigger.TASK_FAILED.name) }
-            .groupBy { it.definitionId }.mapValues { (_, ts) -> ts.map { it.source } }
+            .groupBy { it.definitionId }.mapValues { (_, ts) -> ts.flatMap { trigger ->
+                if (TaskDependencyConfig.isConfig(trigger.source)) TaskDependencyConfig.parse(trigger.source).taskIds else listOf(trigger.source)
+            } }
         fun visit(id: String, path: Set<String>) {
             require(id !in path) { "任务依赖形成循环" }
             edges[id].orEmpty().forEach { visit(it, path + id) }

@@ -40,6 +40,8 @@
     <string name="metrics_detail_title">运行明细</string>
     <string name="metrics_record_missing">该记录已清除，或已超过保留范围。</string>
     <string name="metrics_detail_duration">已记录耗时：%1$s 秒</string>
+    <string name="metrics_time_unknown">时间未知</string>
+    <string name="metrics_duration_unknown">时长未知</string>
     <string name="metrics_detail_rounds">模型轮次：%1$d</string>
     <string name="metrics_detail_coverage">用量上报覆盖：共 %3$d 轮，输入 %1$d 轮 · 输出 %2$d 轮</string>
     <string name="metrics_detail_images">附加图片字节数：%1$s</string>

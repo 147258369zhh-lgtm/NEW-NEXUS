@@ -15,9 +15,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         A2AEventEntity::class,
         A2AArtifactEntity::class,
         A2AInboundTaskEntity::class,
+        A2AInboundContinuationEntity::class,
         A2AInboundArtifactEntity::class,
+        A2AInboundApprovalEntity::class,
     ],
-    version = 2,
+    version = 5,
     exportSchema = false,
 )
 internal abstract class A2ADatabase : RoomDatabase() {
@@ -31,7 +33,10 @@ internal abstract class A2ADatabase : RoomDatabase() {
                 context.applicationContext,
                 A2ADatabase::class.java,
                 "eta_a2a.db",
-            ).addMigrations(MIGRATION_1_2).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .enableMultiInstanceInvalidation()
+                .build()
+                .also { instance = it }
         }
 
         internal val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -79,6 +84,78 @@ internal abstract class A2ADatabase : RoomDatabase() {
                 database.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_a2a_inbound_artifacts_taskId` " +
                         "ON `a2a_inbound_artifacts` (`taskId`)",
+                )
+            }
+        }
+
+        /** Adds durable INPUT_REQUIRED/AUTH_REQUIRED waits and idempotent continuation records. */
+        internal val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "ALTER TABLE `a2a_inbound_tasks` ADD COLUMN `continuationMessageId` TEXT",
+                )
+                database.execSQL(
+                    "ALTER TABLE `a2a_inbound_tasks` ADD COLUMN `continuationInput` TEXT",
+                )
+                database.execSQL(
+                    "ALTER TABLE `a2a_inbound_tasks` ADD COLUMN `continuationCount` INTEGER NOT NULL DEFAULT 0",
+                )
+                database.execSQL(
+                    "ALTER TABLE `a2a_inbound_tasks` ADD COLUMN `accessJson` TEXT",
+                )
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `a2a_inbound_continuations` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `messageId` TEXT NOT NULL,
+                        `taskId` TEXT NOT NULL,
+                        `contextId` TEXT NOT NULL,
+                        `input` TEXT NOT NULL,
+                        `outcome` TEXT NOT NULL,
+                        `acceptedAt` INTEGER NOT NULL,
+                        FOREIGN KEY(`taskId`) REFERENCES `a2a_inbound_tasks`(`taskId`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent(),
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_a2a_inbound_continuations_taskId` " +
+                        "ON `a2a_inbound_continuations` (`taskId`)",
+                )
+                database.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_a2a_inbound_continuations_messageId` " +
+                        "ON `a2a_inbound_continuations` (`messageId`)",
+                )
+            }
+        }
+
+        internal val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `a2a_inbound_approvals` (
+                        `taskId` TEXT NOT NULL,
+                        `messageId` TEXT NOT NULL,
+                        `originalGrantFingerprint` TEXT NOT NULL,
+                        `currentGrantFingerprint` TEXT NOT NULL,
+                        `decision` TEXT NOT NULL,
+                        `decidedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`taskId`)
+                    )
+                """.trimIndent())
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_a2a_inbound_approvals_taskId` ON `a2a_inbound_approvals` (`taskId`)")
+            }
+        }
+
+        /**
+         * Adds the bounded local resume ledger of a paused inbound turn. It stores only the exact
+         * pending call identity and settled-call digests, never transcript text or arguments.
+         * Old rows keep NULL, so an owner approval fails closed instead of replaying the turn.
+         */
+        internal val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `a2a_inbound_tasks` ADD COLUMN `approvalSummaryJson` TEXT")
+                db.execSQL("ALTER TABLE `a2a_inbound_tasks` ADD COLUMN `approvalSummaryDigest` TEXT")
+                db.execSQL(
+                    "ALTER TABLE `a2a_inbound_tasks` ADD COLUMN `approvalSummaryChars` INTEGER NOT NULL DEFAULT 0",
                 )
             }
         }

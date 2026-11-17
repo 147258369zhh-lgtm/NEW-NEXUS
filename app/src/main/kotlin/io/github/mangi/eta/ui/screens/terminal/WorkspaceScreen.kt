@@ -8,10 +8,12 @@ import android.os.Environment
 import android.provider.Settings
 import android.text.format.Formatter
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -55,8 +57,11 @@ import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.terminal.FileToolException
 import io.github.mangi.eta.fork.files.WorkspaceSearchResult
 import io.github.mangi.eta.ui.app.WorkspaceEntry
-import io.github.mangi.eta.ui.app.WorkspaceArtifact
-import io.github.mangi.eta.ui.app.WorkspaceArtifactStore
+import io.github.zhh_lgtm.nexus.application.api.ArtifactRecord
+import io.github.zhh_lgtm.nexus.application.api.ArtifactStatus
+import io.github.mangi.eta.data.repository.NexusArtifactLedger
+import io.github.mangi.eta.data.repository.GeneratedFilesArchiveSettings
+import io.github.mangi.eta.data.repository.GeneratedFilesArchiveSettingsStore
 import io.github.mangi.eta.ui.app.WorkspaceFileStore
 import io.github.mangi.eta.ui.app.WorkspacePreview
 import io.github.mangi.eta.ui.components.EtaMonospace
@@ -64,6 +69,7 @@ import io.github.mangi.eta.ui.components.EtaPreferenceGroupItem
 import io.github.mangi.eta.ui.components.ListEmptyState
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.NexaCompactAction
 import java.io.IOException
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
@@ -74,7 +80,7 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.BasicComponentDefaults
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
@@ -87,16 +93,23 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
 
 @Composable
-internal fun WorkspaceScreen(onBack: () -> Unit) {
+internal fun WorkspaceScreen(
+    onBack: () -> Unit,
+    initialPath: String = "",
+    pageTitle: String? = null,
+    aboveContent: @Composable () -> Unit = {},
+    projectId: String? = null,
+) {
     val context = LocalContext.current
     val resources = LocalResources.current
-    val store = remember(context.applicationContext) { WorkspaceFileStore(context) }
-    val artifactStore = remember(context.applicationContext) { WorkspaceArtifactStore(context) }
+    val store = remember(context.applicationContext, initialPath) { WorkspaceFileStore(context, boundaryPath = initialPath) }
+    val artifactStore = remember(context.applicationContext) { NexusArtifactLedger(context) }
     val scope = rememberCoroutineScope()
-    var path by rememberSaveable { mutableStateOf("") }
+    var path by rememberSaveable(initialPath) { mutableStateOf(initialPath) }
     var pendingExport by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingFolderExport by rememberSaveable { mutableStateOf<String?>(null) }
     var entries by remember { mutableStateOf<List<WorkspaceEntry>?>(null) }
+    var listingFailed by remember { mutableStateOf(false) }
     var revision by remember { mutableIntStateOf(0) }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<WorkspaceMessage?>(null) }
@@ -111,6 +124,7 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
     var sortField by rememberSaveable { mutableStateOf(WorkspaceSortField.NAME) }
     var descending by rememberSaveable { mutableStateOf(false) }
     var showSort by remember { mutableStateOf(false) }
+    var showSearchOptions by rememberSaveable { mutableStateOf(false) }
     var showCreateFolder by remember { mutableStateOf(false) }
     var createFolderName by remember { mutableStateOf("") }
     var selectedEntry by remember { mutableStateOf<WorkspaceEntry?>(null) }
@@ -119,7 +133,10 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
     var previewTarget by remember { mutableStateOf<WorkspaceEntry?>(null) }
     var clipboard by remember { mutableStateOf<WorkspaceClipboard?>(null) }
     var publicAccess by remember { mutableStateOf(Environment.isExternalStorageManager()) }
-    var artifacts by remember { mutableStateOf<List<WorkspaceArtifact>>(emptyList()) }
+    var archiveSettings by remember(context.applicationContext) {
+        mutableStateOf(GeneratedFilesArchiveSettingsStore.read(context.applicationContext))
+    }
+    var artifacts by remember { mutableStateOf<List<ArtifactRecord>>(emptyList()) }
 
     fun reportError(error: Throwable) {
         if (error is CancellationException) throw error
@@ -172,6 +189,25 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
             }
         }
     }
+    val archiveRootLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) scope.launch {
+            busy = true
+            try {
+                archiveSettings = GeneratedFilesArchiveSettingsStore.selectTree(
+                    context.applicationContext,
+                    uri,
+                    uri.lastPathSegment ?: uri.toString(),
+                )
+                message = WorkspaceMessage("生成文件目录已更新", isError = false)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                reportError(error)
+            } finally {
+                busy = false
+            }
+        }
+    }
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/octet-stream"),
     ) { uri ->
@@ -191,20 +227,28 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
         }
     }
 
-    LaunchedEffect(path) { entries = null }
     LaunchedEffect(path, revision) {
+        entries = null
+        listingFailed = false
         try {
             entries = store.list(path)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Throwable) {
             entries = emptyList()
+            listingFailed = true
             reportError(error)
         }
     }
 
-    LaunchedEffect(revision) {
-        artifacts = artifactStore.list()
+    LaunchedEffect(revision, initialPath, projectId) {
+        try {
+            artifacts = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { artifactStore.list().filter {
+                it.location == "workspace" && (projectId == null || it.projectId == projectId) &&
+                    (initialPath.isEmpty() || it.path.startsWith("$initialPath/"))
+            } }
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) { reportError(error) }
     }
 
     LaunchedEffect(path, searchText, searchSubfolders, searchContents, revision) {
@@ -242,29 +286,54 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
         filtered.sortedWith(compareByDescending<WorkspaceEntry> { it.directory }.then(directed))
     }
 
+    fun navigateBack() {
+        if (path.isBlank() || path == initialPath) onBack()
+        else {
+            searchText = ""
+            path = path.substringBeforeLast('/', "").takeIf { initialPath.isEmpty() || it == initialPath || it.startsWith("$initialPath/") } ?: initialPath
+        }
+    }
+    BackHandler(enabled = path.isNotBlank() && path != initialPath) { navigateBack() }
     MiuixScaffoldPage(
-        title = stringResource(R.string.capability_workspace),
-        onBack = onBack,
+        title = pageTitle ?: if (initialPath.isNotEmpty()) "项目文件" else stringResource(R.string.capability_workspace),
+        onBack = ::navigateBack,
+        aboveContent = aboveContent,
         actions = {
-            IconButton(onClick = { createFolderName = ""; showCreateFolder = true }, enabled = !busy) {
-                Icon(Icons.Rounded.Add, contentDescription = stringResource(R.string.capability_workspace_new_folder))
-            }
-            IconButton(onClick = { showSort = true }) {
-                Icon(Icons.Rounded.Sort, contentDescription = stringResource(R.string.capability_workspace_sort))
-            }
+            if (initialPath.isNotEmpty()) NexaCompactAction(stringResource(R.string.capability_workspace_new_folder), onClick = { createFolderName = ""; showCreateFolder = true }, enabled = !busy, icon = Icons.Rounded.Add)
+            NexaCompactAction(stringResource(R.string.capability_workspace_sort), onClick = { showSort = true }, icon = Icons.Rounded.Sort,
+                modifier = Modifier.padding(start = 6.dp, end = 12.dp))
         },
     ) {
-        item(key = "workspace-info") {
-            Card(
-                modifier = Modifier
-                    .padding(horizontal = 12.dp)
-                    .padding(top = 8.dp, bottom = 12.dp),
-            ) {
-                BasicComponent(
-                    title = stringResource(R.string.capability_workspace_private),
-                    summary = stringResource(R.string.capability_workspace_private_summary),
-                )
-            }
+        if (initialPath.isEmpty()) item(key = "workspace-home") {
+            WorkspaceConfigurationCard(
+                settings = archiveSettings,
+                busy = busy,
+                publicAccess = publicAccess,
+                onChooseRoot = { archiveRootLauncher.launch(null) },
+                onArchiveEnabled = { enabled ->
+                    scope.launch {
+                        busy = true
+                        try {
+                            archiveSettings = GeneratedFilesArchiveSettingsStore.setEnabled(context.applicationContext, enabled)
+                        } catch (error: Throwable) { reportError(error) }
+                        finally { busy = false }
+                    }
+                },
+                onPublicAccess = {
+                    try {
+                        accessLauncher.launch(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                            Uri.parse("package:${context.packageName}")))
+                    } catch (error: android.content.ActivityNotFoundException) { reportError(error) }
+                },
+                actions = {
+                    NexaCompactAction(stringResource(R.string.capability_workspace_import),
+                        onClick = { importLauncher.launch(arrayOf("*/*")) }, enabled = !busy,
+                        modifier = Modifier.weight(1f))
+                    NexaCompactAction(stringResource(R.string.capability_workspace_new_folder),
+                        onClick = { createFolderName = ""; showCreateFolder = true }, enabled = !busy,
+                        modifier = Modifier.weight(1f))
+                },
+            )
         }
         if (artifacts.isNotEmpty()) {
             item(key = "workspace-artifacts") {
@@ -279,8 +348,8 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
                     )
                     artifacts.take(5).forEach { artifact ->
                         val status = when (artifact.status) {
-                            WorkspaceArtifact.STATUS_VERIFIED -> stringResource(R.string.capability_workspace_artifact_verified)
-                            WorkspaceArtifact.STATUS_FAILED -> stringResource(R.string.capability_workspace_artifact_failed)
+                            ArtifactStatus.VERIFIED -> stringResource(R.string.capability_workspace_artifact_verified)
+                            ArtifactStatus.FAILED -> stringResource(R.string.capability_workspace_artifact_failed)
                             else -> stringResource(R.string.capability_workspace_artifact_pending)
                         }
                         ArrowPreference(
@@ -312,14 +381,16 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
                     modifier = Modifier.fillMaxWidth(),
                     enabled = !busy,
                 )
-                SwitchPreference(
+                NexaCompactAction("搜索选项", onClick = { showSearchOptions = !showSearchOptions }, selected = showSearchOptions,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+                if (showSearchOptions) SwitchPreference(
                     title = stringResource(R.string.capability_workspace_search_subfolders),
                     summary = stringResource(R.string.capability_workspace_search_scope),
                     checked = searchSubfolders,
                     onCheckedChange = { searchSubfolders = it },
                     enabled = !busy,
                 )
-                if (searchSubfolders) {
+                if (showSearchOptions && searchSubfolders) {
                     SwitchPreference(
                         title = stringResource(R.string.capability_workspace_search_contents),
                         summary = stringResource(R.string.capability_workspace_search_contents_summary),
@@ -355,40 +426,6 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
                         },
                     )
                 }
-            }
-        }
-        item(key = "actions") {
-            Card(
-                modifier = Modifier
-                    .padding(horizontal = 12.dp)
-                    .padding(bottom = 12.dp),
-            ) {
-                ArrowPreference(
-                    title = stringResource(R.string.capability_workspace_import),
-                    enabled = !busy,
-                    endActions = { if (busy) InfiniteProgressIndicator(size = 20.dp) },
-                    onClick = { importLauncher.launch(arrayOf("*/*")) },
-                )
-                ArrowPreference(
-                    title = stringResource(R.string.capability_workspace_public),
-                    summary = if (publicAccess) {
-                        stringResource(R.string.capability_workspace_public_granted)
-                    } else {
-                        stringResource(R.string.capability_workspace_public_summary)
-                    },
-                    onClick = {
-                        try {
-                            accessLauncher.launch(
-                                Intent(
-                                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                                    Uri.parse("package:${context.packageName}"),
-                                ),
-                            )
-                        } catch (error: android.content.ActivityNotFoundException) {
-                            reportError(error)
-                        }
-                    },
-                )
             }
         }
         message?.let { current ->
@@ -464,9 +501,10 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
             }
         }
         item(key = "path") {
-            SmallTitle(if (path.isBlank()) stringResource(R.string.capability_workspace_files) else path)
+            SmallTitle(when { initialPath.isNotEmpty() && path == initialPath -> "工作副本"; initialPath.isNotEmpty() -> path.removePrefix("$initialPath/")
+                path.isBlank() -> stringResource(R.string.capability_workspace_files); else -> path })
         }
-        val hasParent = path.isNotBlank()
+        val hasParent = path.isNotBlank() && path != initialPath
         if (hasParent) {
             item(key = "parent") {
                 EtaPreferenceGroupItem(isFirst = true, isLast = visibleEntries.isEmpty()) {
@@ -482,7 +520,7 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
                         },
                         onClick = {
                             searchText = ""
-                            path = path.substringBeforeLast('/', "")
+                            path = path.substringBeforeLast('/', "").takeIf { initialPath.isEmpty() || it == initialPath || it.startsWith("$initialPath/") } ?: initialPath
                         },
                     )
                 }
@@ -506,7 +544,21 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
                     contentAlignment = Alignment.Center,
                 ) { InfiniteProgressIndicator(size = 24.dp) }
             }
-            visibleEntries.isEmpty() -> item(key = "empty") {
+            !deepSearch && listingFailed -> item(key = "list-error") {
+                Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ListEmptyState(
+                        title = stringResource(R.string.capability_workspace_list_failed),
+                        summary = stringResource(R.string.capability_workspace_list_retry_summary),
+                        icon = Icons.Rounded.FolderOpen,
+                    )
+                    top.yukonga.miuix.kmp.basic.TextButton(
+                        text = stringResource(R.string.action_retry),
+                        onClick = { revision++ },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+            workspaceEmptyStateVisible(visibleEntries.isEmpty(), listingFailed && !deepSearch) -> item(key = "empty") {
                 ListEmptyState(
                     title = stringResource(
                         if (searchText.isBlank()) R.string.capability_workspace_empty else R.string.capability_workspace_no_results,
@@ -694,6 +746,108 @@ internal fun WorkspaceScreen(onBack: () -> Unit) {
             onDirection = { descending = !descending },
             onDismiss = { showSort = false },
         )
+    }
+}
+
+/** Shared file configuration; project copies never expose global archive or storage controls. */
+@Composable
+private fun WorkspaceConfigurationCard(
+    settings: GeneratedFilesArchiveSettings,
+    busy: Boolean,
+    publicAccess: Boolean,
+    onChooseRoot: () -> Unit,
+    onArchiveEnabled: (Boolean) -> Unit,
+    onPublicAccess: () -> Unit,
+    actions: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit,
+) {
+    Card(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("文件工作区", style = MiuixTheme.textStyles.body1)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), content = actions)
+        }
+        ArrowPreference(title = "生成文件归档目录",
+            summary = settings.displayName.takeIf(String::isNotBlank) ?: "选择文件夹",
+            enabled = !busy, onClick = onChooseRoot)
+        SwitchPreference(title = "自动归档生成文件",
+            summary = if (settings.enabled) "按项目与会话保存" else if (settings.configured) "已暂停" else null,
+            checked = settings.enabled, enabled = !busy,
+            onCheckedChange = { if (it && !settings.configured) onChooseRoot() else onArchiveEnabled(it) })
+        ArrowPreference(title = stringResource(R.string.capability_workspace_public),
+            summary = if (publicAccess) stringResource(R.string.capability_workspace_public_granted)
+                else stringResource(R.string.capability_workspace_public_summary),
+            enabled = !busy, onClick = onPublicAccess)
+    }
+}
+
+/** Landing-page operations use the same file store and persisted archive settings as the browser. */
+@Composable
+internal fun WorkspaceHomePanel(onOpenFiles: () -> Unit) {
+    val context = LocalContext.current
+    val resources = LocalResources.current
+    val scope = rememberCoroutineScope()
+    val store = remember(context.applicationContext) { WorkspaceFileStore(context) }
+    var archiveSettings by remember(context.applicationContext) {
+        mutableStateOf(GeneratedFilesArchiveSettingsStore.read(context.applicationContext))
+    }
+    var publicAccess by remember { mutableStateOf(Environment.isExternalStorageManager()) }
+    var busy by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<WorkspaceMessage?>(null) }
+    fun perform(operation: suspend () -> Unit) {
+        scope.launch {
+            busy = true
+            try { operation() }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Throwable) { message = WorkspaceMessage(workspaceErrorMessage(resources, error), true) }
+            finally { busy = false }
+        }
+    }
+    val archiveRootLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) perform {
+            archiveSettings = GeneratedFilesArchiveSettingsStore.selectTree(context.applicationContext, uri,
+                uri.lastPathSegment ?: uri.toString())
+            message = WorkspaceMessage("生成文件目录已更新", false)
+        }
+    }
+    val accessLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        publicAccess = Environment.isExternalStorageManager()
+    }
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) perform {
+            var succeeded = 0
+            uris.forEach { if (store.importFile(it)) succeeded++ }
+            message = if (succeeded == uris.size) WorkspaceMessage(resources.getString(R.string.capability_workspace_imported), false)
+                else WorkspaceMessage(resources.getQuantityString(R.plurals.capability_workspace_partial_import, succeeded, succeeded), true)
+        }
+    }
+    Column(Modifier.fillMaxWidth()) {
+        WorkspaceConfigurationCard(settings = archiveSettings, busy = busy, publicAccess = publicAccess,
+            onChooseRoot = { archiveRootLauncher.launch(null) },
+            onArchiveEnabled = { enabled -> perform {
+                archiveSettings = GeneratedFilesArchiveSettingsStore.setEnabled(context.applicationContext, enabled)
+            } },
+            onPublicAccess = {
+                try {
+                    accessLauncher.launch(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        Uri.parse("package:${context.packageName}")))
+                } catch (error: android.content.ActivityNotFoundException) {
+                    message = WorkspaceMessage(workspaceErrorMessage(resources, error), true)
+                }
+            },
+            actions = {
+                NexaCompactAction(stringResource(R.string.capability_workspace_import),
+                    onClick = { importLauncher.launch(arrayOf("*/*")) }, enabled = !busy, modifier = Modifier.weight(1f))
+                NexaCompactAction("浏览文件", onClick = onOpenFiles, enabled = !busy,
+                    icon = Icons.Rounded.FolderOpen, modifier = Modifier.weight(1f))
+            })
+        message?.let { current ->
+            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(current.text, modifier = Modifier.weight(1f), style = MiuixTheme.textStyles.footnote1,
+                    color = if (current.isError) MiuixTheme.colorScheme.error else MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                NexaCompactAction(stringResource(R.string.action_close), onClick = { message = null })
+            }
+        }
     }
 }
 
@@ -937,6 +1091,9 @@ private fun workspaceErrorMessage(resources: Resources, error: Throwable): Strin
 }
 
 private data class WorkspaceMessage(val text: String, val isError: Boolean)
+
+internal fun workspaceEmptyStateVisible(entriesEmpty: Boolean, listingFailed: Boolean): Boolean =
+    entriesEmpty && !listingFailed
 private sealed interface WorkspaceSearchState {
     data object Loading : WorkspaceSearchState
     data object Cancelled : WorkspaceSearchState

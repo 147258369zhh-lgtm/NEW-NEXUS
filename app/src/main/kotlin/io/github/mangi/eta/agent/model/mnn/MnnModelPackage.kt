@@ -8,6 +8,7 @@ import java.io.OutputStream
 import java.security.MessageDigest
 import java.util.Locale
 import java.util.zip.ZipInputStream
+import org.json.JSONObject
 
 /**
  * Validation and packaging helpers for MNN-LLM model directories.
@@ -30,6 +31,34 @@ internal object MnnModelPackage {
             File(directory, GRAPH_FILE).isFile
 
     fun hasVision(directory: File): Boolean = File(directory, VISUAL_FILE).isFile
+
+    /** These are the filenames consumed by the bundled MNN LLM loader, including its defaults. */
+    fun validateForRuntime(directory: File) {
+        require(isModelDirectory(directory)) { "MNN 模型目录缺少 config.json 或 llm.mnn" }
+        val root = directory.canonicalFile
+        val configFile = root.resolve(CONFIG_FILE)
+        require(configFile.length() in 2..(1024 * 1024)) { "MNN config.json 无效或过大" }
+        val config = JSONObject(configFile.readText())
+        fun requireFile(key: String, fallback: String): File {
+            val relative = config.optString(key, fallback)
+            require(relative.isNotBlank() && !File(relative).isAbsolute && !relative.contains(':') && !relative.contains('\\') &&
+                relative.split('/').none { it == ".." || it == "." || it.isBlank() }) { "MNN $key 必须引用包内文件" }
+            val file = root.resolve(relative).canonicalFile
+            require(file.toPath().startsWith(root.toPath()) && file.isFile && file.length() > 0) { "MNN 模型缺少 $relative" }
+            return file
+        }
+        requireFile("llm_model", GRAPH_FILE)
+        requireFile("llm_weight", "llm.mnn.weight")
+        requireFile("tokenizer_file", "tokenizer.txt")
+        val modelConfig = requireFile("llm_config", "llm_config.json")
+        require(modelConfig.length() <= 1024 * 1024) { "MNN llm_config.json 过大" }
+        val model = JSONObject(modelConfig.readText())
+        if (directory.name.contains("minicpm", ignoreCase = true)) {
+            val template = model.optJSONObject("jinja")?.optString("chat_template").orEmpty()
+            require(template.isNotBlank()) { "MiniCPM MNN 包缺少 Jinja 聊天模板，请使用完整的官方转换包" }
+            require(!model.optBoolean("is_visual", false)) { "此 MiniCPM MNN 包需要专用多模态适配，不能作为纯文本模型启动" }
+        }
+    }
 
     fun directorySize(directory: File): Long {
         require(directory.isDirectory) { "MNN 模型目录不存在" }
@@ -120,11 +149,13 @@ internal object MnnModelPackage {
     fun findModelRoot(root: File): File? {
         if (!root.isDirectory) return null
         if (isModelDirectory(root)) return root
-        return root.walkTopDown()
+        val candidates = root.walkTopDown()
             .maxDepth(MAX_SEARCH_DEPTH)
             .filter(File::isDirectory)
             .filter(::isModelDirectory)
-            .minByOrNull { candidate -> candidate.relativeTo(root).pathDepth() }
+            .take(2).toList()
+        require(candidates.size <= 1) { "目录包含多个 MNN 模型，请分别导入" }
+        return candidates.singleOrNull()
     }
 
     /** Copies a validated directory while enforcing a caller-provided byte ceiling. */

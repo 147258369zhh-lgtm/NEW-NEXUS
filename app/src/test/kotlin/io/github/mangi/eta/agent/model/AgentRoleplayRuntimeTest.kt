@@ -133,6 +133,27 @@ class AgentRoleplayRuntimeTest {
     }
 
     @Test
+    fun transientTemplateDoesNotTriggerWorldbookOrMoveDepthAwayFromCurrentInput() {
+        val context = RoleplayRunContext("fixture", CharacterCardCodec.decodeJson("""{
+            "name":"林舟","post_history_instructions":"保持角色表达",
+            "character_book":{"scan_depth":1,"entries":[{"keys":["钟楼"],"content":"不应由模板触发"}]},
+            "extensions":{"depth_prompt":{"prompt":"深度提示","depth":1,"role":"user"}}
+        }"""), "用户", "", contextWindow = 16_000)
+        val source = JSONArray().put(context.personaMessage())
+            .put(AgentConversationCodec.userTextMessage("在广场等候"))
+            .put(AgentConversationCodec.userTextMessage("钟楼模板")
+                .put(io.github.mangi.eta.agent.prompt.PROMPT_INJECTION_MARKER, true))
+        val projected = context.projectMessages(source)
+        assertFalse(projected.toString().contains("不应由模板触发"))
+        val texts = (0 until projected.length()).map { projected.getJSONObject(it).optString("content") }
+        assertTrue(texts.indexOf("深度提示") < texts.indexOf("在广场等候"))
+        val post = projected.getJSONObject(projected.length() - 1)
+        assertEquals("user", post.optString("role"))
+        assertTrue(post.optBoolean(io.github.mangi.eta.agent.prompt.PROMPT_INJECTION_MARKER))
+        assertTrue(post.optString("content").contains("保持角色表达"))
+    }
+
+    @Test
     fun worldbookDoesNotScanImageUrlsOrStructuredContentFieldNames() {
         val context = RoleplayRunContext("fixture", CharacterCardCodec.decodeJson("""{
             "name":"林舟","character_book":{"entries":[

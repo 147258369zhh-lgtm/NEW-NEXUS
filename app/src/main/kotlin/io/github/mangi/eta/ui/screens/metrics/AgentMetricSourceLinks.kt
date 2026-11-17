@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
-import top.yukonga.miuix.kmp.preference.ArrowPreference
+import io.github.mangi.eta.ui.components.NexusSettingsArrowPreference as ArrowPreference
 
 @Composable
 internal fun AgentMetricSourceLinks(record: AgentRunMetricsRecord, onOpenConversation: (String) -> Unit,

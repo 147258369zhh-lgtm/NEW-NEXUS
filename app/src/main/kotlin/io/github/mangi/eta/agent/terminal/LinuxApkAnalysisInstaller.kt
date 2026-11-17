@@ -56,26 +56,29 @@ internal class LinuxApkAnalysisInstaller(
     private val context: Context,
     private val distribution: LinuxDistribution,
     private val artifactDownloader: VerifiedArtifactDownloader = VerifiedArtifactDownloader(),
+    private val backend: LinuxExecutionBackend = LinuxEnvironmentSettingsRepository.backend(context, distribution),
 ) {
-    private val rootfs = LinuxEnvironmentPaths.rootfsDir(context, distribution)
+    private val rootfs = LinuxEnvironmentPaths.rootfsDir(context, distribution, backend)
 
     fun isReady(): Boolean = linuxApkAnalysisReady(rootfs)
 
     suspend fun install(
+        force: Boolean = false,
         onProgress: suspend (ApkAnalysisInstallProgress) -> Unit = {},
     ): ApkAnalysisInstallResult {
         installMutex.lock()
         return try {
-            installLocked(onProgress)
+            installLocked(force, onProgress)
         } finally {
             installMutex.unlock()
         }
     }
 
     private suspend fun installLocked(
+        force: Boolean,
         onProgress: suspend (ApkAnalysisInstallProgress) -> Unit,
     ): ApkAnalysisInstallResult = withContext(Dispatchers.IO) {
-        if (isReady()) return@withContext ApkAnalysisInstallResult.AlreadyReady
+        if (!force && isReady()) return@withContext ApkAnalysisInstallResult.AlreadyReady
         onProgress(ApkAnalysisInstallProgress(ApkAnalysisInstallStage.CHECKING))
         if (!LinuxEnvironmentPaths.rootfsReady(rootfs.absolutePath) ||
             !File(rootfs, AlpineEnvironmentPaths.COMMON_TOOLS_MARKER).isFile
@@ -101,7 +104,7 @@ internal class LinuxApkAnalysisInstaller(
                     totalBytes = artifact.sizeBytes,
                 ),
             )
-            val downloaded = artifactDownloader.download(artifact, target) { downloadedBytes, totalBytes ->
+            val downloaded = artifactDownloader.download(LinuxSourceSettings.resolveArtifact(context, distribution, artifact, LinuxSourceSettings.TOOL_ARCHIVE), target) { downloadedBytes, totalBytes ->
                 onProgress(
                     ApkAnalysisInstallProgress(
                         stage = ApkAnalysisInstallStage.DOWNLOADING,
@@ -126,7 +129,7 @@ internal class LinuxApkAnalysisInstaller(
 
         coroutineContext.ensureActive()
         onProgress(ApkAnalysisInstallProgress(ApkAnalysisInstallStage.INSTALLING_JAVA))
-        if (!installJava(rootfs)) {
+        if (!installJava(force)) {
             return@withContext ApkAnalysisInstallResult.Failed(ApkAnalysisInstallStage.INSTALLING_JAVA)
         }
 
@@ -208,19 +211,9 @@ internal class LinuxApkAnalysisInstaller(
         return extracted == targets.keys
     }
 
-    private suspend fun installJava(rootfs: File): Boolean {
-        val result = InstallerShellRunner.run(
-            command = linuxApkJavaInstallCommand(distribution),
-            timeoutSeconds = 900,
-            environment = distribution.terminalEnvironment,
-            linuxRootfsPath = rootfs.absolutePath,
-        )
-        AndroidAgentLogger.info(
-            "APK analysis profile action=install_java " +
-                "outcome=${if (result.exitCode == 0) "succeeded" else "failed"} " +
-                "exitCode=${result.exitCode} outputChars=${result.output.length}",
-        )
-        return result.exitCode == 0
+    private suspend fun installJava(force: Boolean): Boolean {
+        val result = LinuxPackageProfileInstaller(context, distribution, LinuxCapabilityCatalog.JAVA, backend).install(force)
+        return result == PackageProfileInstallResult.Installed || result == PackageProfileInstallResult.AlreadyReady
     }
 
     private suspend fun activateStaging(rootfs: File, staging: File): Boolean {
@@ -245,11 +238,9 @@ internal class LinuxApkAnalysisInstaller(
               ${shellQuote(File(installing, "bin/baksmali").absolutePath)} || exit 72
             eta_link_commands() {
               "${'$'}eta_busybox" mkdir -p ${shellQuote(File(rootfs, "usr/local/bin").absolutePath)} || return 1
-              for eta_command in java jadx apktool smali baksmali; do
+              for eta_command in jadx apktool smali baksmali; do
                 "${'$'}eta_busybox" rm -f ${shellQuote(File(rootfs, "usr/local/bin").absolutePath)}/"${'$'}eta_command"
               done
-              "${'$'}eta_busybox" ln -s ../../../opt/eta/apk-analysis/current/bin/java \
-                ${shellQuote(File(rootfs, "usr/local/bin/java").absolutePath)} || return 1
               "${'$'}eta_busybox" ln -s ../../../opt/eta/apk-analysis/current/jadx/bin/jadx \
                 ${shellQuote(File(rootfs, "usr/local/bin/jadx").absolutePath)} || return 1
               for eta_command in apktool smali baksmali; do
@@ -368,7 +359,7 @@ internal class LinuxApkAnalysisInstaller(
                 if (!File(current, it).setExecutable(true, false)) throw java.io.IOException("无法设置工具权限")
             }
             val localBin = File(rootfs, "usr/local/bin").apply { mkdirs() }
-            listOf("java", "jadx", "apktool", "smali", "baksmali").forEach { name ->
+            listOf("jadx", "apktool", "smali", "baksmali").forEach { name ->
                 val path = File(localBin, name).toPath()
                 java.nio.file.Files.deleteIfExists(path)
                 val relative = if (name == "jadx") "jadx/bin/jadx" else "bin/$name"

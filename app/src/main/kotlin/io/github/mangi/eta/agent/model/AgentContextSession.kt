@@ -19,6 +19,8 @@ internal class AgentContextSession(
     private val transcriptSize: () -> Int = { 0 },
     private val roleplay: Boolean = false,
     private val metricsScope: io.github.mangi.eta.agent.runtime.AgentMetricScope? = null,
+    private val compactionConfig: AgentModelClient.ModelConfig = config,
+    private val compactionProvider: AgentProviderClient = provider,
 ) {
     private val budget = ContextBudgetPolicy.forCompaction(config.knownContextWindow)
     private var inputTokens: Int? = null
@@ -60,14 +62,14 @@ internal class AgentContextSession(
             consumedUserTurns = consumedUserTurns,
             consumedSupplementCount = consumedSupplementCount,
             consumedTranscriptMessages = transcriptSize(),
-            estimatedInputTokens = ContextBudgetPolicy.estimateMessages(candidate, systemCount),
+            estimatedInputTokens = ContextBudgetPolicy.estimateMessages(AssistantScreenContextProjection.project(candidate)),
             usableInputBudgetTokens = budget.usableInputTokens,
             outputReserveTokens = budget.outputReserveTokens,
             demotedToolResults = lastDemotedToolResults,
         )
     }
 
-    fun compact(force: Boolean = false, final: Boolean = false, selection: IntRange? = null) {
+    fun compact(force: Boolean = false, final: Boolean = false, selection: IntRange? = null, tools: JSONArray = JSONArray()) {
         val before = inputTokens
         if (SignedToolContext.hasPendingResponse(messages)) {
             if (force) {
@@ -75,20 +77,36 @@ internal class AgentContextSession(
             }
             return
         }
-        val estimatedBefore = ContextBudgetPolicy.estimateMessages(messages, systemCount)
+        val toolTokens = ContextBudgetPolicy.estimateTextTokens(tools.toString())
+        val localEstimate = ContextBudgetPolicy.estimateMessages(AssistantScreenContextProjection.project(messages)) + toolTokens
+        val providerEstimate = if (before == null && !force && config.autoCompactionEnabled && config.knownContextWindow != null) {
+            try {
+                provider.estimateInputTokens(ProviderRequest(config, messages, tools), runController)
+            } catch (failure: Exception) {
+                if (failure is kotlinx.coroutines.CancellationException || failure is InterruptedException) throw failure
+                runController.throwIfCancelled()
+                null
+            }
+        } else null
+        // A third-party tokenizer estimate cannot weaken the existing conservative window check.
+        val estimatedBefore = maxOf(localEstimate, providerEstimate ?: 0)
         val shouldCompact = force || (
             config.autoCompactionEnabled &&
-                !(compacted && before == null) &&
                 ContextBudgetPolicy.shouldCompact(budget, before, estimatedBefore)
             )
         // Embedded runtimes enforce a deterministic suffix fit on every request. Re-running the
         // same small model to summarize its window adds a slow prefill + generation round and can
         // itself overflow on 4K devices.
         if (shouldCompact && provider.id in EMBEDDED_LOCAL_PROVIDERS) return
+        // A first prompt (including automatic screen observations) has no completed
+        // history to summarize. Let the provider validate that request rather than
+        // reporting a failed compression operation that could never reduce it.
+        if (shouldCompact && !force && !hasCompactableHistory()) return
         if (!shouldCompact) {
             try {
                 publishSnapshot()
             } catch (failure: Exception) {
+                if (failure is kotlinx.coroutines.CancellationException || failure is InterruptedException) throw failure
                 runController.throwIfCancelled()
                 if (!final) throw failure
                 committedSnapshot = createSnapshot(messages)
@@ -101,11 +119,23 @@ internal class AgentContextSession(
         val reportedBefore = before ?: estimatedBefore
         onEvent(AgentEvent.ContextCompaction(operation, AgentEvent.ContextCompaction.PHASE_STARTED, reportedBefore))
         try {
-            val compactor = AgentContextCompactor(config, provider, runController, roleplay = roleplay, metricsScope = metricsScope)
+            val compactor = AgentContextCompactor(
+                config = config,
+                provider = provider,
+                controller = runController,
+                roleplay = roleplay,
+                metricsScope = metricsScope,
+                summaryConfig = compactionConfig,
+                summaryProvider = compactionProvider,
+            )
             // UI selections are relative to persisted conversation history; provider system
             // messages are prepended here and must never be user-selectable.
             val absoluteSelection = selection?.let { (it.first + systemCount)..(it.last + systemCount) }
             val candidate = compactor.compact(messages, systemCount, sensitiveIds(), absoluteSelection)
+            if (ContextBudgetPolicy.estimateMessages(AssistantScreenContextProjection.project(candidate)) + toolTokens > budget.usableInputTokens) {
+                throw AgentModelFailure("CONTEXT_COMPACTION_INSUFFICIENT", false,
+                    "系统提示、工具目录和保留请求仍超出安全输入窗口，原始上下文已保留。")
+            }
             lastDemotedToolResults = compactor.lastDemotedToolResults
             runController.throwIfCancelled()
             val wasCompacted = compacted
@@ -123,8 +153,10 @@ internal class AgentContextSession(
                 operation,
                 AgentEvent.ContextCompaction.PHASE_COMPLETED,
                 reportedBefore,
+                reasonCode = if (compactor.summaryFallbackUsed) "FALLBACK_TO_CHAT_MODEL" else "",
             ))
         } catch (failure: Exception) {
+            if (failure is kotlinx.coroutines.CancellationException || failure is InterruptedException) throw failure
             runController.throwIfCancelled()
             onEvent(AgentEvent.ContextCompaction(operation, "failed", reportedBefore,
                 reasonCode = (failure as? AgentModelFailure)?.code ?: "CONTEXT_SUMMARY_FAILED"))
@@ -132,6 +164,11 @@ internal class AgentContextSession(
             // 已完成的回答仍成功交付；完整快照随终态 outbox 保存，不依赖先前检查点写入成功。
             committedSnapshot = createSnapshot(messages)
         }
+    }
+
+    private fun hasCompactableHistory(): Boolean {
+        val history = (systemCount until messages.length()).map { messages.getJSONObject(it) }
+        return AgentContextCompactor.automaticEnd(history, config.knownContextWindow) != null
     }
 
     private fun durableHistory(source: JSONArray): List<AgentModelClient.ConversationMessage> {

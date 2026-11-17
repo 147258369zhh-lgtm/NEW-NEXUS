@@ -39,6 +39,7 @@ import io.github.mangi.eta.fork.tasks.AgentTaskDatabase
 import io.github.mangi.eta.fork.tasks.AgentTaskDefinitionEntity
 import io.github.mangi.eta.fork.tasks.AgentTaskDraft
 import io.github.mangi.eta.fork.tasks.AgentTaskRepository
+import io.github.mangi.eta.fork.tasks.AgentTaskResultStore
 import io.github.mangi.eta.fork.tasks.AgentTaskRunEntity
 import io.github.mangi.eta.fork.tasks.AgentTaskRunKind
 import io.github.mangi.eta.fork.tasks.AgentTaskRuntimeCanceller
@@ -47,6 +48,7 @@ import io.github.mangi.eta.fork.tasks.AgentTaskState
 import io.github.mangi.eta.fork.tasks.AgentTaskWorkScheduler
 import io.github.mangi.eta.fork.tasks.DefaultAgentTaskRunner
 import io.github.mangi.eta.fork.tasks.MissedRunPolicy
+import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.components.EtaChoiceChip
 import io.github.mangi.eta.ui.components.ListEmptyState
 import io.github.mangi.eta.ui.components.MiuixDialogActions
@@ -58,10 +60,10 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.launch
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle as SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
@@ -86,6 +88,7 @@ internal fun ScheduledTaskLegacyScreen(onBack: () -> Unit) {
             dao = dao,
             runner = DefaultAgentTaskRunner(context.applicationContext),
             runtimeCanceller = AgentTaskRuntimeCanceller(client::cancelRun),
+            resultStore = AgentTaskResultStore(context.applicationContext),
         )
     }
     var showCreate by remember { mutableStateOf(false) }
@@ -113,7 +116,7 @@ internal fun ScheduledTaskLegacyScreen(onBack: () -> Unit) {
                     createError = null
                     showCreate = true
                 },
-            ) { Icon(Icons.Rounded.Add, contentDescription = "新建定时任务") }
+            ) { Icon(Icons.Rounded.Add, contentDescription = androidx.compose.ui.res.stringResource(R.string.task_new_scheduled)) }
         },
         overlay = {
             WindowDialog(
@@ -258,7 +261,7 @@ internal fun ScheduledTaskLegacyScreen(onBack: () -> Unit) {
         },
     ) {
         item(key = "intro") {
-            Card(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Card(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                 Text(
                     text = "任务定义和运行记录保存在本地数据库。WorkManager 每 15 分钟检查到期计划；进程重启后会按租约和补跑策略恢复。",
                     style = MiuixTheme.textStyles.body2,
@@ -284,7 +287,7 @@ internal fun ScheduledTaskLegacyScreen(onBack: () -> Unit) {
         item(key = "schedules_title") { SmallTitle("计划") }
         if (definitions.isEmpty()) {
             item(key = "empty") {
-                Card(modifier = Modifier.padding(horizontal = 12.dp)) {
+                Card(modifier = Modifier.padding(horizontal = 16.dp)) {
                     ListEmptyState(
                         title = "还没有定时任务",
                         summary = "按时运行普通会话、会议室或 A2A 远端 Agent。",
@@ -344,6 +347,7 @@ internal fun ScheduledTaskLegacyScreen(onBack: () -> Unit) {
                         run = run,
                         title = definitions.firstOrNull { it.id == run.definitionId }?.title ?: run.definitionId,
                         onCancel = { scope.launch { coordinator.cancelRun(run.id) } },
+                        onReviewDecision = { decision -> scope.launch { coordinator.recordA2AReviewDecision(run.id, decision) } },
                     )
                 }
             }
@@ -563,7 +567,7 @@ private fun TaskDefinitionCard(
     val paused = schedule?.paused != false
     Card(
         modifier = Modifier
-            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .padding(horizontal = 16.dp, vertical = 4.dp)
             .fillMaxWidth(),
     ) {
         Row(
@@ -589,33 +593,35 @@ private fun TaskDefinitionCard(
                 )
             }
             IconButton(onClick = onRunNow) {
-                Icon(Icons.Rounded.PlayArrow, contentDescription = "立即运行")
+                Icon(Icons.Rounded.PlayArrow, contentDescription = androidx.compose.ui.res.stringResource(R.string.task_run_now))
             }
             IconButton(onClick = onToggle, enabled = schedule != null) {
                 Icon(
                     imageVector = if (paused) Icons.Rounded.PlayCircle else Icons.Rounded.PauseCircle,
-                    contentDescription = if (paused) "启用" else "暂停",
+                    contentDescription = androidx.compose.ui.res.stringResource(if (paused) R.string.task_enable else R.string.task_pause),
                 )
             }
             IconButton(onClick = onDelete) {
-                Icon(Icons.Rounded.DeleteOutline, contentDescription = "删除", tint = StatusError)
+                Icon(Icons.Rounded.DeleteOutline, contentDescription = androidx.compose.ui.res.stringResource(R.string.action_delete), tint = StatusError)
             }
         }
     }
 }
 
 @Composable
-private fun TaskRunCard(run: AgentTaskRunEntity, title: String, onCancel: () -> Unit) {
+private fun TaskRunCard(run: AgentTaskRunEntity, title: String, onCancel: () -> Unit, onReviewDecision: (String) -> Unit) {
     val active = run.state in setOf(
         AgentTaskState.QUEUED,
         AgentTaskState.LEASED,
         AgentTaskState.RUNNING,
         AgentTaskState.WAITING_INPUT,
         AgentTaskState.WAITING_AUTH,
+        AgentTaskState.WAITING_REMOTE,
+        AgentTaskState.A2A_REVIEW,
     )
     Card(
         modifier = Modifier
-            .padding(horizontal = 12.dp, vertical = 3.dp)
+            .padding(horizontal = 16.dp, vertical = 3.dp)
             .fillMaxWidth(),
     ) {
         Row(
@@ -624,19 +630,36 @@ private fun TaskRunCard(run: AgentTaskRunEntity, title: String, onCancel: () -> 
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, style = MiuixTheme.textStyles.body1, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (run.a2aAgentId != null || run.a2aMessageId != null) {
+                    Text(
+                        text = "A2A 绑定 · Agent ${run.a2aAgentId ?: "未知"} · 任务 ${run.a2aTaskId ?: "待核对"} · 消息 ${run.a2aMessageId ?: "待生成"}" +
+                            (run.a2aDeadlineAt?.let { " · 截止 ${formatDate(it)}" } ?: ""),
+                        style = MiuixTheme.textStyles.footnote2,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 Text(
                     text = "${run.state.wireValue} · ${formatDate(run.scheduledFor)}" +
+                        (run.a2aReviewDecision?.let { " · 核对：${when (it) { "CHECKED" -> "已核对"; "RESTART_REQUESTED" -> "已记录重新发起请求"; "CANCELED" -> "已取消"; else -> it }}" } ?: "") +
                         (run.errorMessage?.let { "\n$it" } ?: ""),
                     style = MiuixTheme.textStyles.footnote2,
                     color = when (run.state) {
                         AgentTaskState.SUCCEEDED -> StatusSuccess
-                        AgentTaskState.WAITING_AUTH, AgentTaskState.WAITING_INPUT -> StatusWarning
+                        AgentTaskState.WAITING_AUTH, AgentTaskState.WAITING_INPUT,
+                        AgentTaskState.WAITING_REMOTE, AgentTaskState.A2A_REVIEW -> StatusWarning
                         AgentTaskState.FAILED -> StatusError
                         else -> MiuixTheme.colorScheme.onSurfaceVariantSummary
                     },
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
                 )
+            }
+            if (run.state == AgentTaskState.A2A_REVIEW && run.a2aReviewDecision == null) {
+                TextButton(text = "已核对", onClick = { onReviewDecision("CHECKED") })
+                TextButton(text = "重新发起", onClick = { onReviewDecision("RESTART_REQUESTED") })
+                TextButton(text = "取消任务", onClick = { onReviewDecision("CANCELED") })
             }
             if (active) TextButton(text = "取消", onClick = onCancel)
         }
@@ -647,7 +670,7 @@ private fun TaskRunCard(run: AgentTaskRunEntity, title: String, onCancel: () -> 
 private fun AttentionCard(item: AgentTaskAttentionEntity, onOpen: () -> Unit) {
     Card(
         modifier = Modifier
-            .padding(horizontal = 12.dp, vertical = 3.dp)
+            .padding(horizontal = 16.dp, vertical = 3.dp)
             .fillMaxWidth(),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {

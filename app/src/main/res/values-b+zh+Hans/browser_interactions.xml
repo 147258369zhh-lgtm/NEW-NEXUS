@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="browser_finish_takeover">完成登录，返回对话</string>
+    <string name="browser_scan_qr">扫描二维码</string>
+    <string name="browser_qr_camera">相机扫码</string>
+    <string name="browser_qr_album">相册识码</string>
+    <string name="browser_qr_camera_prompt">将二维码放入取景框内</string>
+    <string name="browser_qr_result">二维码内容</string>
+    <string name="browser_qr_open">打开网页</string>
+    <string name="browser_qr_not_found">未在这张图片中识别到二维码</string>
+    <string name="browser_camera_denied">请允许相机权限后再扫码</string>
+    <string name="browser_upload_title">向当前网页上传</string>
+    <string name="browser_upload_choose_file">选择文件</string>
+    <string name="browser_upload_photo">拍照</string>
+    <string name="browser_upload_video">录制视频</string>
+    <string name="browser_upload_audio">录音</string>
+    <string name="browser_upload_unavailable">无法打开文件选择器或拍摄应用</string>
+    <string name="browser_website_permission_title">网站权限</string>
+    <string name="browser_website_permission_message">%1$s 正在为当前网页申请使用%2$s。仅在信任该网站时允许。</string>
+    <string name="browser_allow_once">允许本次请求</string>
+    <string name="browser_camera">相机</string>
+    <string name="browser_microphone">麦克风</string>
+</resources>

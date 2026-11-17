@@ -104,10 +104,12 @@ internal class SkillUpdateStore(context: Context) {
         .put("ref", item.ref ?: JSONObject.NULL)
         .put("path", item.path ?: JSONObject.NULL)
         .put("archiveUrl", item.archiveUrl ?: JSONObject.NULL)
+        .put("archiveMirrors", JSONArray(item.archiveMirrors))
         .put("archiveSha256", item.archiveSha256 ?: JSONObject.NULL)
         .put("tags", JSONArray(item.tags))
         .put("usage", item.usage ?: JSONObject.NULL)
         .put("dependencies", JSONArray(item.dependencies))
+        .put("dependenciesDeclared", item.dependenciesDeclared)
         .put("permissions", JSONArray(item.permissions))
         .put("releaseNotes", item.releaseNotes ?: JSONObject.NULL)
 
@@ -119,7 +121,7 @@ internal class SkillUpdateStore(context: Context) {
         val skillId = value.optString("skillId").trim()
         val displayName = value.optString("displayName").trim()
         require(sourceId.isNotEmpty() && sourceName.isNotEmpty())
-        require(sourceType in setOf(SkillSourceType.GITHUB_REPOSITORY, SkillSourceType.HTTP_CATALOG))
+        require(sourceType in setOf(SkillSourceType.GITHUB_REPOSITORY, SkillSourceType.GITLAB_REPOSITORY, SkillSourceType.GITEE_REPOSITORY, SkillSourceType.HTTP_CATALOG))
         require(trust in setOf(SkillSourceTrust.OFFICIAL, SkillSourceTrust.CURATED, SkillSourceTrust.COMMUNITY, SkillSourceTrust.CUSTOM))
         require(SKILL_ID.matches(skillId) && displayName.length in 1..120)
         SkillMarketItem(
@@ -136,10 +138,12 @@ internal class SkillUpdateStore(context: Context) {
             ref = value.optionalString("ref")?.take(128),
             path = value.optionalString("path")?.take(1_000),
             archiveUrl = value.optionalString("archiveUrl")?.take(2_048),
+            archiveMirrors = value.stringList("archiveMirrors").mapNotNull(::validArchiveUrl).take(8),
             archiveSha256 = value.optionalString("archiveSha256")?.takeIf(ARCHIVE_SHA::matches),
             tags = value.stringList("tags").take(16),
             usage = value.optionalString("usage")?.take(8_000),
             dependencies = value.stringList("dependencies").take(32),
+            dependenciesDeclared = value.optBoolean("dependenciesDeclared", false),
             permissions = value.stringList("permissions").take(32),
             releaseNotes = value.optionalString("releaseNotes")?.take(4_000),
         )
@@ -147,6 +151,11 @@ internal class SkillUpdateStore(context: Context) {
 
     private fun JSONObject.optionalString(key: String): String? =
         optString(key).trim().takeIf { it.isNotEmpty() && it != "null" }
+
+    private fun validArchiveUrl(raw: String): String? = runCatching { java.net.URI(raw) }.getOrNull()
+        ?.takeIf { it.scheme.equals("https", true) && !it.host.isNullOrBlank() && it.rawUserInfo == null &&
+            it.rawFragment == null && it.port in setOf(-1, 443) }
+        ?.toASCIIString()
 
     private fun JSONObject.stringList(key: String): List<String> {
         val values = optJSONArray(key) ?: return emptyList()

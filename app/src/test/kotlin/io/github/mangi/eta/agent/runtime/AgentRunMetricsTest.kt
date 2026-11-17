@@ -96,4 +96,27 @@ class AgentRunMetricsTest {
         assertEquals(collector.snapshot().imageBytes, first.imageBytes + second.imageBytes)
         assertEquals(collector.snapshot().requestAttempts, first.requestAttempts + second.requestAttempts)
     }
+
+    @Test fun approvalLifecycleIsCountedOnceByLatestDurablePhase() {
+        val collector = AgentRunMetricsCollector()
+        collector.accept(AgentEvent.ApprovalChanged("a1", "terminal", RunApprovalPhase.REQUESTED))
+        collector.accept(AgentEvent.ApprovalChanged("a1", "terminal", RunApprovalPhase.REQUESTED))
+        collector.accept(AgentEvent.ApprovalChanged("a1", "terminal", RunApprovalPhase.APPROVED))
+        collector.accept(AgentEvent.ApprovalChanged("a2", "app_state_control", RunApprovalPhase.REQUESTED))
+        collector.accept(AgentEvent.ApprovalChanged("a2", "app_state_control", RunApprovalPhase.REJECTED))
+        collector.accept(AgentEvent.ApprovalChanged("a3", "request_user_input", RunApprovalPhase.REQUESTED))
+        collector.accept(AgentEvent.ApprovalChanged("a3", "request_user_input", RunApprovalPhase.TIMED_OUT))
+        collector.accept(AgentEvent.ApprovalChanged("a4", "terminal", RunApprovalPhase.REQUESTED))
+        collector.accept(AgentEvent.ApprovalChanged("a4", "terminal", RunApprovalPhase.CANCELLED))
+        collector.accept(AgentEvent.ApprovalChanged("a5", "terminal", RunApprovalPhase.REQUESTED))
+        collector.accept(AgentEvent.ApprovalChanged("a5", "terminal", RunApprovalPhase.FAILED))
+
+        val metrics = collector.snapshot()
+        assertEquals(5, metrics.approvalRequests)
+        assertEquals(1, metrics.approvalsApproved)
+        assertEquals(1, metrics.approvalsRejected)
+        assertEquals(1, metrics.approvalsTimedOut)
+        assertEquals(1, metrics.approvalsCancelled)
+        assertEquals(1, metrics.approvalsFailed)
+    }
 }

@@ -7,6 +7,7 @@ internal object AgentConversationIdentity {
     const val EXTERNAL_ARCHIVE_PREFIX = "archive-"
 
     fun fromHandoff(handoff: AgentRuntimeWire.EntryHandoff?, fallbackRunId: String): String {
+        RuntimePackageActions.subject(handoff)?.let { return if (it.kind == io.github.mangi.eta.data.model.ConversationSubject.Kind.CHAT) it.id else it.key }
         if (handoff?.source == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE) {
             AgentUiHandoffPayload.from(handoff.payload).conversationId.takeIf(String::isNotBlank)?.let { return it }
         } else if (handoff != null) {

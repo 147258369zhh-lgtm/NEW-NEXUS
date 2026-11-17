@@ -8,6 +8,10 @@ import java.util.concurrent.ConcurrentHashMap
 internal object CharacterMemoryRepository {
     private val stores = ConcurrentHashMap<String, AgentMemoryStore>()
 
+    fun listCharacterIds(context: Context): List<String> = File(context.applicationContext.filesDir, "roleplay")
+        .listFiles().orEmpty().filter { it.isDirectory && it.name.matches(Regex("[A-Za-z0-9_-]{1,128}")) && File(it, "memory/MEMORY.md").isFile }
+        .map { it.name }
+
     fun snapshot(context: Context, characterId: String): AgentMemorySnapshot =
         store(context, characterId).snapshot()
 

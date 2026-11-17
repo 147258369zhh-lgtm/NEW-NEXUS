@@ -48,7 +48,10 @@ class ConversationDrawerGroupsTest {
         assertEquals(ConversationDrawerSection.Pinned, groups.first().section)
         fun allItems(group: ConversationDrawerGroup): List<String> = group.items.map { it.id } + group.children.flatMap(::allItems)
         assertEquals(listOf("normal", "orphan", "pinned"), groups.flatMap(::allItems).sorted())
-        assertEquals(1, groups[1].conversationCount)
+        assertEquals(
+            1,
+            groups.first { (it.section as? ConversationDrawerSection.Folder)?.folder?.id == "root" }.conversationCount,
+        )
         val archive = chats.groupForDrawer(folders, true)
         assertEquals(ConversationDrawerSection.Archive, archive.single().section)
         assertEquals(chats, archive.single().items)

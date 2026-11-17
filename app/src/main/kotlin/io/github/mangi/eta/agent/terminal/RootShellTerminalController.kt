@@ -9,6 +9,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import org.json.JSONArray
 import org.json.JSONObject
+import io.github.mangi.eta.agent.runtime.RuntimeInvocationScope
 
 internal class RootShellTerminalController(
     private val logger: AgentLogger,
@@ -23,6 +24,7 @@ internal class RootShellTerminalController(
     },
     private val rootAvailable: () -> Boolean = { TerminalRuntime.rootAvailable },
     executionContext: TerminalExecutionContext? = null,
+    private val linuxMemoryPressure: () -> Boolean = { false },
 ) : AutoCloseable {
     private companion object {
         const val USER_STORAGE = "/storage/emulated/0"
@@ -45,11 +47,14 @@ internal class RootShellTerminalController(
         )
     }
 
-    fun executeTool(name: String, args: JSONObject): String = when (name) {
+    fun executeTool(name: String, args: JSONObject): String {
+        RuntimeInvocationScope.controller?.throwIfCancelled()
+        return when (name) {
         "terminal" -> terminal(args)
         "terminal_job" -> terminalJob(args)
         "terminal_daemon" -> terminalDaemon(args)
         else -> errorJson("UNKNOWN_TOOL", "未知终端工具：$name")
+        }
     }
 
     private fun terminal(args: JSONObject): String = when (args.optString("action", "exec").lowercase()) {
@@ -83,8 +88,11 @@ internal class RootShellTerminalController(
                 val cwd = normalizeCwd(args.optString("cwd").ifBlank { null }, environment, identity)
                 val command = args.requiredText("command")
                 if (command.isBlank()) return errorJson("INVALID_ARGUMENT", "command 不能为空")
-                jobs.start(launcher, command, cwd, identity, environment,
-                    args.optString("description", "后台命令"), args.optLong("timeout_ms", 600_000))
+                bindRunCancellation(
+                    jobs = jobs,
+                    result = jobs.start(launcher, command, cwd, identity, environment,
+                        args.optString("description", "后台命令"), args.optLong("timeout_ms", 600_000)),
+                )
             }
             "list" -> jobs.list(args.optBoolean("active_only", true))
             "read" -> jobs.read(args.requiredText("job_id"), args.optInt("max_bytes", 16_000))
@@ -105,6 +113,19 @@ internal class RootShellTerminalController(
         "logs" -> daemonLogs(args.optString("task_id"))
         "stop" -> daemonStop(args.optString("task_id"))
         else -> errorJson("UNSUPPORTED_TERMINAL_ACTION", "terminal_daemon action 仅支持 start/list/logs/stop")
+    }
+
+    /**
+     * Runtime 取消收回本 Run 启动的后台命令；正常回复结束不触发，跨 Run 生命周期保持原样。
+     * 嵌套资源作用域会在工具调用结束时立即关闭，此时不登记，避免误杀长任务。
+     */
+    private fun bindRunCancellation(jobs: BackgroundTerminalJobs, result: String): String {
+        val payload = runCatching { JSONObject(result) }.getOrNull() ?: return result
+        if (!payload.optBoolean("ok") || !payload.optBoolean("running")) return result
+        val jobId = payload.optString("job_id")
+        if (jobId.isBlank() || RuntimeInvocationScope.resourceScope != null) return result
+        RuntimeInvocationScope.controller?.register { jobs.stopAsync(jobId, "cancelled") }
+        return result
     }
 
     private fun openSession(identity: String, cwd: String?, environment: String): String {
@@ -425,87 +446,63 @@ internal class RootShellTerminalController(
         session: TerminalSession,
         command: String,
         timeoutMs: Int
-    ): SessionCommandResult {
-        synchronized(session.lock) {
-            if (session.closed || !session.process.isAlive) {
-                return SessionCommandResult(
-                    exitCode = -1,
-                    stdout = "",
-                    stderr = "terminal session 已关闭",
-                    cwd = session.cwd,
-                    timedOut = false
-                )
-            }
-            val marker = SessionStatusProtocol.newMarker()
-            val stdoutStart = session.stdout.text().length
-            val stderrStart = session.stderr.text().length
-            val commandBlock = buildString {
-                append(command)
-                append('\n')
-                append(SessionStatusProtocol.statusCommand(marker))
-                append('\n')
-            }
-            runCatching {
-                session.process.outputStream.write(commandBlock.toByteArray(Charsets.UTF_8))
-                session.process.outputStream.flush()
-            }.getOrElse {
-                session.closed = true
-                return SessionCommandResult(
-                    exitCode = -1,
-                    stdout = session.stdout.text().drop(stdoutStart).trimEnd(),
-                    stderr = it.message ?: it.javaClass.simpleName,
-                    cwd = session.cwd,
-                    timedOut = false
-                )
-            }
-
-            val deadline = System.currentTimeMillis() + timeoutMs.coerceIn(1_000, MAX_TIMEOUT_SECONDS * 1000)
-            while (System.currentTimeMillis() < deadline) {
-                val stdoutDelta = session.stdout.text().drop(stdoutStart)
-                if (session.closed || !session.process.isAlive) {
-                    return SessionCommandResult(
-                        exitCode = -1,
-                        stdout = stdoutDelta.trimEnd(),
-                        stderr = session.stderr.text().drop(stderrStart).ifBlank { "terminal session 已关闭" }.trimEnd(),
-                        cwd = session.cwd,
-                        timedOut = false
-                    )
-                }
-                val status = stdoutDelta.lineSequence()
-                    .firstOrNull { SessionStatusProtocol.isStatusLine(it, marker) }
-                    ?.let { SessionStatusProtocol.parseStatusLine(it, marker) }
-                if (status != null) {
-                    val exitCode = status.exitCode
-                    val cwd = status.cwd ?: session.cwd
-                    val cleanedStdout = stdoutDelta
-                        .lineSequence()
-                        .filterNot { SessionStatusProtocol.isStatusLine(it, marker) }
-                        .joinToString("\n")
-                        .trimEnd()
-                    val stderrDelta = session.stderr.text().drop(stderrStart).trimEnd()
-                    session.stdout.clear()
-                    session.stderr.clear()
-                    return SessionCommandResult(
-                        exitCode = exitCode,
-                        stdout = cleanedStdout,
-                        stderr = stderrDelta,
-                        cwd = cwd,
-                        timedOut = false
-                    )
-                }
-                Thread.sleep(50)
-            }
-
+    ): SessionCommandResult = synchronized(session.lock) {
+        val controller = RuntimeInvocationScope.controller
+        controller?.throwIfCancelled()
+        val binding = controller?.register {
             session.closed = true
-            processSupervisor.terminateProcessTree(session.process)
-            return SessionCommandResult(
-                exitCode = -2,
-                stdout = session.stdout.text().drop(stdoutStart).trimEnd(),
-                stderr = session.stderr.text().drop(stderrStart).ifBlank { "命令执行超时" }.trimEnd(),
-                cwd = session.cwd,
-                timedOut = true
-            )
+            thread(name = "agent-terminal-session-cancel", isDaemon = true) { closeSession(session.id) }
         }
+        try { runSessionCommandLocked(session, command, timeoutMs) } finally { binding?.close() }
+    }
+
+    private fun runSessionCommandLocked(session: TerminalSession, command: String, timeoutMs: Int): SessionCommandResult {
+        if (session.closed || !session.process.isAlive) {
+            return SessionCommandResult(-1, "", "terminal session 已关闭", session.cwd, false)
+        }
+        val marker = SessionStatusProtocol.newMarker()
+        val stdoutStart = session.stdout.text().length
+        val stderrStart = session.stderr.text().length
+        val commandBlock = buildString {
+            append(command)
+            append('\n')
+            append(SessionStatusProtocol.statusCommand(marker))
+            append('\n')
+        }
+        runCatching {
+            session.process.outputStream.write(commandBlock.toByteArray(Charsets.UTF_8))
+            session.process.outputStream.flush()
+        }.getOrElse {
+            session.closed = true
+            return SessionCommandResult(-1, session.stdout.text().drop(stdoutStart).trimEnd(),
+                it.message ?: it.javaClass.simpleName, session.cwd, false)
+        }
+
+        val deadline = System.currentTimeMillis() + timeoutMs.coerceIn(1_000, MAX_TIMEOUT_SECONDS * 1000)
+        while (System.currentTimeMillis() < deadline) {
+            val stdoutDelta = session.stdout.text().drop(stdoutStart)
+            if (session.closed || !session.process.isAlive) {
+                return SessionCommandResult(-1, stdoutDelta.trimEnd(),
+                    session.stderr.text().drop(stderrStart).ifBlank { "terminal session 已关闭" }.trimEnd(), session.cwd, false)
+            }
+            val status = stdoutDelta.lineSequence()
+                .firstOrNull { SessionStatusProtocol.isStatusLine(it, marker) }
+                ?.let { SessionStatusProtocol.parseStatusLine(it, marker) }
+            if (status != null) {
+                val cleanedStdout = stdoutDelta.lineSequence()
+                    .filterNot { SessionStatusProtocol.isStatusLine(it, marker) }.joinToString("\n").trimEnd()
+                val stderrDelta = session.stderr.text().drop(stderrStart).trimEnd()
+                session.stdout.clear()
+                session.stderr.clear()
+                return SessionCommandResult(status.exitCode, cleanedStdout, stderrDelta, status.cwd ?: session.cwd, false)
+            }
+            Thread.sleep(50)
+        }
+
+        session.closed = true
+        processSupervisor.terminateProcessTree(session.process)
+        return SessionCommandResult(-2, session.stdout.text().drop(stdoutStart).trimEnd(),
+            session.stderr.text().drop(stderrStart).ifBlank { "命令执行超时" }.trimEnd(), session.cwd, true)
     }
 
     private fun runCommand(
@@ -561,7 +558,7 @@ internal class RootShellTerminalController(
             .put("environment", environment.wireName)
             .put("cwd", safeCwd)
             .put("runtime", observation.runtime ?: JSONObject.NULL)
-            .put("status", when { processSupervisor.isClosing -> "cancelled"; result.exitCode == -2 -> "timed_out"; result.exitCode == 0 -> "exited"; else -> "failed" })
+            .put("status", when { processSupervisor.isClosing || result.exitCode == -3 -> "cancelled"; result.exitCode == -2 -> "timed_out"; result.exitCode == 0 -> "exited"; else -> "failed" })
             .put("exit_code", result.exitCode)
             .put("timed_out", result.exitCode == -2)
             .put("stdout", stdout)
@@ -573,6 +570,7 @@ internal class RootShellTerminalController(
     }
 
     fun fileTool(name: String, args: JSONObject): String {
+        RuntimeInvocationScope.controller?.throwIfCancelled()
         return try {
             val environment = normalizeEnvironment(args.optString("environment", "android"))
             val rootfsPath = rootfsPathFor(environment)
@@ -582,6 +580,7 @@ internal class RootShellTerminalController(
             environmentPreflight(identity, environment, rootfsPath)?.let { return it }
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
             fun checkActive() {
+                RuntimeInvocationScope.controller?.throwIfCancelled()
                 if (processSupervisor.isClosing) throw FileToolException("CANCELLED", "文件操作已取消")
                 if (identity == "root" && !rootAvailable()) throw FileToolException("ROOT_REQUIRED", "Root 授权已不可用")
                 if (System.nanoTime() >= deadline) throw FileToolException("FILE_TIMEOUT", "文件操作达到时间预算，请缩小范围")
@@ -651,6 +650,7 @@ internal class RootShellTerminalController(
         environment: TerminalEnvironment,
         rootfsPath: String? = rootfsPathFor(environment),
     ): String? = when {
+        environment.isLinux && linuxMemoryPressure() -> errorJson("LINUX_MEMORY_PRESSURE", "当前内存紧张，本次未启动 Linux 操作，请稍后继续")
         environment.isLinux && identity != "root" && LinuxEnvironmentPaths.backendOf(rootfsPath) != LinuxExecutionBackend.PROOT ->
             errorJson("LINUX_ENVIRONMENT_REQUIRES_ROOT", "Linux 工具环境仅支持 root identity")
         environment.isLinux && !LinuxEnvironmentPaths.rootfsReady(rootfsPath) ->
@@ -664,6 +664,8 @@ internal class RootShellTerminalController(
         else -> null
     }
 
+    fun sessionEnvironment(sessionId: String): TerminalEnvironment? = synchronized(sessions) { sessions[sessionId]?.environment }
+
     private fun defaultIdentity(environment: TerminalEnvironment): String =
         executionContext.identityFor(environment, rootAvailable())
 
@@ -675,7 +677,8 @@ internal class RootShellTerminalController(
         val requested = cwd.orEmpty().ifEmpty { defaultCwd }
         require('\u0000' !in requested && requested.length <= 4096) { "工作目录无效或过长" }
         val environmentPath = when {
-            requested == "~" || requested.startsWith("~/") || requested.startsWith("/") -> requested
+            requested == defaultCwd || requested == "~" || requested.startsWith("~/") || requested.startsWith("/") ||
+                !environment.isLinux && identity == "user" && File(requested).isAbsolute -> requested
             else -> "$defaultCwd/$requested"
         }
         return if (environment.isLinux) {

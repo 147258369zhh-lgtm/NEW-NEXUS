@@ -14,6 +14,7 @@ internal object ProotCommandBuilder {
         termType: String = "dumb",
         nativeDirectory: File? = TerminalRuntime.nativeLibraryDir,
         workspace: String = TerminalRuntime.userWorkspacePath,
+        inputsWorkspace: String = TerminalRuntime.userWorkspacePath,
         tempDirectory: File = TerminalRuntime.temporaryDirectory,
         publicStorageGranted: Boolean = TerminalRuntime.publicStorageGranted,
     ): String {
@@ -27,6 +28,7 @@ internal object ProotCommandBuilder {
         }
         listOf("/dev", "/proc", "/sys").filter { File(it).isDirectory }.forEach { bind(it) }
         bind(workspace, "/workspace")
+        bind(inputsWorkspace, TerminalRuntime.LINUX_INPUTS_PATH)
         bind(tempDirectory.absolutePath, "/dev/shm")
         if (publicStorageGranted && File("/storage/emulated/0").canRead()) bind("/storage/emulated/0")
         sharedMounts.filter {
@@ -43,6 +45,7 @@ internal object ProotCommandBuilder {
         if (command != null) args += listOf("-lc", command)
         return "[ -x ${shellQuote(proot)} ] && [ -x ${shellQuote(loader)} ] || { echo ETA_PROOT_UNAVAILABLE >&2; exit 127; }; " +
             "mkdir -p ${shellQuote(workspace)} ${shellQuote(tempDirectory.absolutePath)} || exit 125; " +
+            "mkdir -p ${shellQuote(inputsWorkspace)} || exit 125; " +
             "export PROOT_LOADER=${shellQuote(loader)} PROOT_TMP_DIR=${shellQuote(tempDirectory.absolutePath)}; " +
             "unset LD_PRELOAD; " + args.joinToString(" ", transform = ::shellQuote)
     }

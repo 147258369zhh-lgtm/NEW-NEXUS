@@ -187,6 +187,48 @@ class ConversationMessagePresentationTest {
         }
     }
 
+    @Test
+    @Config(sdk = [36], qualifiers = "w320dp-h896dp-xhdpi")
+    fun existingToolRowExpandsTheLinkedPlanAndHistoricalQuestionCannotSubmit() {
+        val context = org.robolectric.RuntimeEnvironment.getApplication()
+        val store = io.github.mangi.eta.data.repository.NexusExecutionStore.get(context)
+        val request = io.github.zhh_lgtm.nexus.kernel.api.RunRequest(io.github.zhh_lgtm.nexus.kernel.api.RunId("ui-plan"),
+            io.github.zhh_lgtm.nexus.kernel.api.RunSource.CHAT, io.github.zhh_lgtm.nexus.kernel.api.RunMode.PLAN,
+            io.github.zhh_lgtm.nexus.kernel.api.HostId("native-android"))
+        val recorder = io.github.mangi.eta.agent.runtime.NexusExecutionRecorder(store, request)
+        recorder.start()
+        val ref = io.github.mangi.eta.agent.workflow.WorkflowRevisionStore(context).save("chat-ui", "plan",
+            org.json.JSONObject().put("revision", 1).put("plan_id", "plan-ui").put("steps", org.json.JSONArray().put(
+                org.json.JSONObject().put("title", "Check source file").put("verification", "Compare report totals"))))
+        recorder.record(io.github.mangi.eta.agent.runtime.AgentEvent.ToolStarted(1, "save", "plan_manage", "Create report plan"))
+        recorder.record(io.github.mangi.eta.agent.runtime.AgentEvent.ToolFinished(1, "save", "plan_manage", "Saved", 0, 0, true, workflowReference = ref))
+        recorder.finish(io.github.mangi.eta.agent.runtime.AgentRuntimeWire.RunResult("ui-plan", true, "done"), false)
+        val item = io.github.mangi.eta.agent.runtime.NexusExecutionIds.tool("ui-plan", 1, "save")
+        var answers = 0
+        try {
+            withContent({
+                val density = LocalDensity.current
+                CompositionLocalProvider(LocalDensity provides Density(density.density, 1.3f)) {
+                    ToolActivityRow(io.github.mangi.eta.ui.model.ToolActivityMessageUi("ui-row", "plan_manage",
+                        io.github.mangi.eta.ui.model.ToolActivityStatusUi.Success, "Create report plan", resultSummary = "Saved",
+                        executionItemId = item), onOpenBrowser = {}, showBrowserShortcut = false)
+                    NexusContentPartRenderer(io.github.zhh_lgtm.nexus.kernel.api.UserInputPart("old-input", "old-question",
+                        "Old question", listOf("Markdown"), false), NexusArtifactUriResolver { null }, onUserInput = { _, _ -> answers++ })
+                }
+            }, appearance = AppearanceSettings(themeMode = AppearanceThemeMode.DARK)) { panel ->
+                panel.clickText("Create report plan")
+                panel.await { panel.texts().any { it.contains("Check source file") } }
+                assertTrue(panel.texts().any { it.contains("Compare report totals") })
+                panel.capture("classic-linked-plan-narrow")
+                assertEquals(0, answers)
+                val historicalOption = panel.nodesWithText("Markdown").single()
+                var optionButton: SemanticsNode? = historicalOption
+                while (optionButton != null && optionButton.config.getOrNull(SemanticsProperties.Disabled) == null) optionButton = optionButton.parent
+                assertNotNull("The historical option must have a disabled button ancestor", optionButton)
+            }
+        } finally { io.github.mangi.eta.data.repository.NexusExecutionStore.closeForTests() }
+    }
+
     private fun withContent(content: @Composable () -> Unit, appearance: AppearanceSettings = AppearanceSettings(), block: (Panel) -> Unit) {
         val controller = Robolectric.buildActivity(ComponentActivity::class.java).setup().visible()
         val panel = Panel(controller.get(), appearance, content)

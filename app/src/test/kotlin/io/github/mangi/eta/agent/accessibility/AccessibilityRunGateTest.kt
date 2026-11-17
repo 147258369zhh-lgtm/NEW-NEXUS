@@ -35,7 +35,7 @@ class AccessibilityRunGateTest {
 
     private fun gate(recovery: () -> Unit = {}, budget: Long = 5_000,
                      now: () -> Long = { System.nanoTime() / 1_000_000L }) = AccessibilityRunGate(
-        controller, gui, available::get, recovery, { events += it },
+        controller, gui, available::get, { recovery(); AccessibilityEnableResult.available(false) }, { events += it },
         totalWaitMs = budget, nowMs = now, pollMs = 10, minimumRecoveryBudgetMs = 0,
     )
 
@@ -170,6 +170,32 @@ class AccessibilityRunGateTest {
             assertSame(ToolExecutionDecision.Allow, wait.get(2, TimeUnit.SECONDS))
             assertEquals(1, calls.get())
         } finally { gui.close(); pool.shutdownNow() }
+    }
+
+    @Test fun boundedWaitReturnsPreciseRecoveryFailureWhenManualRecoveryDoesNotHappen() {
+        val clock = AtomicLong(0)
+        val calls = AtomicInteger()
+        val gate = AccessibilityRunGate(
+            controller, gui, available::get,
+            {
+                calls.incrementAndGet()
+                clock.addAndGet(100)
+                AccessibilityEnableResult.failure(
+                    "ACCESSIBILITY_REBIND_UNCONFIRMED",
+                    "无障碍设置恢复状态未确认；本次屏幕操作未执行。",
+                    recoveryRequested = true,
+                )
+            },
+            { events += it }, totalWaitMs = 100, nowMs = clock::get, pollMs = 10, minimumRecoveryBudgetMs = 0,
+        )
+
+        val result = gate.prepare("tap") as ToolExecutionDecision.Reject
+        assertEquals("ACCESSIBILITY_REBIND_UNCONFIRMED", result.code)
+        assertTrue(result.message.contains("未确认"))
+        assertEquals(1, calls.get())
+        assertEquals(AccessibilityWaitPhase.TIMED_OUT, events.last().phase)
+        assertFalse(coordinator.state.value.accessibilityWaiting)
+        gui.close()
     }
 
     @Test fun concurrentCallsShareOneOutageAndOneRecovery() {

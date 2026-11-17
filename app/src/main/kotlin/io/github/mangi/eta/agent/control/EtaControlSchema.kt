@@ -6,6 +6,11 @@ import org.json.JSONObject
 /** Small JSON-Schema subset used to keep model-provided capability parameters inside the contract. */
 internal object EtaControlSchema {
     fun validate(schema: JSONObject, parameters: JSONObject) {
+        validateObject(schema, parameters, 0)
+    }
+
+    private fun validateObject(schema: JSONObject, parameters: JSONObject, depth: Int) {
+        if (depth > 24) fail("参数嵌套过深")
         if (schema.length() == 0) {
             if (parameters.length() > 0) fail("该能力不接受参数")
             return
@@ -32,13 +37,14 @@ internal object EtaControlSchema {
         val keys = properties.keys()
         while (keys.hasNext()) {
             val key = keys.next()
-            if (!parameters.has(key) || parameters.isNull(key)) continue
+            if (!parameters.has(key)) continue
             val child = properties.optJSONObject(key) ?: continue
-            validateValue(key, child, parameters.opt(key))
+            validateValue(key, child, parameters.opt(key), depth + 1)
         }
     }
 
-    private fun validateValue(path: String, schema: JSONObject, value: Any?) {
+    private fun validateValue(path: String, schema: JSONObject, value: Any?, depth: Int) {
+        if (depth > 24) fail("参数嵌套过深")
         val types = when (val type = schema.opt("type")) {
             is String -> setOf(type)
             is JSONArray -> buildSet {
@@ -48,7 +54,7 @@ internal object EtaControlSchema {
             else -> emptySet()
         }
         if (value == null || value == JSONObject.NULL) {
-            if ("null" !in types) fail("$path 不能为 null")
+            if (types.isNotEmpty() && "null" !in types) fail("$path 不能为 null")
             return
         }
         if (types.isNotEmpty() && types.none { matches(it, value) }) {
@@ -61,14 +67,19 @@ internal object EtaControlSchema {
             }
             if (value.toString() !in allowed) fail("$path 必须是 ${allowed.joinToString(", ")} 之一")
         }
-        if (value is JSONObject && schema.has("properties")) {
-            validate(schema, value)
+        if (value is JSONObject && schema.length() > 0) {
+            validateObject(schema, value, depth)
         }
         if (value is JSONArray) {
+            if (value.length() < schema.optInt("minItems", 0) || value.length() > schema.optInt("maxItems", Int.MAX_VALUE)) {
+                fail("$path 的条目数超出范围")
+            }
+            if (schema.optBoolean("uniqueItems") && (0 until value.length()).map { canonical(value.opt(it)) }.distinct().size != value.length()) {
+                fail("$path 包含重复条目")
+            }
             schema.optJSONObject("items")?.let { itemSchema ->
                 for (index in 0 until value.length()) {
-                    if (value.isNull(index)) continue
-                    validateValue("$path[$index]", itemSchema, value.opt(index))
+                    validateValue("$path[$index]", itemSchema, value.opt(index), depth + 1)
                 }
             }
         }
@@ -82,6 +93,7 @@ internal object EtaControlSchema {
         }
         if (value is Number) {
             val number = value.toDouble()
+            if (!number.isFinite()) fail("$path 必须为有限数值")
             if (schema.has("minimum") && number < schema.optDouble("minimum")) {
                 fail("$path 不能小于 ${schema.opt("minimum")}")
             }
@@ -96,10 +108,17 @@ internal object EtaControlSchema {
         "array" -> value is JSONArray
         "string" -> value is String
         "boolean" -> value is Boolean
-        "integer" -> value is Int || value is Long || value is Short || value is Byte
+        "integer" -> value is Number && runCatching { value.toString().toBigDecimal().stripTrailingZeros().scale() <= 0 }.getOrDefault(false)
         "number" -> value is Number
         "null" -> value == JSONObject.NULL
         else -> true
+    }
+
+    private fun canonical(value: Any?): Any? = when (value) {
+        is JSONObject -> value.keys().asSequence().associateWith { canonical(value.opt(it)) }
+        is JSONArray -> (0 until value.length()).map { canonical(value.opt(it)) }
+        is Number -> runCatching { value.toString().toBigDecimal().stripTrailingZeros() }.getOrNull()
+        else -> value
     }
 
     private fun fail(message: String): Nothing = throw EtaControlException("INVALID_PARAMETERS", message)

@@ -45,6 +45,45 @@ class AgentRuntimeWireTest {
         assertEquals(2..8, restored.compactionSelection)
     }
 
+    @Test
+    fun scopedA2AApprovalRoundTripsWithoutOpeningLegacyRequests() {
+        val grant = AgentRuntimeWire.A2ALocalApprovalGrant(
+            taskId = "peer-task",
+            messageId = "continuation-3",
+            continuationCount = 3,
+            allowedTools = setOf("write_file", "request_user_input"),
+            allowedToolEffects = setOf("write_file=REVERSIBLE_WRITE", "request_user_input=READ"),
+            originalGrantFingerprint = "original",
+            currentGrantFingerprint = "current",
+            pendingTool = "write_file",
+            pendingEffect = "REVERSIBLE_WRITE",
+            pendingArgumentsDigest = "c".repeat(64),
+        )
+        val settledDigest = "d".repeat(64)
+        val request = AgentRuntimeWire.RunRequest(
+            runId = "peer-task", prompt = "continue", images = emptyList(),
+            config = AgentModelClient.ModelConfig(
+                baseUrl = "https://example.invalid", apiKey = "fixture", model = "fixture", systemPrompt = "",
+            ),
+            toolPolicy = AgentToolPolicy(setOf("write_file", "request_user_input").sorted()),
+            a2aLocalApproval = grant,
+            a2aContinuationCount = 3,
+            a2aSettledCalls = listOf("read_file|READ|$settledDigest"),
+        )
+
+        val restored = AgentRuntimeWire.runRequestFromBundle(AgentRuntimeWire.toLegacyBundle(request))
+        assertEquals(grant, restored.a2aLocalApproval)
+        assertEquals(3, restored.a2aContinuationCount)
+        assertEquals(listOf("read_file|READ|$settledDigest"), restored.a2aSettledCalls)
+
+        val old = AgentRuntimeWire.toLegacyBundle(
+            request.copy(a2aLocalApproval = null, a2aContinuationCount = null, a2aSettledCalls = emptyList()),
+        )
+        assertNull(AgentRuntimeWire.runRequestFromBundle(old).a2aLocalApproval)
+        assertNull(AgentRuntimeWire.runRequestFromBundle(old).a2aContinuationCount)
+        assertTrue(AgentRuntimeWire.runRequestFromBundle(old).a2aSettledCalls.isEmpty())
+    }
+
     @Test fun oldUsageBundlesKeepBillingUnknownAndNewFieldsRoundTrip() {
         val usage = AgentTokenUsage(inputTokens = 10, outputTokens = 20, cachedTokens = 30,
             billingBasis = AgentBillingTokens.ANTHROPIC, cacheWriteTokens = 40, toolUseTokens = 0)
@@ -129,13 +168,14 @@ class AgentRuntimeWireTest {
     }
 
     @Test
-    fun modelToolCapabilitySurvivesIpcAndDefaultsForOldRequests() {
+    fun modelToolCapabilitySurvivesIpcAndOldRequestsDefaultClosed() {
         val config = AgentModelClient.ModelConfig(
             baseUrl = "http://127.0.0.1:9379/v1",
             apiKey = "",
             model = "local-model",
             systemPrompt = "",
             supportsTools = false,
+            supportsImageInput = false,
         )
         val bundle = AgentRuntimeWire.toLegacyBundle(
             AgentRuntimeWire.RunRequest(
@@ -146,9 +186,12 @@ class AgentRuntimeWireTest {
             ),
         )
         assertFalse(AgentRuntimeWire.runRequestFromBundle(bundle).config.supportsTools)
+        assertFalse(AgentRuntimeWire.runRequestFromBundle(bundle).config.supportsImageInput)
 
         bundle.remove("supports_tools")
-        assertTrue(AgentRuntimeWire.runRequestFromBundle(bundle).config.supportsTools)
+        bundle.remove("supports_image_input")
+        assertFalse(AgentRuntimeWire.runRequestFromBundle(bundle).config.supportsTools)
+        assertFalse(AgentRuntimeWire.runRequestFromBundle(bundle).config.supportsImageInput)
     }
 
     @Test
@@ -394,6 +437,44 @@ class AgentRuntimeWireTest {
         }
         assertNull(AgentRuntimeWire.runResultFromBundle(legacy).contextSnapshot)
         assertEquals(AgentRuntimeWire.OP_CHAT, AgentRuntimeWire.runResultFromBundle(legacy).operation)
+    }
+
+    @Test
+    fun compactDrainCarriesPauseDetailsInsteadOfOnlyAFailureCode() {
+        val auth = AgentRuntimeWire.RunPause(
+            kind = AgentRuntimeWire.RunPause.KIND_AUTH_REQUIRED,
+            reason = "The operation needs approval from the device owner before it can run.",
+            pendingCallId = "call-1",
+            pendingTool = "write_file",
+            pendingEffect = "REVERSIBLE_WRITE",
+            pendingArgumentsDigest = "a".repeat(64),
+            settledCalls = listOf("read_file|READ|" + "b".repeat(64)),
+        )
+        val input = AgentRuntimeWire.RunPause(
+            kind = AgentRuntimeWire.RunPause.KIND_INPUT_REQUIRED,
+            question = "Which report should I open?",
+            options = listOf("weekly", "monthly"),
+        )
+        listOf(auth, input).forEachIndexed { index, pause ->
+            val runId = "pause-drain-$index"
+            val completed = AgentRuntimeWire.CompletedRun(
+                AgentRuntimeWire.EntryHandoff(runId, "a2a", "context-1"),
+                AgentRuntimeWire.RunResult(
+                    runId = runId,
+                    ok = false,
+                    content = "",
+                    error = "需要继续前先完成本机决定",
+                    failureCode = "A2A_${pause.kind}",
+                    pause = pause,
+                ),
+                1L,
+            )
+            val drained = AgentRuntimeWire.completedRunsFromBundle(
+                AgentRuntimeWire.completedRunsToBundle(listOf(completed)),
+            ).single()
+            assertEquals(pause, drained.result.pause)
+            assertEquals("A2A_${pause.kind}", drained.result.failureCode)
+        }
     }
 
     @Test

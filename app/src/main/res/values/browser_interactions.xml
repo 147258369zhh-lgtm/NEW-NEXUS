@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="browser_finish_takeover">Finish login / return to chat</string>
+    <string name="browser_scan_qr">Scan QR code</string>
+    <string name="browser_qr_camera">Use camera</string>
+    <string name="browser_qr_album">Choose image</string>
+    <string name="browser_qr_camera_prompt">Place a QR code inside the frame</string>
+    <string name="browser_qr_result">QR code result</string>
+    <string name="browser_qr_open">Open webpage</string>
+    <string name="browser_qr_not_found">No readable QR code found in this image</string>
+    <string name="browser_camera_denied">Allow camera access to scan a QR code</string>
+    <string name="browser_upload_title">Upload to this webpage</string>
+    <string name="browser_upload_choose_file">Choose file</string>
+    <string name="browser_upload_photo">Take photo</string>
+    <string name="browser_upload_video">Record video</string>
+    <string name="browser_upload_audio">Record audio</string>
+    <string name="browser_upload_unavailable">Could not open the file picker or capture app</string>
+    <string name="browser_website_permission_title">Website permission</string>
+    <string name="browser_website_permission_message">%1$s is requesting %2$s access for this webpage. Allow only if you trust this website.</string>
+    <string name="browser_allow_once">Allow this request</string>
+    <string name="browser_camera">camera</string>
+    <string name="browser_microphone">microphone</string>
+</resources>

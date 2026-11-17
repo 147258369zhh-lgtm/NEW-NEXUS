@@ -82,4 +82,12 @@ class A2AProtocolTest {
         role = A2ARole.AGENT,
         parts = listOf(A2APart(text = "hello")),
     )
+
+    @Test fun `task answers retain status and last agent history without echoing user text`() {
+        val task = A2ATask("result-task", A2ATaskStatus(A2ATaskState.COMPLETED, textMessage()),
+            history = listOf(textMessage().copy(role = A2ARole.USER, parts = listOf(A2APart(text = "private input"))),
+                textMessage().copy(parts = listOf(A2APart(text = "history answer")))),
+            artifacts = listOf(A2AArtifact("artifact", parts = listOf(A2APart(text = "hello")))))
+        assertEquals("hello\nhistory answer", task.resultText())
+    }
 }

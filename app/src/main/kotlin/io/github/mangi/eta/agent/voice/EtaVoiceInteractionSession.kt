@@ -5,10 +5,13 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.Uri
 import android.os.Bundle
 import android.graphics.Bitmap
+import android.provider.Settings
 import android.service.voice.VoiceInteractionSession
 import android.view.View
+import io.github.mangi.eta.core.AndroidAgentLogger
 
 /**
  * 系统数字助理的入口桥接。
@@ -50,6 +53,31 @@ internal class EtaVoiceInteractionSession(context: Context) : VoiceInteractionSe
 
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
+        if (!Settings.canDrawOverlays(context)) {
+            try {
+                // Use the live session token before hiding the session; this is
+                // the system assistant's supported activity-launch path.
+                startAssistantActivity(
+                    Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}")),
+                )
+            } catch (exception: RuntimeException) {
+                AndroidAgentLogger.warnThrottled("assistant_session_overlay_permission_launch_failed") {
+                    "Assistant overlay permission launch rejected: type=${exception.javaClass.simpleName}"
+                }
+            } finally {
+                EtaAssistantScreenContexts.release(screenContext?.id)
+                screenContext = null
+                shown = false
+                try {
+                    hide()
+                } catch (exception: RuntimeException) {
+                    AndroidAgentLogger.warnThrottled("assistant_session_hide_failed") {
+                        "Assistant session hide rejected: type=${exception.javaClass.simpleName}"
+                    }
+                }
+            }
+            return
+        }
         shown = true
         EtaAssistantOverlayService.show(context, screenContext?.id)
     }

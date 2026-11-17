@@ -6,6 +6,8 @@ import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.terminal.ShellProcessSupervisor
 import io.github.mangi.eta.agent.virtualdisplay.CanvasRoutingPolicy
 import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayController
+import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayFocusObservation
+import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayLease
 import io.github.mangi.eta.core.AgentLogger
 
 import android.content.ClipData
@@ -29,7 +31,12 @@ internal class RootShellDeviceController(
     private val logger: AgentLogger,
     private val screenshotExcludedPackages: () -> Set<String> = { emptySet() },
     private val rootAvailable: () -> Boolean = { RootAccess.isGranted },
+    guiLease: VirtualDisplayLease? = null,
 ) : AutoCloseable {
+    @Volatile
+    private var guiLease: VirtualDisplayLease? = guiLease
+    fun updateDisplayLease(lease: VirtualDisplayLease?) { guiLease = lease }
+
     private val processSupervisor = ShellProcessSupervisor(rootAvailable = rootAvailable)
 
     override fun close() {
@@ -118,6 +125,9 @@ internal class RootShellDeviceController(
         maxNodes: Int,
         displayId: Int = Display.DEFAULT_DISPLAY,
     ): Observation {
+        if (CanvasRoutingPolicy.isVirtualDisplay(displayId) && !displayOwnedByGuiRun(displayId)) {
+            return Observation(displayOwnedByAnotherRun(), null, null, null)
+        }
         val accessibility = AgentAccessibilityService.current()
         if (accessibility == null && !rootAvailable()) {
             return Observation(accessibilityUnavailable(), null, null, null)
@@ -125,6 +135,15 @@ internal class RootShellDeviceController(
         val nodeLimit = maxNodes.coerceIn(1, 120)
         val display = screenSize(displayId)
         val isVirtual = CanvasRoutingPolicy.isVirtualDisplay(displayId)
+        val focusLease = guiLease?.takeIf { isVirtual && it.displayId == displayId }
+        if (isVirtual && focusLease != null) {
+            val observation = accessibility?.observeApplicationWindowFocus(displayId)
+                ?: VirtualDisplayFocusObservation.UNAVAILABLE
+            VirtualDisplayController.recordFocusObservation(focusLease, observation)
+        }
+        val focusSnapshot = focusLease?.let { lease ->
+            VirtualDisplayController.snapshotFor(lease)
+        }
         val focus = accessibility
             ?.currentPackageName(displayId)
             ?.takeIf { it.isNotBlank() }
@@ -135,7 +154,7 @@ internal class RootShellDeviceController(
                     .put("source", "accessibility")
             }
             ?: if (isVirtual) {
-                val vdPkg = VirtualDisplayController.snapshots.value.packageName
+                val vdPkg = VirtualDisplayController.snapshotFor(guiLease)?.packageName.orEmpty()
                 JSONObject()
                     .put("package", vdPkg)
                     .put("component", vdPkg)
@@ -177,6 +196,14 @@ internal class RootShellDeviceController(
         val nodes = elementObservation?.nodes.orEmpty()
         val capture = if (includeScreenshot) captureScreenshot(displayId) else ScreenCapture.notRequested()
         val image = capture.image
+        if (focusLease != null && !VirtualDisplayController.validate(focusLease)) {
+            return Observation(expiredDisplayLease("observe_screen"), null, null, null)
+        }
+        val virtualCapabilitySnapshot = if (isVirtual) {
+            focusSnapshot ?: return Observation(expiredDisplayLease("observe_screen"), null, null, null)
+        } else {
+            null
+        }
         val coordinateSpace = if (image?.width != null && image.height != null) {
             CoordinateSpace(
                 screenWidth = display.first,
@@ -192,6 +219,20 @@ internal class RootShellDeviceController(
             .put("tool", "observe_screen")
             .put("canvas", if (isVirtual) CanvasRoutingPolicy.CanvasTarget.VIRTUAL_DISPLAY.wireName else CanvasRoutingPolicy.CanvasTarget.MAIN_DISPLAY.wireName)
             .put("display_id", displayId)
+            .put(
+                "virtual_display_capability",
+                if (isVirtual) {
+                    val snapshot = requireNotNull(virtualCapabilitySnapshot)
+                    JSONObject()
+                        .put("flag_profile", snapshot.flagProfile.wireValue)
+                        .put("application_window_focus_observed", snapshot.hasObservedApplicationWindowFocus)
+                        .put("input_acceptance_verified", false)
+                        .put("focus_status", focusSnapshot?.focusObservation?.wireValue ?: "unavailable")
+                        .put("focus_observed_at_elapsed_ms", focusSnapshot?.focusObservedAtElapsedMs ?: 0L)
+                        .put("focus_session_id", focusSnapshot?.sessionId.orEmpty())
+                        .put("frame_health", snapshot.failureReason ?: "healthy")
+                } else JSONObject.NULL,
+            )
             .put("screen", JSONObject().put("width", display.first).put("height", display.second))
             .put(
                 "accessibility",
@@ -262,11 +303,17 @@ internal class RootShellDeviceController(
         return Observation(json.toString(), image, elementObservation, coordinateSpace)
     }
 
-    fun tap(x: Int, y: Int, displayId: Int = Display.DEFAULT_DISPLAY): String {
+    fun tap(
+        x: Int,
+        y: Int,
+        displayId: Int = Display.DEFAULT_DISPLAY,
+        expectedLease: VirtualDisplayLease? = guiLease,
+    ): String {
+        if (!isActionLeaseCurrent(displayId, expectedLease)) return expiredDisplayLease("tap")
         if (AgentAccessibilityService.current() == null && !rootAvailable()) return accessibilityUnavailable()
         validatePoint(x, y, displayId)
         AgentAccessibilityService.current()?.let { service ->
-            val result = service.gestureTap(x.toFloat(), y.toFloat(), displayId = displayId)
+            val result = service.gestureTap(x.toFloat(), y.toFloat(), displayId = displayId, expectedLease = expectedLease)
             if (result.ok) {
                 waitForUiSettle("tap")
                 return nodeActionJson("tap", result)
@@ -276,15 +323,24 @@ internal class RootShellDeviceController(
             }
             if (!rootAvailable()) return nodeActionJson("tap", result)
         }
-        return inputCommand("${inputCommandPrefix(displayId)} tap $x $y", "tap")
+        return inputCommandForLease("${inputCommandPrefix(displayId)} tap $x $y", "tap", displayId, expectedLease)
     }
 
-    fun longPress(x: Int, y: Int, durationMs: Int, displayId: Int = Display.DEFAULT_DISPLAY): String {
+    fun longPress(
+        x: Int,
+        y: Int,
+        durationMs: Int,
+        displayId: Int = Display.DEFAULT_DISPLAY,
+        expectedLease: VirtualDisplayLease? = guiLease,
+    ): String {
+        if (!isActionLeaseCurrent(displayId, expectedLease)) return expiredDisplayLease("long_press")
         if (AgentAccessibilityService.current() == null && !rootAvailable()) return accessibilityUnavailable()
         validatePoint(x, y, displayId)
         val duration = durationMs.coerceIn(300, 3_000)
         AgentAccessibilityService.current()?.let { service ->
-            val result = service.gestureTap(x.toFloat(), y.toFloat(), duration.toLong(), displayId = displayId)
+            val result = service.gestureTap(
+                x.toFloat(), y.toFloat(), duration.toLong(), displayId = displayId, expectedLease = expectedLease,
+            )
             if (result.ok) {
                 waitForUiSettle("long_press")
                 return nodeActionJson("long_press", result.copy(method = "GESTURE_LONG_PRESS"))
@@ -294,7 +350,9 @@ internal class RootShellDeviceController(
             }
             if (!rootAvailable()) return nodeActionJson("long_press", result)
         }
-        return inputCommand("${inputCommandPrefix(displayId)} swipe $x $y $x $y $duration", "long_press")
+        return inputCommandForLease(
+            "${inputCommandPrefix(displayId)} swipe $x $y $x $y $duration", "long_press", displayId, expectedLease,
+        )
     }
 
     fun swipe(
@@ -304,7 +362,9 @@ internal class RootShellDeviceController(
         y2: Int,
         durationMs: Int,
         displayId: Int = Display.DEFAULT_DISPLAY,
+        expectedLease: VirtualDisplayLease? = guiLease,
     ): String {
+        if (!isActionLeaseCurrent(displayId, expectedLease)) return expiredDisplayLease("swipe")
         if (AgentAccessibilityService.current() == null && !rootAvailable()) return accessibilityUnavailable()
         validatePoint(x1, y1, displayId)
         validatePoint(x2, y2, displayId)
@@ -317,6 +377,7 @@ internal class RootShellDeviceController(
                 y2.toFloat(),
                 duration.toLong(),
                 displayId = displayId,
+                expectedLease = expectedLease,
             )
             if (result.ok) {
                 waitForUiSettle("swipe")
@@ -327,14 +388,21 @@ internal class RootShellDeviceController(
             }
             if (!rootAvailable()) return nodeActionJson("swipe", result)
         }
-        return inputCommand("${inputCommandPrefix(displayId)} swipe $x1 $y1 $x2 $y2 $duration", "swipe")
+        return inputCommandForLease(
+            "${inputCommandPrefix(displayId)} swipe $x1 $y1 $x2 $y2 $duration", "swipe", displayId, expectedLease,
+        )
     }
 
     fun scroll(
         direction: String,
         amount: String = "",
         displayId: Int = Display.DEFAULT_DISPLAY,
+        expectedLease: VirtualDisplayLease? = guiLease,
     ): String {
+        if (!isActionLeaseCurrent(displayId, expectedLease)) return scrollErrorJson(
+            "scroll", ScrollDirection.parse(direction), "DISPLAY_LEASE_EXPIRED",
+            "虚拟屏操作所属会话已变化；本次滚动未发送，请重新观察后再操作。",
+        )
         val parsed = ScrollDirection.parse(direction)
             ?: return scrollErrorJson(
                 "scroll",
@@ -345,7 +413,11 @@ internal class RootShellDeviceController(
         val parsedAmount = ScrollAmount.parse(amount)
             ?: return scrollErrorJson("scroll", parsed, "INVALID_ARGUMENT", "amount 仅支持 small/page")
         AgentAccessibilityService.current()?.let { service ->
-            return scrollActionJson("scroll", service.scrollCurrent(parsed, parsedAmount, displayId = displayId))
+            return scrollActionJson(
+                "scroll", service.scrollCurrent(
+                    parsed, parsedAmount, displayId = displayId, expectedLease = expectedLease,
+                ),
+            )
         }
         if (!rootAvailable()) return accessibilityUnavailable()
         val beforeNodes = dumpUiNodes(120)
@@ -364,6 +436,7 @@ internal class RootShellDeviceController(
             targetIndex = null,
             amount = parsedAmount,
             displayId = displayId,
+            expectedLease = expectedLease,
         )
     }
 
@@ -418,11 +491,25 @@ internal class RootShellDeviceController(
         }
 
     fun tapElement(observation: ElementObservation, index: Int): String {
+        return tapElement(
+            observation, index,
+            observation.accessibilitySnapshot?.displayId ?: Display.DEFAULT_DISPLAY,
+            guiLease,
+        )
+    }
+
+    fun tapElement(
+        observation: ElementObservation,
+        index: Int,
+        displayId: Int,
+        expectedLease: VirtualDisplayLease?,
+    ): String {
+        if (!isActionLeaseCurrent(displayId, expectedLease)) return expiredDisplayLease("tap_element")
         val snapshot = observation.accessibilitySnapshot
         if (snapshot != null) {
             val service = AgentAccessibilityService.current()
                 ?: return errorJson("ACCESSIBILITY_UNAVAILABLE", "无障碍服务已断开，请重新观察屏幕")
-            val result = service.clickNode(snapshot, index)
+            val result = service.clickNode(snapshot, index, expectedLease)
             if (result.ok) {
                 waitForUiSettle("tap")
                 return nodeActionJson("tap_element", result)
@@ -433,7 +520,7 @@ internal class RootShellDeviceController(
         val resolved = resolveUiAutomatorNode(observation, index)
             ?: return errorJson("STALE_NODE", "无法在当前界面唯一确认目标节点，请重新观察屏幕")
         val node = resolved.node
-        return tap(node.centerX, node.centerY).rewriteTool("tap_element")
+        return tap(node.centerX, node.centerY, displayId, expectedLease).rewriteTool("tap_element")
     }
 
     fun longPressElement(
@@ -441,11 +528,26 @@ internal class RootShellDeviceController(
         index: Int,
         durationMs: Int,
     ): String {
+        return longPressElement(
+            observation, index, durationMs,
+            observation.accessibilitySnapshot?.displayId ?: Display.DEFAULT_DISPLAY,
+            guiLease,
+        )
+    }
+
+    fun longPressElement(
+        observation: ElementObservation,
+        index: Int,
+        durationMs: Int,
+        displayId: Int,
+        expectedLease: VirtualDisplayLease?,
+    ): String {
+        if (!isActionLeaseCurrent(displayId, expectedLease)) return expiredDisplayLease("long_press_element")
         val snapshot = observation.accessibilitySnapshot
         if (snapshot != null) {
             val service = AgentAccessibilityService.current()
                 ?: return errorJson("ACCESSIBILITY_UNAVAILABLE", "无障碍服务已断开，请重新观察屏幕")
-            val result = service.longClickNode(snapshot, index, durationMs.toLong())
+            val result = service.longClickNode(snapshot, index, durationMs.toLong(), expectedLease)
             if (result.ok) {
                 waitForUiSettle("long_press")
                 return nodeActionJson("long_press_element", result)
@@ -456,7 +558,7 @@ internal class RootShellDeviceController(
         val resolved = resolveUiAutomatorNode(observation, index)
             ?: return errorJson("STALE_NODE", "无法在当前界面唯一确认目标节点，请重新观察屏幕")
         val node = resolved.node
-        return longPress(node.centerX, node.centerY, durationMs).rewriteTool("long_press_element")
+        return longPress(node.centerX, node.centerY, durationMs, displayId, expectedLease).rewriteTool("long_press_element")
     }
 
     fun scrollElement(
@@ -464,7 +566,13 @@ internal class RootShellDeviceController(
         index: Int,
         direction: String,
         amount: String = "",
+        displayId: Int = observation.accessibilitySnapshot?.displayId ?: Display.DEFAULT_DISPLAY,
+        expectedLease: VirtualDisplayLease? = guiLease,
     ): String {
+        if (!isActionLeaseCurrent(displayId, expectedLease)) return scrollErrorJson(
+            "scroll_element", ScrollDirection.parse(direction), "DISPLAY_LEASE_EXPIRED",
+            "虚拟屏操作所属会话已变化；本次滚动未发送，请重新观察后再操作。",
+        )
         val parsed = ScrollDirection.parse(direction)
             ?: return scrollErrorJson(
                 "scroll_element",
@@ -485,7 +593,7 @@ internal class RootShellDeviceController(
                 )
             return scrollActionJson(
                 tool = "scroll_element",
-                result = service.scrollNode(snapshot, index, parsed, parsedAmount),
+                result = service.scrollNode(snapshot, index, parsed, parsedAmount, expectedLease),
             )
         }
         if (!rootAvailable()) return rootRequired()
@@ -513,6 +621,8 @@ internal class RootShellDeviceController(
             maxNodes = observation.maxNodes,
             targetIndex = index,
             amount = parsedAmount,
+            displayId = displayId,
+            expectedLease = expectedLease,
         )
     }
 
@@ -790,7 +900,21 @@ internal class RootShellDeviceController(
 
     private fun captureScreenshot(displayId: Int = Display.DEFAULT_DISPLAY): ScreenCapture {
         if (CanvasRoutingPolicy.isVirtualDisplay(displayId)) {
-            val vdBitmap = VirtualDisplayController.captureScreenshotBitmap()
+            if (!displayOwnedByGuiRun(displayId)) {
+                return ScreenCapture.failed(source = "virtual_display", code = "DISPLAY_OWNED_BY_ANOTHER_RUN")
+            }
+            val lease = guiLease ?: return ScreenCapture.failed(
+                source = "virtual_display", code = "DISPLAY_LEASE_EXPIRED",
+            )
+            val virtualSnapshot = VirtualDisplayController.snapshotFor(lease)
+                ?: return ScreenCapture.failed(source = "virtual_display", code = "DISPLAY_LEASE_EXPIRED")
+            // The lease already pins the exact session; a mismatched lease must not fall through to
+            // accessibility capture of a replacement session.
+            val vdBitmap = VirtualDisplayController.captureScreenshotBitmap(
+                expectedDisplayId = lease.displayId,
+                expectedSessionId = lease.sessionId,
+                lease = lease,
+            )
             if (vdBitmap != null) {
                 val image = try {
                     runCatching {
@@ -831,7 +955,10 @@ internal class RootShellDeviceController(
                     )
                 }
             }
-            return ScreenCapture.failed(source = "virtual_display", code = "SCREENSHOT_UNAVAILABLE")
+            val code = if (virtualSnapshot.failureReason == "FRAME_STREAM_STALLED" ||
+                !virtualSnapshot.hasFreshFrame(SystemClock.elapsedRealtime())
+            ) "FRAME_STREAM_STALLED" else "SCREENSHOT_UNAVAILABLE"
+            return ScreenCapture.failed(source = "virtual_display", code = code)
         }
         val excludedPackages = screenshotExcludedPackages()
         // Android 14 起优先逐窗口截图，排除 Eta 浮层；旧系统只保留满足排除合同的 Root 回退。
@@ -1027,8 +1154,8 @@ internal class RootShellDeviceController(
 
     private fun screenSize(displayId: Int = Display.DEFAULT_DISPLAY): Pair<Int, Int> {
         if (CanvasRoutingPolicy.isVirtualDisplay(displayId)) {
-            val vd = VirtualDisplayController.snapshots.value
-            if (vd.active && vd.displayId == displayId && vd.width > 0 && vd.height > 0) {
+            val vd = VirtualDisplayController.snapshotFor(guiLease)
+            if (vd?.active == true && vd.displayId == displayId && vd.width > 0 && vd.height > 0) {
                 return vd.width to vd.height
             }
         }
@@ -1058,6 +1185,7 @@ internal class RootShellDeviceController(
         targetIndex: Int?,
         amount: ScrollAmount = ScrollAmount.PAGE,
         displayId: Int = Display.DEFAULT_DISPLAY,
+        expectedLease: VirtualDisplayLease? = guiLease,
     ): String {
         val startedAt = SystemClock.elapsedRealtime()
         val gesture = direction.gestureWithin(bounds, amount)
@@ -1067,10 +1195,22 @@ internal class RootShellDeviceController(
                 "INVALID_NODE_BOUNDS",
                 "滚动区域过小或不在屏幕内",
             )
-        val result = runSuText(
-            "${inputCommandPrefix(displayId)} swipe ${gesture.start.x} ${gesture.start.y} " +
-                "${gesture.end.x} ${gesture.end.y} 300",
-            timeoutSeconds = 8,
+        val command = "${inputCommandPrefix(displayId)} swipe ${gesture.start.x} ${gesture.start.y} " +
+            "${gesture.end.x} ${gesture.end.y} 300"
+        var commandResult: ShellTextResult? = null
+        val invoke = { commandResult = runSuText(command, timeoutSeconds = 8) }
+        val dispatched = if (CanvasRoutingPolicy.isVirtualDisplay(displayId)) {
+            VirtualDisplayController.dispatchIfLeaseCurrent(expectedLease, invoke)
+        } else {
+            invoke()
+            true
+        }
+        if (!dispatched) return scrollErrorJson(
+            tool, direction, "DISPLAY_LEASE_EXPIRED",
+            "虚拟屏操作所属会话已变化；本次滚动未发送，请重新观察后再操作。",
+        )
+        val result = commandResult ?: return scrollErrorJson(
+            tool, direction, "ACTION_FAILED", "Root 滚动命令未返回结果",
         )
         if (result.output == "ROOT_REQUIRED" && result.exitCode == -1) return rootRequired()
         val commandOutcome = ShellActionOutcomePolicy.classify(result.exitCode)
@@ -1229,6 +1369,20 @@ internal class RootShellDeviceController(
         }
     }
 
+    private fun inputCommandForLease(
+        command: String,
+        tool: String,
+        displayId: Int,
+        expectedLease: VirtualDisplayLease?,
+    ): String {
+        if (!CanvasRoutingPolicy.isVirtualDisplay(displayId)) return inputCommand(command, tool)
+        var result: String? = null
+        val dispatched = VirtualDisplayController.dispatchIfLeaseCurrent(expectedLease) {
+            result = inputCommand(command, tool)
+        }
+        return result ?: if (dispatched) errorJson("ACTION_FAILED", "Root 输入未返回结果") else expiredDisplayLease(tool)
+    }
+
     private fun waitForUiSettle(tool: String) {
         val delayMs = when (tool) {
             "tap", "long_press", "press_key" -> 350L
@@ -1383,6 +1537,26 @@ internal class RootShellDeviceController(
     )
 
     private fun rootRequired(): String = errorJson("ROOT_REQUIRED", "此操作需要设备 Root 权限")
+
+    /** The active GUI lease must name this display and still be the current session's lease. */
+    private fun displayOwnedByGuiRun(displayId: Int): Boolean {
+        val lease = guiLease ?: return false
+        return lease.displayId == displayId && VirtualDisplayController.validate(lease)
+    }
+
+    private fun isActionLeaseCurrent(displayId: Int, lease: VirtualDisplayLease?): Boolean =
+        !CanvasRoutingPolicy.isVirtualDisplay(displayId) ||
+            lease != null && lease.displayId == displayId && VirtualDisplayController.validate(lease)
+
+    private fun expiredDisplayLease(tool: String): String = errorJson(
+        "DISPLAY_LEASE_EXPIRED",
+        "虚拟屏操作所属会话已变化；$tool 未发送，请重新观察后再操作。",
+    )
+
+    private fun displayOwnedByAnotherRun(): String = errorJson(
+        "DISPLAY_OWNED_BY_ANOTHER_RUN",
+        "虚拟屏正由另一个运行使用；本次未观察或操作该屏幕，请等待该运行结束。",
+    )
 
     private fun scrollErrorJson(
         tool: String,

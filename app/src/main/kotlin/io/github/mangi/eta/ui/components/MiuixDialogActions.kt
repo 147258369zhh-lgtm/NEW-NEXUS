@@ -1,6 +1,9 @@
 package io.github.mangi.eta.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Arrangement
@@ -22,7 +25,7 @@ import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /**
- * 弹窗底部按钮行：取消在左、确认在右，平分整行，中间保持 Miuix 标准 20.dp 间距。
+ * 弹窗共用操作区：常规宽度左右排列，窄屏或大字体纵向排列，保证文字和触控空间。
  *
  * @param confirmText 确认按钮文案。
  * @param onCancel 取消回调。
@@ -57,31 +60,45 @@ fun MiuixDialogActions(
                 ),
         )
         Spacer(Modifier.height(8.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
+        val cancelButton: @Composable (Modifier) -> Unit = { buttonModifier ->
             TextButton(
                 text = cancelText ?: stringResource(R.string.action_cancel),
                 onClick = onCancel,
                 enabled = cancelEnabled,
-                modifier = Modifier.weight(1f),
+                modifier = buttonModifier.heightIn(min = 48.dp)
+                    .then(if (tokens.skin.isGlass) Modifier.etaGlassSurface(cornerRadius = 16.dp) else Modifier),
             )
-            Spacer(Modifier.width(tokens.dialogActionSpacing))
+        }
+        val confirmButton: @Composable (Modifier) -> Unit = { buttonModifier ->
             TextButton(
                 text = confirmText,
                 onClick = onConfirm,
                 enabled = confirmEnabled,
-                modifier = Modifier.weight(1f),
+                modifier = buttonModifier.heightIn(min = 48.dp)
+                    .then(if (tokens.skin.isGlass) Modifier.etaGlassSurface(
+                        accent = if (destructive) MiuixTheme.colorScheme.error else tokens.accent,
+                        cornerRadius = 16.dp,
+                    ) else Modifier),
                 colors = if (destructive) {
                     ButtonDefaults.textButtonColorsPrimary(
                         color = MiuixTheme.colorScheme.error,
                         textColor = MiuixTheme.colorScheme.onError,
                     )
-                } else {
-                    ButtonDefaults.textButtonColorsPrimary()
-                },
+                } else ButtonDefaults.textButtonColorsPrimary(),
             )
+        }
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            if (maxWidth < 320.dp || LocalDensity.current.fontScale >= 1.3f) {
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    cancelButton(Modifier.fillMaxWidth())
+                    confirmButton(Modifier.fillMaxWidth())
+                }
+            } else {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(tokens.dialogActionSpacing)) {
+                    cancelButton(Modifier.weight(1f))
+                    confirmButton(Modifier.weight(1f))
+                }
+            }
         }
     }
 }

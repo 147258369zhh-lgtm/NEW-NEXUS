@@ -90,6 +90,7 @@ internal data class LocalModelRecord(
     val boundModelSelectionId: String? = null,
     val runtimeSettings: LocalModelRuntimeSettings = LocalModelRuntimeSettings(),
     val lastBenchmark: LocalModelPerformanceResult? = null,
+    val archiveSha256: String? = null,
 ) {
     val supportsVision: Boolean
         get() = Model.IMAGE_MODALITY in inputModalities || Model.IMAGE_MODALITY in outputModalities
@@ -369,6 +370,20 @@ internal data class LocalModelPreset(
             outputModalities = listOf(Model.TEXT_MODALITY),
         )
 
+        // OpenBMB's own QAT GGUF, checked against its public LFS metadata. The architecture,
+        // vocabulary and ChatML template are consumed by llama.cpp from the GGUF itself.
+        val MiniCpm4HalfB = LocalModelPreset(
+            id = "minicpm4-0.5b-qat-int4-gguf",
+            url = "https://hf-mirror.com/openbmb/MiniCPM4-0.5B-QAT-Int4-GGUF/resolve/4d70679dbea99c0dfa7bef0c6fa1bffc25997246/MiniCPM4-0.5B-QAT-Int4_gptq_aware_q4_0.gguf",
+            fallbackUrls = listOf("https://huggingface.co/openbmb/MiniCPM4-0.5B-QAT-Int4-GGUF/resolve/4d70679dbea99c0dfa7bef0c6fa1bffc25997246/MiniCPM4-0.5B-QAT-Int4_gptq_aware_q4_0.gguf"),
+            expectedSizeBytes = 265_307_040L,
+            expectedSha256 = "fa4ad3f448355578ce5e4021204be319e5a3cb665fb173607f92bc139c96a290",
+            license = "Apache-2.0",
+            inputModalities = listOf(Model.TEXT_MODALITY),
+            outputModalities = listOf(Model.TEXT_MODALITY),
+            displayName = "MiniCPM 4 0.5B · 面壁 · GGUF",
+        )
+
         val Qwen3OnePointSevenB = LocalModelPreset(
             id = "qwen3-1.7b-litert-lm",
             url = "https://modelscope.cn/models/litert-community/Qwen3-1.7B/resolve/master/Qwen3-1.7B_dynamic_wi4b32_afp32.litertlm",
@@ -421,6 +436,42 @@ internal data class LocalModelPreset(
             outputModalities = listOf(Model.TEXT_MODALITY),
         )
 
+        val ZipformerChineseOnnx = LocalModelPreset("zipformer-zh-14m-onnx",
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23-mobile.tar.bz2",
+            fallbackUrls = listOf("https://ghproxy.net/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23-mobile.tar.bz2"),
+            expectedSizeBytes = 54_344_380, expectedSha256 = "d394cab72b17f788b8b09ffc610f5f070e610fecf022eedca2eae9e38be4f20a",
+            license = "见模型仓库", inputModalities = listOf("audio"), outputModalities = listOf("text"), displayName = "Zipformer 14M 中文 · ONNX")
+        val SenseVoiceOnnx = LocalModelPreset("sensevoice-small-int8-onnx",
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2",
+            fallbackUrls = listOf("https://ghproxy.net/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2"),
+            expectedSizeBytes = 165_783_878, expectedSha256 = "7305f7905bfcf77fa0b39388a313f3da35c68d971661a65475b56fb2162c8e63",
+            license = "见模型仓库", inputModalities = listOf("audio"), outputModalities = listOf("text"), displayName = "SenseVoice Small 多语种 · ONNX")
+        val WhisperTinyOnnx = LocalModelPreset("whisper-tiny-onnx",
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-tiny.tar.bz2",
+            fallbackUrls = listOf("https://ghproxy.net/https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-tiny.tar.bz2"),
+            expectedSizeBytes = 116_204_861, expectedSha256 = "c46116994e539aa165266d96b325252728429c12535eb9d8b6a2b10f129e66b1",
+            license = "MIT", inputModalities = listOf("audio"), outputModalities = listOf("text"), displayName = "Whisper Tiny 多语种 · ONNX")
+        val VitsChineseOnnx = LocalModelPreset("vits-aishell3-zh-onnx",
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-icefall-zh-aishell3.tar.bz2",
+            fallbackUrls = listOf("https://ghproxy.net/https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-icefall-zh-aishell3.tar.bz2"),
+            expectedSizeBytes = 31_559_701, expectedSha256 = "ab468db3a3308cdd861495e0db2f25d79418a0c00639f74944c7cdf5dd8c6ec1",
+            license = "见模型仓库", inputModalities = listOf("text"), outputModalities = listOf("audio"), displayName = "VITS 中文多音色 · ONNX")
+        val KokoroOnnx = LocalModelPreset("kokoro-multi-onnx",
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2",
+            fallbackUrls = listOf("https://ghproxy.net/https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2"),
+            expectedSizeBytes = 349_886_476, expectedSha256 = "60703707bc05ccd48d60e1eb723f38b07d6e474795a0b6a588d7220400e0f7a4",
+            license = "Apache-2.0", inputModalities = listOf("text"), outputModalities = listOf("audio"), displayName = "Kokoro 多语种多音色 · ONNX")
+        val WakeZipformer = LocalModelPreset("wake-zipformer-3m-onnx",
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01-mobile.tar.bz2",
+            fallbackUrls = listOf("https://ghproxy.net/https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01-mobile.tar.bz2"),
+            expectedSizeBytes = 15_292_881, expectedSha256 = "b812a043aef628a6915f89cb9a94e55f8e87e89ff904b516f822d7e0a3e6de2b",
+            license = "见模型仓库", inputModalities = listOf("audio"), outputModalities = listOf("keyword"), displayName = "Zipformer 3.3M 中文唤醒")
+        val SpeakerCampPlus = LocalModelPreset("speaker-campplus-zh-en-onnx",
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx",
+            fallbackUrls = listOf("https://ghproxy.net/https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"),
+            expectedSizeBytes = 28_281_164, expectedSha256 = "aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2",
+            license = "见模型仓库", inputModalities = listOf("audio"), outputModalities = listOf("speaker_embedding"), displayName = "CAMPPlus 中英声纹")
+
         val all = listOf(
             Qwen3DynamicInt4,
             Gemma3OneBInt4,
@@ -434,9 +485,17 @@ internal data class LocalModelPreset(
             ParakeetTdt06B,
             Qwen3Asr06B,
             MoonshineTiny,
+            ZipformerChineseOnnx,
+            SenseVoiceOnnx,
+            WhisperTinyOnnx,
+            VitsChineseOnnx,
+            KokoroOnnx,
+            WakeZipformer,
+            SpeakerCampPlus,
             EmbeddingGemma2,
             Qwen3NpuSm8650,
             Qwen25Small,
+            MiniCpm4HalfB,
             Qwen3OnePointSevenB,
             Qwen25OnePointFiveB,
             Qwen25ThreeB,
@@ -655,6 +714,8 @@ internal object LocalModelRepository {
 
     @Volatile
     private var applicationContext: Context? = null
+    @Volatile
+    private var catalogContext: Context? = null
 
     val models: StateFlow<List<LocalModelRecord>> = mutableModels.asStateFlow()
     val download: StateFlow<LocalModelDownloadState> = mutableDownload.asStateFlow()
@@ -669,14 +730,21 @@ internal object LocalModelRepository {
                 (output == null || output in record.outputModalities)
         }
 
+    /** Binds the process context without reading the catalog; callers can load the catalog lazily. */
+    fun bind(context: Context) {
+        val app = context.applicationContext
+        if (applicationContext !== app) applicationContext = app
+    }
+
     fun init(context: Context) {
         val app = context.applicationContext
-        if (applicationContext === app) return
+        bind(app)
+        if (catalogContext === app) return
         synchronized(this) {
-            if (applicationContext === app) return
-            applicationContext = app
+            if (catalogContext === app) return
             mutableModels.value = readCatalog(app).models.sortedByDescending { it.installedAt }
             mutableDownload.value = readDownloadState(app)
+            catalogContext = app
         }
     }
 
@@ -694,7 +762,14 @@ internal object LocalModelRepository {
 
     suspend fun refresh() = withContext(Dispatchers.IO) {
         val context = requireContext()
-        mutex.withLock { mutableModels.value = readCatalog(context).models.sortedByDescending { it.installedAt } }
+        val app = context.applicationContext
+        val models = readCatalog(context).models.sortedByDescending { it.installedAt }
+        val download = readDownloadState(context)
+        mutex.withLock {
+            mutableModels.value = models
+            mutableDownload.value = download
+            catalogContext = app
+        }
         runCatching { reconcileDownloadState(context) }
         runCatching { cleanupStaleDownloads(context) }
     }
@@ -802,7 +877,7 @@ internal object LocalModelRepository {
         val appContext = context.applicationContext
         val resolver = appContext.contentResolver
         val fileName = queryDisplayName(appContext, uri)?.trim().orEmpty()
-        if (fileName.endsWith(".zip", ignoreCase = true)) {
+        if (io.github.mangi.eta.agent.voice.SpeechModelPackage.isArchive(fileName)) {
             return@withContext importMnnZipUri(appContext, uri, fileName)
         }
         val format = LocalModelFormat.fromFileName(fileName) ?: throw LocalModelException(
@@ -840,8 +915,8 @@ internal object LocalModelRepository {
                 sha256 = sha,
                 sourceUrl = uri.toString(),
                 license = null,
-                inputModalities = listOf(Model.TEXT_MODALITY),
-                outputModalities = listOf(Model.TEXT_MODALITY),
+                inputModalities = if (format == LocalModelFormat.ONNX && fileName.contains("speaker", true)) listOf("audio") else listOf(Model.TEXT_MODALITY),
+                outputModalities = if (format == LocalModelFormat.ONNX && fileName.contains("speaker", true)) listOf("speaker_embedding") else listOf(Model.TEXT_MODALITY),
             )
         } catch (failure: Exception) {
             part.delete()
@@ -864,12 +939,18 @@ internal object LocalModelRepository {
                 copyLimited(source, archive, availableArtifactBudget(context))
             }
             if (bytes <= 0) throw LocalModelException("MNN 模型压缩包为空")
+            val importContext = currentCoroutineContext()
             val modelRoot = FileInputStream(archive).use { input ->
-                MnnModelPackage.extractZip(
+                io.github.mangi.eta.agent.voice.SpeechModelPackage.extract(
                     input = input,
-                    destination = unpack,
+                    name = fileName,
+                    target = unpack,
                     maxBytes = availableArtifactBudget(context),
+                    checkActive = { importContext.ensureActive() },
                 )
+            }
+            io.github.mangi.eta.agent.voice.SpeechModelPackage.inspect(modelRoot)?.let { speech ->
+                return installSpeechDirectory(context, id, fileName.substringBefore('.'), speech, uri.toString(), archiveSha256 = LocalModelFiles.sha256(archive))
             }
             val size = MnnModelPackage.directorySize(modelRoot)
             val sha = MnnModelPackage.sha256(modelRoot)
@@ -909,6 +990,10 @@ internal object LocalModelRepository {
                 target = staging,
                 maxBytes = availableArtifactBudget(appContext),
             )
+            io.github.mangi.eta.agent.voice.SpeechModelPackage.findRoot(staging)?.let { speech ->
+                return@withContext installSpeechDirectory(appContext, id,
+                    documentDisplayName(appContext, treeUri, rootDocumentId) ?: speech.root.name, speech, treeUri.toString())
+            }
             val root = MnnModelPackage.findModelRoot(staging)
                 ?: throw LocalModelException(
                     "MNN 文件夹不完整：需要 config.json、llm.mnn 及权重/tokenizer 文件",
@@ -1018,6 +1103,7 @@ internal object LocalModelRepository {
         require(MnnModelPackage.isModelDirectory(sourceDirectory)) {
             "MNN 模型目录不完整：需要 config.json 与 llm.mnn"
         }
+        MnnModelPackage.validateForRuntime(sourceDirectory)
         val duplicate = mutex.withLock {
             mutableModels.value.firstOrNull { existing ->
                 existing.format == LocalModelFormat.MNN &&
@@ -1061,6 +1147,36 @@ internal object LocalModelRepository {
             writeCatalog(context, updated)
             mutableModels.value = updated.models.sortedByDescending { it.installedAt }
         }
+        return record
+    }
+
+    private suspend fun installSpeechDirectory(context: Context, id: String, displayName: String,
+        spec: io.github.mangi.eta.agent.voice.SpeechModelSpec, sourceUrl: String?, license: String? = null, archiveSha256: String? = null): LocalModelRecord {
+        val hash = io.github.mangi.eta.agent.voice.SpeechModelPackage.directoryHash(spec.root)
+        val size = io.github.mangi.eta.agent.voice.SpeechModelPackage.directorySize(spec.root)
+        val duplicate = mutex.withLock { mutableModels.value.firstOrNull {
+            it.format == LocalModelFormat.ONNX && it.sha256 == hash && modelDirectory(context).resolve(it.fileName).isDirectory
+        } }
+        if (duplicate != null) return mutateRecord(duplicate.id) {
+            it.copy(archiveSha256 = archiveSha256 ?: it.archiveSha256,
+                sourceUrl = it.sourceUrl?.takeIf(String::isNotBlank) ?: sourceUrl, license = it.license ?: license)
+        }
+        val target = modelDirectory(context).resolve(LocalModelFiles.safeFileName("${hash.take(16)}-${spec.root.name}"))
+        check(!target.exists()) { "语音模型目录已存在但未登记，请先核对文件" }
+        check(spec.root.renameTo(target)) { "语音模型写入失败" }
+        val record = LocalModelRecord(id = id, displayName = displayName.ifBlank { spec.root.name }, fileName = target.name,
+            format = LocalModelFormat.ONNX, sizeBytes = size, sha256 = hash, sourceUrl = sourceUrl, license = license, archiveSha256 = archiveSha256,
+            runtime = LocalModelRuntime.BUILT_IN_PENDING,
+            inputModalities = listOf(if (spec.kind == io.github.mangi.eta.agent.voice.LocalSpeechKind.TTS) "text" else "audio"),
+            outputModalities = listOf(when(spec.architecture) { "keyword-spotter" -> "keyword"; "speaker-embedding" -> "speaker_embedding"
+                else -> if (spec.kind == io.github.mangi.eta.agent.voice.LocalSpeechKind.TTS) "audio" else "text" }))
+        try {
+            mutex.withLock {
+                val current = readCatalog(context)
+                val next = current.copy(models = current.models + record)
+                writeCatalog(context, next); mutableModels.value = next.models.sortedByDescending { it.installedAt }
+            }
+        } catch (failure: Exception) { target.deleteRecursively(); throw failure }
         return record
     }
 
@@ -1371,16 +1487,17 @@ internal object LocalModelRepository {
         val record = mutableModels.value.firstOrNull { it.id == recordId }
             ?: throw IllegalArgumentException("本地模型记录不存在")
         val file = modelDirectory(context).resolve(record.fileName)
-        require(if (record.format == LocalModelFormat.MNN) file.isDirectory else file.isFile) {
+        val directoryModel = record.format == LocalModelFormat.MNN || record.format == LocalModelFormat.ONNX && file.isDirectory
+        require(if (directoryModel) file.isDirectory else file.isFile) {
             "模型${if (record.format == LocalModelFormat.MNN) "目录" else "文件"}已丢失，请重新导入或下载"
         }
-        val actualSize = if (record.format == LocalModelFormat.MNN) {
+        val actualSize = if (directoryModel) {
             MnnModelPackage.directorySize(file)
         } else {
             file.length()
         }
         require(actualSize == record.sizeBytes) { "模型文件大小与记录不一致" }
-        val sha = if (record.format == LocalModelFormat.MNN) {
+        val sha = if (directoryModel) {
             MnnModelPackage.sha256(file)
         } else {
             LocalModelFiles.sha256(file)
@@ -1389,7 +1506,8 @@ internal object LocalModelRepository {
         if (record.format == LocalModelFormat.MNN) {
             require(MnnModelPackage.isModelDirectory(file)) { "MNN 模型目录不完整" }
         } else {
-            validateArtifact(file, record.format)
+            if (record.format == LocalModelFormat.ONNX && file.isDirectory) requireNotNull(io.github.mangi.eta.agent.voice.SpeechModelPackage.inspect(file))
+            else validateArtifact(file, record.format)
         }
         mutateRecord(record.id) { it.copy(lastVerifiedAt = System.currentTimeMillis()) }
     }
@@ -1418,6 +1536,7 @@ internal object LocalModelRepository {
         val nameFromUrl = validated.toHttpUrlOrNull()?.pathSegments?.lastOrNull().orEmpty()
         val sourceName = nameFromUrl.ifBlank { displayName }
         val format = LocalModelFormat.fromFileName(sourceName)
+            ?: LocalModelFormat.ONNX.takeIf { io.github.mangi.eta.agent.voice.SpeechModelPackage.isArchive(sourceName) }
             ?: throw LocalModelException("下载地址必须指向受支持的模型文件")
         val part = downloadDirectory(context).resolve("$id.part")
         val metaFile = partMetaFile(context, id)
@@ -1554,6 +1673,17 @@ internal object LocalModelRepository {
             val sha = LocalModelFiles.sha256(part)
             if (!expectedSha.isNullOrBlank() && !sha.equals(expectedSha, ignoreCase = true)) {
                 throw LocalModelException("模型 SHA-256 校验失败，临时文件已删除")
+            }
+            if (io.github.mangi.eta.agent.voice.SpeechModelPackage.isArchive(sourceName)) {
+                val unpack = downloadDirectory(context).resolve("$id.speech-unpack")
+                try {
+                    val downloadContext = currentCoroutineContext()
+                    val root = FileInputStream(part).use { input -> io.github.mangi.eta.agent.voice.SpeechModelPackage.extract(input, sourceName, unpack, availableArtifactBudget(context)) { downloadContext.ensureActive() } }
+                    val speech = io.github.mangi.eta.agent.voice.SpeechModelPackage.inspect(root)
+                    val installed = if (speech != null) installSpeechDirectory(context, id, displayName, speech, validated, license, sha)
+                        else installMnnDirectory(context, id, displayName, root, sourceName, MnnModelPackage.directorySize(root), MnnModelPackage.sha256(root), validated)
+                    part.delete(); metaFile.delete(); return@withContext installed
+                } finally { unpack.deleteRecursively() }
             }
             validateArtifactOrDelete(part, format, metaFile)
             installArtifact(
@@ -1860,6 +1990,7 @@ internal object LocalModelRepository {
             require(prefix.size >= 4 && String(prefix, 0, 4, Charsets.US_ASCII) == "GGUF") {
                 "文件扩展名为 GGUF，但文件头无效"
             }
+            io.github.mangi.eta.agent.model.GgufModelMetadata.inspect(file).validateTextRuntime()
         }
         if (format == LocalModelFormat.LITERT_LM) {
             require(prefix.size >= 8 && String(prefix, 0, 8, Charsets.US_ASCII) == "LITERTLM") {
@@ -1947,6 +2078,7 @@ internal object LocalModelRepository {
 
     internal fun presetForRecord(record: LocalModelRecord): LocalModelPreset? {
         record.sourceUrl?.let(::presetFor)?.let { return it }
+        record.archiveSha256?.let { archive -> LocalModelPreset.all.firstOrNull { it.expectedSha256?.equals(archive, true) == true }?.let { return it } }
         if (!record.sha256.isBlank()) {
             LocalModelPreset.all.firstOrNull { preset ->
                 preset.expectedSha256?.equals(record.sha256, ignoreCase = true) == true
@@ -2082,7 +2214,7 @@ internal object LocalModelFiles {
 
     fun formatFromUrl(value: String): LocalModelFormat? {
         val path = runCatching { Uri.parse(value).lastPathSegment }.getOrNull().orEmpty()
-        return LocalModelFormat.fromFileName(path)
+        return LocalModelFormat.fromFileName(path) ?: LocalModelFormat.ONNX.takeIf { io.github.mangi.eta.agent.voice.SpeechModelPackage.isArchive(path) }
     }
 
     fun shortHash(value: String, length: Int): String =
@@ -2226,7 +2358,7 @@ internal class LocalModelDownloadWorker(
             LocalModelRepository.completeDownload(
                 applicationContext,
                 LocalModelDownloadState(
-                    id = id,
+                    id = completed.id,
                     displayName = completed.displayName,
                     stage = LocalModelDownloadStage.COMPLETED,
                     bytesDownloaded = completed.sizeBytes,

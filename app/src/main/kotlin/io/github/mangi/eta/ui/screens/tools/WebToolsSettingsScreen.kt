@@ -1,5 +1,6 @@
 package io.github.mangi.eta.ui.screens.tools
 
+import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -14,6 +15,9 @@ import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.mutableIntStateOf
+import io.github.mangi.eta.ui.components.NexusSettingsTabs
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -37,18 +41,25 @@ import io.github.mangi.eta.ui.components.ListEmptyState
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.StatusError
 import io.github.mangi.eta.ui.components.StatusSuccess
+import io.github.mangi.eta.ui.components.StatusWarning
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle as SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
+import io.github.mangi.eta.ui.components.NexusSettingsDropdownPreference as OverlayDropdownPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+
+// These are settings-page choices, not CloudCapabilities runtime operations.
+internal enum class WebToolsCapability(val operation: String, @StringRes val title: Int) {
+    SEARCH("web_search", R.string.web_tools_search_service),
+    FETCH("web_fetch", R.string.web_tools_fetch_service),
+}
 
 @Composable
 internal fun WebToolsSettingsScreen(onBack: () -> Unit) {
@@ -61,7 +72,17 @@ internal fun WebToolsSettingsScreen(onBack: () -> Unit) {
     val usesRemote = settings.searchBackend != WebToolBackend.BUILTIN ||
         settings.fetchBackend != WebToolBackend.BUILTIN
 
+    var category by rememberSaveable { mutableIntStateOf(0) }
+    val serviceList = rememberLazyListState()
+    val searchList = rememberLazyListState()
+    val fetchList = rememberLazyListState()
     MiuixScaffoldPage(
+        listState = listOf(serviceList, searchList, fetchList)[category],
+        aboveContent = { NexusSettingsTabs(listOf(
+            stringResource(R.string.web_tools_group_service),
+            stringResource(R.string.web_tools_group_custom_search),
+            stringResource(R.string.web_tools_group_custom_fetch),
+        ), category, { category = it }) },
         title = stringResource(R.string.web_tools_settings_title),
         onBack = onBack,
         modifier = Modifier.imePadding(),
@@ -70,36 +91,16 @@ internal fun WebToolsSettingsScreen(onBack: () -> Unit) {
             item(key = "loading") { WebToolsLoadingState(store.message) }
             return@MiuixScaffoldPage
         }
-        item(key = "service") {
-            val searchBackendLabels = WebToolBackend.entries.map { it.searchLabel() }
-            val fetchBackendLabels = WebToolBackend.entries.map { it.fetchLabel() }
+        if (category == 0) item(key = "service") {
             Column {
                 SmallTitle(stringResource(R.string.web_tools_group_service))
                 Card(
                     modifier = Modifier
-                        .padding(horizontal = 12.dp)
+                        .padding(horizontal = 16.dp)
                         .padding(bottom = 12.dp),
                 ) {
-                    OverlayDropdownPreference(
-                        title = stringResource(R.string.web_tools_search_service),
-                        items = searchBackendLabels,
-                        selectedIndex = settings.searchBackend.ordinal,
-                        onSelectedIndexChange = { index ->
-                            WebToolBackend.entries.getOrNull(index)?.let {
-                                store.edit(settings.copy(searchBackend = it))
-                            }
-                        },
-                    )
-                    OverlayDropdownPreference(
-                        title = stringResource(R.string.web_tools_fetch_service),
-                        items = fetchBackendLabels,
-                        selectedIndex = settings.fetchBackend.ordinal,
-                        onSelectedIndexChange = { index ->
-                            WebToolBackend.entries.getOrNull(index)?.let {
-                                store.edit(settings.copy(fetchBackend = it))
-                            }
-                        },
-                    )
+                    WebToolsServicePreference(store, WebToolsCapability.SEARCH)
+                    WebToolsServicePreference(store, WebToolsCapability.FETCH)
                 }
                 WebToolsNote(
                     stringResource(
@@ -109,25 +110,84 @@ internal fun WebToolsSettingsScreen(onBack: () -> Unit) {
                 )
             }
         }
-        if (usesDeepSeek) {
+        if (category == 0 && usesDeepSeek) {
             item(key = "deepseek") {
                 DeepSeekWebSection(store)
             }
         }
-        if (settings.searchBackend == WebToolBackend.CUSTOM) {
+        if (category == 1 && settings.searchBackend == WebToolBackend.CUSTOM) {
             item(key = "custom_search") {
                 CustomSearchSection(store)
             }
         }
-        if (settings.fetchBackend == WebToolBackend.CUSTOM) {
+        if (category == 2 && settings.fetchBackend == WebToolBackend.CUSTOM) {
             item(key = "custom_fetch") {
                 CustomFetchSection(store)
             }
+        }
+        if ((category == 1 && settings.searchBackend != WebToolBackend.CUSTOM) ||
+            (category == 2 && settings.fetchBackend != WebToolBackend.CUSTOM)) item(key = "managed-interface") {
+            WebToolsNote(stringResource(R.string.settings_web_managed_interface))
         }
         item(key = "save") {
             WebToolsSaveBlock(store)
         }
     }
+}
+
+/** Reuses the web settings owner and fields without embedding another settings scaffold. */
+@Composable
+internal fun WebToolsCapabilitySection(store: WebToolsSettingsStore, capability: WebToolsCapability) {
+    if (!store.loaded) {
+        WebToolsLoadingState(store.message)
+        return
+    }
+    val backend = when (capability) {
+        WebToolsCapability.SEARCH -> store.settings.searchBackend
+        WebToolsCapability.FETCH -> store.settings.fetchBackend
+    }
+    Column {
+        SmallTitle(stringResource(capability.title))
+        Card(modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 12.dp)) {
+            WebToolsServicePreference(store, capability)
+        }
+        WebToolsNote(stringResource(
+            if (backend == WebToolBackend.BUILTIN) R.string.web_tools_overview_builtin_note
+            else R.string.web_tools_overview_remote_note,
+        ))
+        when (backend) {
+            WebToolBackend.BUILTIN -> Unit
+            WebToolBackend.DEEPSEEK -> DeepSeekWebSection(store)
+            WebToolBackend.CUSTOM -> when (capability) {
+                WebToolsCapability.SEARCH -> CustomSearchSection(store)
+                WebToolsCapability.FETCH -> CustomFetchSection(store)
+            }
+        }
+    }
+}
+
+@Composable
+private fun WebToolsServicePreference(store: WebToolsSettingsStore, capability: WebToolsCapability) {
+    val settings = store.settings
+    val backend = when (capability) {
+        WebToolsCapability.SEARCH -> settings.searchBackend
+        WebToolsCapability.FETCH -> settings.fetchBackend
+    }
+    OverlayDropdownPreference(
+        title = stringResource(capability.title),
+        items = WebToolBackend.entries.map {
+            if (capability == WebToolsCapability.SEARCH) it.searchLabel() else it.fetchLabel()
+        },
+        selectedIndex = backend.ordinal,
+        onSelectedIndexChange = { index ->
+            WebToolBackend.entries.getOrNull(index)?.let { selected ->
+                store.edit(when (capability) {
+                    WebToolsCapability.SEARCH -> settings.copy(searchBackend = selected)
+                    WebToolsCapability.FETCH -> settings.copy(fetchBackend = selected)
+                })
+            }
+        },
+    )
 }
 
 @Composable
@@ -142,7 +202,7 @@ private fun DeepSeekWebSection(store: WebToolsSettingsStore) {
         SmallTitle(stringResource(R.string.web_tools_backend_deepseek))
         Card(
             modifier = Modifier
-                .padding(horizontal = 12.dp)
+                .padding(horizontal = 16.dp)
                 .padding(bottom = 12.dp),
         ) {
             WebToolsFieldColumn {
@@ -204,7 +264,7 @@ private fun CustomSearchSection(store: WebToolsSettingsStore) {
         SmallTitle(stringResource(R.string.web_tools_group_custom_search))
         Card(
             modifier = Modifier
-                .padding(horizontal = 12.dp)
+                .padding(horizontal = 16.dp)
                 .padding(bottom = 12.dp),
         ) {
             OverlayDropdownPreference(
@@ -311,7 +371,7 @@ private fun CustomFetchSection(store: WebToolsSettingsStore) {
         SmallTitle(stringResource(R.string.web_tools_group_custom_fetch))
         Card(
             modifier = Modifier
-                .padding(horizontal = 12.dp)
+                .padding(horizontal = 16.dp)
                 .padding(bottom = 12.dp),
         ) {
             OverlayDropdownPreference(
@@ -478,17 +538,25 @@ private fun WebToolsField(
 }
 
 @Composable
-private fun WebToolsSaveBlock(store: WebToolsSettingsStore) {
+internal fun WebToolsSaveBlock(store: WebToolsSettingsStore, showPendingState: Boolean = false) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp)
+            .padding(horizontal = 16.dp)
             .padding(top = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        if (showPendingState) {
+            Text(
+                text = stringResource(if (store.hasUnsavedChanges) R.string.cloud_tools_pending else R.string.cloud_tools_no_pending),
+                style = MiuixTheme.textStyles.footnote2,
+                color = if (store.hasUnsavedChanges) StatusWarning else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+        }
         TextButton(
             text = stringResource(if (store.saving) R.string.speech_saving else R.string.speech_save),
-            enabled = store.loaded && !store.saving,
+            enabled = store.editable && store.hasUnsavedChanges,
             modifier = Modifier.fillMaxWidth(),
             colors = ButtonDefaults.textButtonColorsPrimary(),
             onClick = store::save,

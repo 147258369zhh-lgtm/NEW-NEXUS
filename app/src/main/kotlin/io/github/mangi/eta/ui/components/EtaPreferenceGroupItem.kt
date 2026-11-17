@@ -7,7 +7,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.dp
+import io.github.mangi.eta.ui.app.LocalEtaDesignTokens
 import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.LocalContentColor
@@ -22,25 +25,32 @@ internal fun EtaPreferenceGroupItem(
     content: @Composable () -> Unit,
 ) {
     val colors = MiuixTheme.colorScheme
+    val settings = LocalNexusSettingsVisuals.current
+    val glass = LocalEtaDesignTokens.current.skin.isGlass
     val radius = CardDefaults.CornerRadius
+    val surfaceColor = if (settings) settingsCardColor() else if (glass) colors.secondaryVariant.copy(alpha = 0.88f) else colors.surfaceContainer
     val surface = if (isFirst || isLast) {
         Modifier.squircleSurface(
-            color = colors.surfaceContainer,
+            color = surfaceColor,
             topStart = if (isFirst) radius else 0.dp,
             topEnd = if (isFirst) radius else 0.dp,
             bottomStart = if (isLast) radius else 0.dp,
             bottomEnd = if (isLast) radius else 0.dp,
         )
     } else {
-        Modifier.background(colors.surfaceContainer)
+        Modifier.background(surfaceColor)
     }
     CompositionLocalProvider(LocalContentColor provides colors.onSurfaceContainer) {
         Column(
             modifier = modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp)
-                .padding(bottom = if (isLast) 12.dp else 0.dp)
-                .then(surface),
+                .padding(horizontal = if (settings) 16.dp else 12.dp)
+                .padding(bottom = if (isLast) { if (settings) 8.dp else 12.dp } else 0.dp)
+                .then(surface)
+                .drawBehind {
+                    if (settings && !isFirst) drawLine(colors.outline,
+                        Offset(48.dp.toPx(), 0f), Offset(size.width - 16.dp.toPx(), 0f), 0.5.dp.toPx())
+                },
         ) {
             content()
         }

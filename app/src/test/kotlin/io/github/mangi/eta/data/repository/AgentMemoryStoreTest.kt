@@ -17,6 +17,25 @@ class AgentMemoryStoreTest {
     @get:Rule
     val temporaryFolder = TemporaryFolder()
 
+    @Test fun interruptedLegacyAtomicWriteRecoversBackupBeforeReturningTheSnapshot() {
+        val root = temporaryFolder.newFolder()
+        val directory = java.io.File(root, "memory").apply { mkdirs() }
+        java.io.File(directory, "MEMORY.md.bak").writeText("仍需保留的记忆")
+        val recovered = AgentMemoryStore(root).snapshot()
+        assertEquals("仍需保留的记忆", recovered.content)
+        assertTrue(java.io.File(directory, "MEMORY.md").isFile)
+    }
+
+    @Test fun oversizedImportedMemoryIsRejectedWhileReadingAndPreservesTheFile() {
+        val root = temporaryFolder.newFolder()
+        val directory = java.io.File(root, "memory").apply { mkdirs() }
+        val file = java.io.File(directory, "MEMORY.md")
+        file.writeBytes(ByteArray(AgentMemoryStore.MAX_FILE_BYTES + 1))
+        val failure = assertThrows(AgentMemoryException::class.java) { AgentMemoryStore(root).snapshot() }
+        assertEquals("MEMORY_TOO_LARGE", failure.code)
+        assertEquals(AgentMemoryStore.MAX_FILE_BYTES + 1L, file.length())
+    }
+
     @Test
     fun utf8LimitIsMeasuredInBytesAndFailedWritePreservesOldFile() {
         val store = store()

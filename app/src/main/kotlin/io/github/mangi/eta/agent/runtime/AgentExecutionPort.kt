@@ -13,6 +13,7 @@ internal object AgentExecutionPort {
         context: Context,
         request: AgentRuntimeWire.RunRequest,
         onEvent: (AgentEvent) -> Unit,
+        controller: AgentRunController? = null,
     ): AgentRuntimeWire.RunResult =
-        AgentRuntimeClient(context.applicationContext, AndroidAgentLogger).run(request, onEvent)
+        AgentRuntimeClient(context.applicationContext, AndroidAgentLogger).run(request, onEvent, controller)
 }

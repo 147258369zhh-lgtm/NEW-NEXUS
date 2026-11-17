@@ -2,13 +2,13 @@ package io.github.mangi.eta.agent.runtime
 
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ConcurrentHashMap
 import android.app.Service
 import android.app.ActivityOptions
 import android.app.PendingIntent
 import android.os.Build
 import android.content.Context
 import android.content.Intent
-import android.content.res.Configuration
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.os.Handler
@@ -26,6 +26,8 @@ import android.window.OnBackInvokedCallback
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.ComposeView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
@@ -54,12 +56,16 @@ import io.github.mangi.eta.agent.overlay.AgentOverlayStatus
 import io.github.mangi.eta.agent.overlay.AgentOverlayVisibilityPolicy
 import io.github.mangi.eta.agent.overlay.applyEvent
 import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayController
+import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayLease
 import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplaySnapshot
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.ModuleConfig
 import io.github.mangi.eta.core.safeLogType
+import io.github.mangi.eta.data.model.AppearanceSettings
+import io.github.mangi.eta.data.repository.AppearanceSettingsRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
+import io.github.mangi.eta.ui.app.AgentAppTheme
 import kotlin.concurrent.thread
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -70,9 +76,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import top.yukonga.miuix.kmp.squircle.LocalSquircleEnabled
-import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.theme.darkColorScheme
-import top.yukonga.miuix.kmp.theme.lightColorScheme
+
+private const val INGRESS_STATE_QUEUED = 0
+private const val INGRESS_STATE_RUNNING = 1
+private const val INGRESS_STATE_CANCELLED = 2
 
 /**
  * 模块进程内的通用 Agent Runtime。
@@ -90,9 +97,18 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val resultIo = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "agent-result-io") }
+    private val ingressIo = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "agent-runtime-ingress") }
+    private val queuedStartRuns = ConcurrentHashMap.newKeySet<QueuedStartRun>()
     private val serviceMessenger = Messenger(IncomingHandler())
 
     private val runs = RuntimeRunRegistry()
+    private val runContextResolver by lazy { NexusRunContextResolver(this) }
+    private val runApplicationApi by lazy {
+        NexusRunApplicationApi(io.github.mangi.eta.data.repository.NexusExecutionStore.get(this), runs, ::cancelRun).also { api ->
+            api.configureBackupGuard(this)
+            api.configureModelPrices { config -> AgentTokenPriceStore.resolve(this, config.providerId, config.model) }
+        }
+    }
     private val guiControl = GuiControlCoordinator()
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     @Volatile private var destroyed = false
@@ -157,9 +173,13 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         serviceScope.launch {
             VirtualDisplayController.snapshots.collect { snapshot ->
                 val wasActive = virtualDisplayState.value.active
-                virtualDisplayState.value = snapshot
-                if (wasActive != snapshot.active) {
-                    if (!snapshot.active) VirtualDisplayController.setStageExpanded(false)
+                val selectedRunId = displayedRun?.runId
+                val selectedSnapshot = selectedRunId?.let(VirtualDisplayController::snapshotForRun)
+                    ?: snapshot.takeIf { selectedRunId == null }
+                    ?: VirtualDisplaySnapshot.Inactive
+                virtualDisplayState.value = selectedSnapshot
+                if (wasActive != selectedSnapshot.active) {
+                    if (!selectedSnapshot.active) VirtualDisplayController.setStageExpanded(false)
                     updateCapsuleWindowBounds()
                     displayedRun?.let(::syncActiveRunOverlayVisibility)
                 }
@@ -190,19 +210,33 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     override fun onDestroy() {
         destroyed = true
+        ingressIo.shutdownNow()
+        queuedStartRuns.toList().forEach(QueuedStartRun::cancelForServiceStop)
+        val liveRuns = runs.all()
+        val displaySnapshot = VirtualDisplayController.snapshots.value
+        val displayLease = displaySnapshot.lease
+        val displayOwner = displaySnapshot.ownerRunId
+        val ownersToRelease = liveRuns.mapTo(linkedSetOf()) { it.runId }
+        displayOwner.takeIf(String::isNotBlank)?.let(ownersToRelease::add)
+        displaySnapshot.previewOwnerRunId.takeIf(String::isNotBlank)?.let(ownersToRelease::add)
+        displayedRun?.runId?.let(ownersToRelease::add)
         if (activeInstance === this) activeInstance = null
         setKeepScreenOn(false)
-        runs.all().forEach { run ->
+        liveRuns.forEach { run ->
             run.releaseIncoming()
             run.session.cancel("Agent Runtime 服务已停止")
         }
         displayedRun = null
         serviceScope.cancel()
         AgentExecutionService.updateRunStatus(this, null, activeRunCount = 0)
-        resultIo.shutdownNow()
+        // Earlier terminal callbacks may already be queued. Let those small result writes drain;
+        // sendResultTo falls back to a direct Messenger write after this executor closes.
+        resultIo.shutdown()
         mainHandler.removeCallbacksAndMessages(null)
         AgentOverlayClearance.detach(clearanceHost)
-        VirtualDisplayController.release(this)
+        // Each Run may own its own display session. Release every owner associated with this
+        // service, rather than only whichever session was last selected by the facade.
+        VirtualDisplayController.releaseOwnedByRuns(this, ownersToRelease)
         unregisterResultCardBack()
         resultCardView?.let { view -> runCatching { windowManager?.removeView(view) } }
         capsuleView?.let { view -> runCatching { windowManager?.removeView(view) } }
@@ -248,12 +282,16 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                         finishWithFailure("Agent Runtime 请求缺少 runId 或用户输入", msg.replyTo)
                         return
                     }
-                    ingestRunRequest(incoming, msg.replyTo, msg.sendingUid == android.os.Process.myUid())
+                    submitStartRun(incoming, msg.replyTo, msg.sendingUid == android.os.Process.myUid())
                 }
 
                 AgentRuntimeWire.MSG_CANCEL -> {
                     val runId = msg.data?.let(AgentRuntimeWire::runIdFromBundle).orEmpty()
-                    if (runId.isNotBlank()) cancelRun(runId)
+                    if (runId.isNotBlank()) dispatchRuntimeIngress("runtime_cancel_ingress_failed") {
+                        runs.get(runId)?.let { run ->
+                            runApplicationApi.cancel(NexusRunMapper.fromLegacy(run.request).request.runId, "user_request")
+                        }
+                    }
                 }
 
                 AgentRuntimeWire.MSG_ACK_RESULT -> {
@@ -274,7 +312,10 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 }
 
                 AgentRuntimeWire.MSG_DRAIN_RESULTS -> {
-                    sendDrainedResults(msg.replyTo, msg.data?.getBoolean("complete_result_refs") == true)
+                    sendDrainedResults(msg.replyTo, msg.data?.getBoolean("complete_result_refs") == true,
+                        msg.data?.getString("handoff_source"),
+                        msg.data?.getLong(AgentRuntimeWire.KEY_RESULT_AFTER_CREATED_AT, Long.MIN_VALUE) ?: Long.MIN_VALUE,
+                        msg.data?.getString(AgentRuntimeWire.KEY_RESULT_AFTER_RUN_ID).orEmpty())
                 }
 
                 AgentRuntimeWire.MSG_QUERY_ACTIVE_RUN -> {
@@ -284,14 +325,143 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 AgentRuntimeWire.MSG_QUERY_ACTIVE_RUNS -> {
                     sendActiveRuns(msg.replyTo)
                 }
+                AgentRuntimeWire.MSG_SUPPLEMENT -> {
+                    // Only Nexus UI/voice surfaces may steer an existing task; a hook cannot target another Run.
+                    if (msg.sendingUid != Process.myUid()) return
+                    val id = AgentRuntimeWire.runIdFromBundle(msg.data)
+                    val text = msg.data.getString("supplement_text").orEmpty().trim()
+                    val replyTo = msg.replyTo
+                    dispatchRuntimeIngress(
+                        operation = "runtime_supplement_ingress_failed",
+                        onRejected = {
+                            runCatching { replyTo?.send(Message.obtain(null, AgentRuntimeWire.MSG_SUPPLEMENT_RESPONSE).apply {
+                                data = AgentRuntimeWire.ackBundle(id).apply { putBoolean("accepted", false) }
+                            }) }
+                        },
+                    ) {
+                        val run = runs.get(id)
+                        val accepted = text.length in 1..12_000 && run?.supplement(text) != null
+                        if (accepted) mainHandler.post(::publishExecutionState)
+                        runCatching { replyTo?.send(Message.obtain(null, AgentRuntimeWire.MSG_SUPPLEMENT_RESPONSE).apply {
+                            data = AgentRuntimeWire.ackBundle(id).apply { putBoolean("accepted", accepted) }
+                        }) }
+                    }
+                }
 
                 AgentRuntimeWire.MSG_ATTACH_RUN -> {
-                    attachRun(
-                        runId = AgentRuntimeWire.runIdFromBundle(msg.data ?: return),
-                        replyTo = msg.replyTo,
-                    )
+                    val runId = AgentRuntimeWire.runIdFromBundle(msg.data ?: return)
+                    val replyTo = msg.replyTo
+                    dispatchRuntimeIngress(
+                        operation = "runtime_attach_ingress_failed",
+                        onRejected = { sendAttachRunResponse(runId, replyTo, attached = false) },
+                    ) {
+                        attachRun(runId = runId, replyTo = replyTo)
+                    }
                 }
             }
+        }
+    }
+
+    private fun submitStartRun(
+        incoming: AgentRuntimeWire.IncomingRunRequest,
+        replyTo: Messenger?,
+        isEtaProcess: Boolean,
+    ) {
+        if (destroyed) {
+            incoming.close()
+            sendResultNow(replyTo, AgentRuntimeWire.RunResult(incoming.request.runId, false, "", "Agent Runtime 服务已停止"))
+            return
+        }
+        val task = QueuedStartRun(incoming, replyTo, isEtaProcess)
+        queuedStartRuns += task
+        try {
+            ingressIo.execute(task)
+        } catch (_: RejectedExecutionException) {
+            queuedStartRuns -= task
+            task.cancelForServiceStop()
+        }
+    }
+
+    private inner class QueuedStartRun(
+        private val incoming: AgentRuntimeWire.IncomingRunRequest,
+        private val replyTo: Messenger?,
+        private val isEtaProcess: Boolean,
+    ) : Runnable {
+        private val gate = Any()
+        private var state = INGRESS_STATE_QUEUED
+
+        override fun run() {
+            synchronized(gate) {
+                if (state != INGRESS_STATE_QUEUED) return
+                state = INGRESS_STATE_RUNNING
+            }
+            try {
+                if (destroyed) {
+                    incoming.close()
+                    sendRequestIngestedTo(replyTo, incoming.request.runId)
+                    sendResultNow(
+                        replyTo,
+                        AgentRuntimeWire.RunResult(incoming.request.runId, false, "", "Agent Runtime 服务已停止"),
+                    )
+                    return
+                }
+                ingestRunRequest(incoming, replyTo, isEtaProcess)
+            } catch (failure: Exception) {
+                incoming.close()
+                AndroidAgentLogger.warnThrottled("runtime_ingress_failed") {
+                    "Agent runtime ingress failed: type=${failure.safeLogType()}"
+                }
+                if (destroyed) sendResultNow(
+                    replyTo,
+                    AgentRuntimeWire.RunResult(incoming.request.runId, false, "", "Agent Runtime 服务已停止"),
+                ) else sendResultTo(
+                    replyTo,
+                    AgentRuntimeWire.RunResult(incoming.request.runId, false, "", "Agent Runtime 无法受理请求"),
+                )
+            } finally {
+                queuedStartRuns -= this
+            }
+        }
+
+        fun cancelForServiceStop() {
+            val shouldClose = synchronized(gate) {
+                if (state != INGRESS_STATE_QUEUED) return@synchronized false
+                state = INGRESS_STATE_CANCELLED
+                true
+            }
+            if (shouldClose) {
+                incoming.close()
+                sendRequestIngestedTo(replyTo, incoming.request.runId)
+                sendResultNow(
+                    replyTo,
+                    AgentRuntimeWire.RunResult(incoming.request.runId, false, "", "Agent Runtime 服务已停止"),
+                )
+            }
+        }
+    }
+
+    private fun dispatchRuntimeIngress(
+        operation: String,
+        onRejected: () -> Unit = {},
+        block: () -> Unit,
+    ) {
+        try {
+            ingressIo.execute {
+                if (destroyed) {
+                    onRejected()
+                    return@execute
+                }
+                try {
+                    block()
+                } catch (failure: Exception) {
+                    AndroidAgentLogger.warnThrottled(operation) {
+                        "Agent runtime ingress operation failed: type=${failure.safeLogType()}"
+                    }
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            onRejected()
+            AndroidAgentLogger.info("Agent runtime ingress deferred after service stop")
         }
     }
 
@@ -364,9 +534,16 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         request: AgentRuntimeWire.RunRequest,
         replyTo: Messenger? = null,
     ) {
-        val run = admitRun(request, replyTo) ?: return
-        run.prepared(request)
-        executePreparedRun(run)
+        dispatchRuntimeIngress(
+            operation = "runtime_start_ingress_failed",
+            onRejected = {
+                sendResultNow(replyTo, AgentRuntimeWire.RunResult(request.runId, false, "", "Agent Runtime 服务已停止"))
+            },
+        ) {
+            val run = admitRun(request, replyTo) ?: return@dispatchRuntimeIngress
+            run.prepared(request)
+            executePreparedRun(run)
+        }
     }
 
     private fun admitRun(
@@ -377,20 +554,56 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         if (destroyed) {
             incoming?.close()
             sendRequestIngestedTo(replyTo, request.runId)
-            sendResultTo(replyTo, AgentRuntimeWire.RunResult(request.runId, false, "", "Agent Runtime 服务已停止"))
+            sendResultNow(replyTo, AgentRuntimeWire.RunResult(request.runId, false, "", "Agent Runtime 服务已停止"))
             return null
         }
-        val admission = runs.admit(request) {
+        val admission = try { runApplicationApi.admit(request, resolveContext = runContextResolver::resolve) { durableExecution ->
             lateinit var session: AgentRuntimeSession
             val executionLedger = ExecutionShadowRecorder.create(this, request)
+            val controller=AgentRunController()
+            controller.bindLocalA2AApproval(
+                grant = request.a2aLocalApproval,
+                expectedTaskId = request.runId,
+                expectedContinuationCount = request.a2aContinuationCount,
+            )
+            controller.bindA2ASettledCalls(request.a2aSettledCalls)
+            val parentConversationId = AgentConversationIdentity.fromHandoff(request.handoff, request.runId)
+            val parentTargetId = request.handoff?.payload
+            controller.bindConversationId(parentConversationId)
+            controller.bindExecutionTargetId(request.handoff?.payload)
+            controller.bindRecoverySurface(durableExecution.request.source)
+            durableExecution.bindController(controller)
             session = AgentRuntimeSession(
                 runId = request.runId,
+                controller = controller,
+                executionRequest = durableExecution.request,
                 operation = request.operation,
+                executionStartRecorder = durableExecution::start,
+                checkpointRecorder = durableExecution::saveCheckpoint,
+                inputRecorder = durableExecution::prepareInput,
+                childExecutionFactory = { operation, childSession, budget, childController ->
+                    childController.bindConversationId(parentConversationId)
+                    childController.bindExecutionTargetId(parentTargetId)
+                    childController.bindRecoverySurface(durableExecution.request.source)
+                    childController.bindRecoveryActorId(childSession)
+                    runApplicationApi.openChild(durableExecution.request.runId,operation,childSession,budget,childController)
+                },
                 eventSink = { event -> sendEventTo(replyTo, event) },
                 resultSink = { result -> sendResultTo(replyTo, result) },
-                eventRecorder = executionLedger?.let { recorder -> { event -> recorder.record(event) } },
-                terminalRecorder = executionLedger?.let { recorder -> { result -> recorder.finish(result) } },
-                telemetry = AgentRunTelemetry(request, onSnapshot = { AgentRunMetricsStore.enqueue(this, it) },
+                eventRecorder = { event ->
+                    durableExecution.record(event)
+                    runCatching { executionLedger?.record(event) }
+                },
+                terminalRecorder = { result ->
+                    try { durableExecution.finish(result, session.controller.isUserCancelled) }
+                    catch (failure: Exception) {
+                        AndroidAgentLogger.error("Execution terminal commit failed: type=${failure.safeLogType()}")
+                        throw failure
+                    }
+                    finally { executionLedger?.finish(result, cancelled = session.controller.isUserCancelled) }
+                },
+                telemetry = AgentRunTelemetry(request, projectId = durableExecution.request.projectId.orEmpty(),
+                    onSnapshot = { AgentRunMetricsStore.enqueue(this, it) },
                     priceResolver = { provider, model -> AgentTokenPriceStore.resolve(this, provider, model) }),
                 beforeTerminalPublish = {
                     runs.finish(request.runId, session)?.releaseIncoming()
@@ -407,6 +620,38 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             RuntimeRunRegistry.Run(request, session, incoming) {
                 sendRequestIngestedTo(replyTo, request.runId)
             }
+        } } catch (failure: Exception) {
+            incoming?.close()
+            sendRequestIngestedTo(replyTo, request.runId)
+            AndroidAgentLogger.error("Canonical run admission failed: type=${failure.safeLogType()}")
+            sendResultTo(replyTo, AgentRuntimeWire.RunResult(request.runId, false, "", "执行记录无法保存，本次任务未启动"))
+            return null
+        }
+        if (destroyed) {
+            when (admission) {
+                is RuntimeRunRegistry.Admission.Accepted -> {
+                    val run = admission.run
+                    runs.finish(run.runId, run.session)?.releaseIncoming() ?: incoming?.close()
+                    run.session.cancel("Agent Runtime 服务已停止")
+                }
+                is RuntimeRunRegistry.Admission.Duplicate -> {
+                    incoming?.close()
+                    sendRequestIngestedTo(replyTo, request.runId)
+                    sendResultNow(
+                        replyTo,
+                        AgentRuntimeWire.RunResult(request.runId, false, "", "Agent Runtime 服务已停止"),
+                    )
+                }
+                is RuntimeRunRegistry.Admission.Rejected -> {
+                    incoming?.close()
+                    sendRequestIngestedTo(replyTo, request.runId)
+                    sendResultNow(
+                        replyTo,
+                        AgentRuntimeWire.RunResult(request.runId, false, "", "Agent Runtime 服务已停止"),
+                    )
+                }
+            }
+            return null
         }
         val run = when (admission) {
             is RuntimeRunRegistry.Admission.Accepted -> admission.run
@@ -431,14 +676,16 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 AndroidAgentLogger.debug { "Agent runtime request rejected: code=${admission.code}" }
                 sendResultTo(replyTo, AgentRuntimeWire.RunResult(
                     request.runId, false, "", admission.message,
+                    failureCode = admission.code,
                     operation = request.operation, rewriteTargetMessageId = request.rewriteTargetMessageId,
                 ))
                 return null
             }
         }
         // Root 入口保留原有绑定服务生命周期；新增 FGS 不能成为厂商后台入口的新前置权限。
-        val allowBoundFallback = RootAccess.isGranted
-        val executionHeld = AgentExecutionService.acquire(
+        val readOnlyPresentation = RuntimePackageActions.isReadOnlyPresentation(this, request)
+        val allowBoundFallback = RootAccess.isGranted || readOnlyPresentation
+        val executionHeld = readOnlyPresentation || AgentExecutionService.acquire(
             this, "run:${request.runId}", allowBoundFallback = allowBoundFallback,
         ) { mainHandler.post { cancelRun(request.runId) } }
         if (!executionHeld && !allowBoundFallback) {
@@ -446,7 +693,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             return null
         }
         admission.replacedRuns.forEach { cancelRun(it.runId) }
-        runCatching {
+        if (!readOnlyPresentation) runCatching {
             startService(Intent(this, AgentRuntimeService::class.java).setAction(ACTION_KEEP_ALIVE))
         }.onFailure { throwable ->
             AndroidAgentLogger.warnThrottled("runtime_keep_alive_start_failed") {
@@ -464,8 +711,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             operation = run.request.operation, rewriteTargetMessageId = run.request.rewriteTargetMessageId,
         )
         dispatchResultIo {
-            run.session.complete(result) {
-                runCatching { persistRunArtifacts(run.snapshotRequest(), result, emptyList()) }
+            run.session.complete(result) { publishResult ->
+                runCatching { persistRunArtifacts(run.snapshotRequest(), publishResult, emptyList()) }
                     .onFailure { throwable ->
                         AndroidAgentLogger.error("Agent runtime preparation result persistence failed: type=${throwable.safeLogType()}")
                     }
@@ -634,7 +881,13 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     }
 
     private fun sendResultTo(target: Messenger?, result: AgentRuntimeWire.RunResult) {
-        dispatchResultIo { sendResultNow(target, result) }
+        try {
+            resultIo.execute { sendResultNow(target, result) }
+        } catch (_: RejectedExecutionException) {
+            // Service shutdown can close resultIo between a terminal callback and its delivery.
+            // A terminal result is tiny and must not disappear with the executor.
+            sendResultNow(target, result)
+        }
     }
 
     private fun sendResultNow(
@@ -680,15 +933,17 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         }
     }
 
-    private fun sendDrainedResults(replyTo: Messenger?, referencesOnly: Boolean) {
-        dispatchResultIo { sendDrainedResultsNow(replyTo, referencesOnly) }
+    private fun sendDrainedResults(replyTo: Messenger?, referencesOnly: Boolean, source: String?, afterCreatedAt: Long, afterRunId: String) {
+        dispatchResultIo { sendDrainedResultsNow(replyTo, referencesOnly, source, afterCreatedAt, afterRunId) }
     }
 
-    private fun sendDrainedResultsNow(replyTo: Messenger?, referencesOnly: Boolean) {
+    private fun sendDrainedResultsNow(replyTo: Messenger?, referencesOnly: Boolean, source: String?, afterCreatedAt: Long, afterRunId: String) {
         runCatching {
             val msg = Message.obtain(null, AgentRuntimeWire.MSG_DRAIN_RESULTS_RESPONSE)
             msg.data = AgentRuntimeWire.completedRunsToBundle(
-                if (referencesOnly) AgentRuntimeResultStore.pendingPage(this) else AgentRuntimeResultStore.list(this).take(8)
+                if (referencesOnly) AgentRuntimeResultStore.pendingPage(this, source, afterCreatedAt, afterRunId) else
+                    AgentRuntimeResultStore.list(this).filter { source.isNullOrBlank() || it.handoff.source == source }
+                        .take(AgentRuntimeWire.RESULT_PAGE_SIZE)
             )
             replyTo?.send(msg)
         }.onFailure { throwable ->
@@ -808,12 +1063,21 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     }
 
     private fun requestStop(runId: String?) {
-        if (runId == null || runs.get(runId) == null) {
+        if (runId == null) {
             if (!guiControl.state.value.userPaused && displayedRun?.runId == runId &&
                 guiControl.state.value.ownerRunId == null) dismissAndStop()
             return
         }
-        cancelRun(runId)
+        dispatchRuntimeIngress("runtime_stop_ingress_failed") {
+            val exists = runs.get(runId) != null
+            mainHandler.post {
+                if (exists) cancelRun(runId) else if (!guiControl.state.value.userPaused &&
+                    displayedRun?.runId == runId && guiControl.state.value.ownerRunId == null
+                ) {
+                    dismissAndStop()
+                }
+            }
+        }
     }
 
     private fun cancelRun(runId: String) {
@@ -969,6 +1233,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         removeOverlayWindows()
         displayedRun?.completedContext = null
         displayedRun = run
+        VirtualDisplayController.selectRun(run.runId)
+        virtualDisplayState.value = VirtualDisplayController.snapshotForRun(run.runId)
+            ?: VirtualDisplaySnapshot.Inactive
         capsuleExpanded.value = false
     }
 
@@ -1019,7 +1286,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
         // ── 状态胶囊窗口：状态栏下方居中，收起时一句状态（含微缩镜），点击展开控制与画廊视窗 ─
         val capsule = createOverlayComposeView {
-            val controlRunId = displayedRun?.runId
+            val controlRunId = displayedRun?.runId ?: guiControl.state.value.ownerRunId
+            val supplementVoice by io.github.mangi.eta.agent.voice.RunVoiceSupplement.state.collectAsState()
             AgentOverlayCapsule(
                 state = state.value,
                 expanded = capsuleExpanded.value,
@@ -1027,31 +1295,37 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 onToggleExpanded = ::toggleCapsule,
                 onCollapsedSettled = ::onCapsuleCollapsedSettled,
                 onPause = {
-                    VirtualDisplayController.setUserControlling(false)
+                    VirtualDisplayController.setUserControlling(false, lease = displayLeaseForUserAction(controlRunId))
                     requestPause(controlRunId)
                 },
                 onResume = {
-                    VirtualDisplayController.setUserControlling(false)
+                    VirtualDisplayController.setUserControlling(false, lease = displayLeaseForUserAction(controlRunId))
                     requestResume()
                 },
                 onStop = { requestStop(controlRunId) },
                 onSupplementModeChange = ::setCapsuleInputMode,
                 onSupplement = { requestSupplement(controlRunId, it) },
+                voice = supplementVoice.takeIf { it.runId == controlRunId } ?: io.github.mangi.eta.agent.voice.RunVoiceSupplementState(),
+                onVoiceStart = { controlRunId?.let { io.github.mangi.eta.agent.voice.RunVoiceSupplement.start(this, it) } },
+                onVoiceFinish = { controlRunId?.let { io.github.mangi.eta.agent.voice.RunVoiceSupplement.finish(this, it) } },
+                onVoiceCancel = { controlRunId?.let { io.github.mangi.eta.agent.voice.RunVoiceSupplement.cancel(this, it) } },
                 virtualDisplay = virtualDisplayState.value,
+                virtualDisplaySessions = controlRunId?.let(VirtualDisplayController::snapshotsForRun).orEmpty(),
+                onSelectVirtualDisplay = { sessionId -> chooseVirtualDisplaySession(controlRunId, sessionId) },
                 onTakeOverVirtualDisplay = {
-                    VirtualDisplayController.setUserControlling(true)
+                    VirtualDisplayController.setUserControlling(true, lease = displayLeaseForUserAction(controlRunId))
                     requestPause(controlRunId)
                 },
                 onResumeVirtualDisplay = {
-                    VirtualDisplayController.setUserControlling(false)
+                    VirtualDisplayController.setUserControlling(false, lease = displayLeaseForUserAction(controlRunId))
                     requestResume()
                 },
                 onFullscreenVirtualDisplay = ::requestFullscreenVirtualDisplay,
                 onTapVirtualCanvas = { nx, ny, longPress ->
-                    VirtualDisplayController.dispatchUserTapOnCanvas(nx, ny, longPress, withControl = { action -> guiControl.withUserAction(controlRunId, block = action) })
+                    VirtualDisplayController.dispatchUserTapOnCanvas(nx, ny, longPress, lease = displayLeaseForUserAction(controlRunId), withControl = { action -> guiControl.withUserAction(controlRunId, block = action) })
                 },
                 onSwipeVirtualCanvas = { sx, sy, ex, ey, durationMs ->
-                    VirtualDisplayController.dispatchUserSwipeOnCanvas(sx, sy, ex, ey, durationMs, withControl = { action -> guiControl.withUserAction(controlRunId, block = action) })
+                    VirtualDisplayController.dispatchUserSwipeOnCanvas(sx, sy, ex, ey, durationMs, lease = displayLeaseForUserAction(controlRunId), withControl = { action -> guiControl.withUserAction(controlRunId, block = action) })
                 },
             )
         }
@@ -1144,15 +1418,51 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private fun requestFullscreenVirtualDisplay() {
         capsuleExpanded.value = false
         VirtualDisplayController.setStageExpanded(false)
+        val lease = displayLeaseForUserAction(displayedRun?.runId ?: guiControl.state.value.ownerRunId) ?: return
         thread(name = "eta-vd-fullscreen-handoff", isDaemon = true) {
-            VirtualDisplayController.handoffToMainDisplay(this@AgentRuntimeService)
+            try {
+                VirtualDisplayController.handoffToMainDisplay(this@AgentRuntimeService, lease = lease)
+            } catch (failure: Exception) {
+                AndroidAgentLogger.warn("Virtual display fullscreen failed: ${failure.javaClass.simpleName}")
+            }
         }
+    }
+
+    /**
+     * Lease for a user-initiated control or handoff. The display is released when its Run closes, so the
+     * user action atomically claims the reusable display for that Run; another live owner keeps it.
+     */
+    private fun displayLeaseForUserAction(controlRunId: String?): VirtualDisplayLease? {
+        val runId = controlRunId?.takeIf(String::isNotBlank) ?: return null
+        VirtualDisplayController.selectRun(runId)
+        virtualDisplayState.value = VirtualDisplayController.snapshotForRun(runId)
+            ?: VirtualDisplaySnapshot.Inactive
+        val current = VirtualDisplayController.currentLease(runId)
+        if (current != null) return current.takeIf { it.ownerRunId == runId }
+        // Only a live Run may re-claim the reusable display from the capsule controls.
+        if (runs.get(runId)?.session?.isTerminal != false &&
+            VirtualDisplayController.snapshotForRun(runId)?.previewOwnerRunId != runId) return null
+        return VirtualDisplayController.claimLease(runId)
+    }
+
+    private fun chooseVirtualDisplaySession(controlRunId: String?, sessionId: String) {
+        val runId = controlRunId?.takeIf(String::isNotBlank) ?: return
+        val previousLease = displayLeaseForUserAction(runId)
+        // Freeze the Run before changing its manual target, so an in-flight tool cannot silently
+        // start acting on a different display.
+        requestPause(runId)
+        VirtualDisplayController.setUserControlling(false, lease = previousLease)
+        val lease = VirtualDisplayController.chooseSession(runId, sessionId) ?: return
+        VirtualDisplayController.selectRun(runId)
+        virtualDisplayState.value = VirtualDisplayController.snapshotFor(lease)
+            ?: VirtualDisplaySnapshot.Inactive
     }
 
     private fun showResultCard(wm: WindowManager) {
         if (resultCardView != null) return
         val card = createOverlayComposeView {
             val resultRun = displayedRun
+            resultRun?.runId?.let(VirtualDisplayController::selectRun)
             AgentResultCard(
                 state = state.value,
                 onClose = { dismissResult(resultRun) },
@@ -1160,9 +1470,17 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 hasVirtualDisplayApp = virtualDisplayState.value.active &&
                     virtualDisplayState.value.packageName.isNotBlank(),
                 onOpenVirtualApp = {
-                    thread(name = "eta-vd-result-handoff", isDaemon = true) {
-                        VirtualDisplayController.handoffToMainDisplay(this@AgentRuntimeService)
-                        mainHandler.post { dismissResult(resultRun) }
+                    // The owner lease is released when its Run closes, so this user handoff claims the
+                    // reusable single display for that result instead of acting ownerless.
+                    val handoffLease = VirtualDisplayController.claimLease(resultRun?.runId.orEmpty())
+                    if (handoffLease != null) {
+                        thread(name = "eta-vd-result-handoff", isDaemon = true) {
+                            VirtualDisplayController.handoffToMainDisplay(
+                                this@AgentRuntimeService,
+                                lease = handoffLease,
+                            )
+                            mainHandler.post { dismissResult(resultRun) }
+                        }
                     }
                 },
             )
@@ -1263,7 +1581,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             setViewTreeLifecycleOwner(this@AgentRuntimeService)
             setViewTreeSavedStateRegistryOwner(this@AgentRuntimeService)
             setContent {
-                MiuixTheme(colors = if (isNightMode()) darkColorScheme() else lightColorScheme()) {
+                val appearance by AppearanceSettingsRepository.settingsFlow()
+                    .collectAsState(initial = AppearanceSettings())
+                AgentAppTheme(appearance = appearance, applyInterfaceScale = false) {
                     // 部分 ROM 会给 TYPE_ACCESSIBILITY_OVERLAY 分配软件 Canvas；Miuix 的
                     // RuntimeShader 只检查系统版本，因此系统浮层统一使用其普通圆角回退。
                     CompositionLocalProvider(LocalSquircleEnabled provides false) {
@@ -1374,8 +1694,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         val display = (overlayContext().getSystemService(Context.DISPLAY_SERVICE) as? android.hardware.display.DisplayManager)
             ?.getDisplay(android.view.Display.DEFAULT_DISPLAY)
         val fallback = dpToPx(FALLBACK_SCREEN_CORNER_DP).toFloat()
-        fun radius(position: Int): Float =
-            display?.getRoundedCorner(position)?.radius?.takeIf { it > 0 }?.toFloat() ?: fallback
+        fun radius(position: Int): Float = safeScreenCornerRadius(fallback) {
+            display?.getRoundedCorner(position)?.radius
+        }
         return ScreenCornerRadii(
             topLeft = radius(android.view.RoundedCorner.POSITION_TOP_LEFT),
             topRight = radius(android.view.RoundedCorner.POSITION_TOP_RIGHT),
@@ -1447,11 +1768,13 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     private fun dismissAndStop() {
         // stopSelf 不会销毁仍被客户端绑定的服务；窗口关闭后不再保留完整请求与结果历史。
+        val dismissedRunId = displayedRun?.runId
         displayedRun?.completedContext = null
         displayedRun = null
+        dismissedRunId?.let(VirtualDisplayController::selectRun)
         removeOverlayWindows()
         if (runs.all().isEmpty() && !guiControl.state.value.userPaused) {
-            VirtualDisplayController.release(this)
+            VirtualDisplayController.releaseAll(this)
             stopSelf()
         }
     }
@@ -1481,11 +1804,6 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             packageManager.getPackagesForUid(uid)
         }.getOrNull().orEmpty()
         return packages.any { it in ModuleConfig.AGENT_RUNTIME_ENTRY_PACKAGES }
-    }
-
-    private fun isNightMode(): Boolean {
-        val mode = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
-        return mode == Configuration.UI_MODE_NIGHT_YES
     }
 
     private fun currentRuntimePermissions(): AgentRuntimePolicy.Permissions =

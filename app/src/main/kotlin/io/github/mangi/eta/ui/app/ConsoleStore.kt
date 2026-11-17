@@ -18,9 +18,11 @@ import io.github.mangi.eta.agent.terminal.terminalEnvironment
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.agent.terminal.LinuxEnvironmentSettingsRepository
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -37,6 +39,7 @@ internal data class ConsoleFrame(
     val cursorRow: Int = 0,
     val cursorCol: Int = 0,
     val cursorVisible: Boolean = true,
+    val sessionId: String? = null,
 )
 
 @Immutable
@@ -96,7 +99,7 @@ internal class ConsoleStore(
     private val initialLinuxEnvironment =
         LinuxEnvironmentSettingsRepository.current(appContext).terminalEnvironment
 
-    /** 每个会话独立的屏幕缓冲区；写入只能在 IO 线程持锁进行，UI 线程持锁读快照。 */
+    /** Each session's mutable buffer is accessed under this lock; frame projection runs off main. */
     private val buffers = mutableMapOf<String, TerminalScreenBuffer>()
 
     /** 界面当前的默认前景/背景色，供 TUI 查询深浅主题；随系统深浅色切换更新到所有会话。 */
@@ -121,11 +124,54 @@ internal class ConsoleStore(
      * 这期间只记录最新尺寸，就绪后再同步，避免每次尺寸变化都另起一个会话。只在主线程读写。
      */
     private var creatingSession = false
+    private var selectionVersion = 0L
+    private var pendingEnvironment: TerminalEnvironment? = null
 
     @Volatile private var lastFlushMs = 0L
-    @Volatile private var flushScheduled = false
+    @Volatile private var renderingEnabled = false
+    private val frameGeneration = AtomicLong()
+    private data class FrameRequest(val sessionId: String, val delayMs: Long, val generation: Long)
+    private val frameRequests = Channel<Long>(Channel.CONFLATED)
     private var lastCols = 0
     private var lastRows = 0
+
+    init {
+        // One worker bounds allocations under high PTY output. Hidden terminals keep processing
+        // bytes/protocol replies but never project 1,000 scrollback lines for another screen.
+        scope.launch(Dispatchers.Default) {
+            for (delayMs in frameRequests) {
+                val remaining = (FLUSH_INTERVAL_MS - (android.os.SystemClock.elapsedRealtime() - lastFlushMs)).coerceAtLeast(0L)
+                val waitMillis = maxOf(delayMs, remaining)
+                if (waitMillis > 0L) delay(waitMillis)
+                // The signal carries no session identity: a late old PTY callback must not
+                // overwrite the only redraw request for a newly selected, quiet session.
+                val sessionId = _uiState.value.activeSessionId ?: continue
+                val request = FrameRequest(sessionId, 0L, frameGeneration.get())
+                if (!canRender(request)) continue
+                val frame = synchronized(bufferLock) {
+                    buffers[request.sessionId]?.let { current ->
+                        ConsoleFrame(current.renderLines(), current.rows, current.cursorRow,
+                            current.cursorCol, current.cursorVisible, sessionId)
+                    }
+                } ?: continue
+                lastFlushMs = android.os.SystemClock.elapsedRealtime()
+                _uiState.update { state ->
+                    if (canRender(request) && state.activeSessionId == request.sessionId) state.copy(frame = frame) else state
+                }
+            }
+        }
+    }
+
+    fun setRenderingEnabled(enabled: Boolean) {
+        if (renderingEnabled == enabled) return
+        renderingEnabled = enabled
+        frameGeneration.incrementAndGet()
+        if (enabled) _uiState.value.activeSessionId?.let(::flushFrame)
+    }
+
+    private fun canRender(request: FrameRequest): Boolean =
+        renderingEnabled && frameGeneration.get() == request.generation &&
+            _uiState.value.activeSessionId == request.sessionId
 
     /** 探测 PTY 前提；结果缓存进状态，不支持时入口回退到块式终端。 */
     fun probePtySupport() {
@@ -137,12 +183,9 @@ internal class ConsoleStore(
 
     fun refreshLinuxEnvironment() {
         val selected = LinuxEnvironmentSettingsRepository.current(appContext).terminalEnvironment
-        _uiState.update { state ->
-            state.copy(
-                linuxEnvironment = selected,
-                environment = if (state.environment.isLinux) selected else state.environment,
-            )
-        }
+        val changeSelection = _uiState.value.environment.isLinux && _uiState.value.environment != selected
+        _uiState.update { it.copy(linuxEnvironment = selected) }
+        if (changeSelection) switchEnvironment(selected)
     }
 
     /**
@@ -153,13 +196,13 @@ internal class ConsoleStore(
         if (cols <= 0 || rows <= 0) return
         lastCols = cols
         lastRows = rows
+        if (creatingSession) return
         val state = _uiState.value
         val activeId = state.activeSessionId
         if (activeId != null && controller.sessionAlive(activeId)) {
             resizeSession(activeId, cols, rows)
             return
         }
-        if (creatingSession) return
         if (activeId == null) {
             val reusable = state.sessions.lastOrNull { !it.exited && it.environment == environment }
             if (reusable != null && controller.sessionAlive(reusable.id)) {
@@ -172,14 +215,22 @@ internal class ConsoleStore(
 
     /** 以当前环境与最近一次网格尺寸新建会话。 */
     fun newSession() {
-        if (lastCols <= 0 || lastRows <= 0) return
+        if (lastCols <= 0 || lastRows <= 0 || creatingSession) return
+        selectionVersion++
+        pendingEnvironment = null
+        _uiState.update { it.copy(activeSessionId = null, connected = false, exited = false,
+            failMessage = null, frame = ConsoleFrame()) }
         createSession(_uiState.value.environment, lastCols, lastRows)
     }
 
     fun switchSession(sessionId: String) {
-        val session = _uiState.value.sessions.find { it.id == sessionId } ?: return
+        if (_uiState.value.sessions.none { it.id == sessionId }) return
+        frameGeneration.incrementAndGet()
+        selectionVersion++
+        pendingEnvironment = null
         _uiState.update { state ->
-            state.copy(
+            val session = state.sessions.find { it.id == sessionId }
+            if (session == null) state else state.copy(
                 activeSessionId = sessionId,
                 environment = session.environment,
                 connected = !session.exited,
@@ -194,11 +245,13 @@ internal class ConsoleStore(
 
     /** 关闭指定会话；关闭当前会话时切换到剩余最近的会话，没有则回到空态。 */
     fun closeSession(sessionId: String) {
+        if (_uiState.value.activeSessionId == sessionId) pendingEnvironment = null
+        if (_uiState.value.activeSessionId == sessionId) selectionVersion++
         scope.launch(Dispatchers.IO) {
             controller.closeSession(sessionId)
             sessionLeases.remove(sessionId)?.release()
+            synchronized(bufferLock) { buffers.remove(sessionId) }
         }
-        synchronized(bufferLock) { buffers.remove(sessionId) }
         sessionSizes.remove(sessionId)
         _uiState.update { state ->
             val sessions = state.sessions.filterNot { it.id == sessionId }
@@ -226,19 +279,23 @@ internal class ConsoleStore(
         val session = _uiState.value.sessions.find { it.id == sessionId } ?: return
         val size = sessionSizes[sessionId] ?: (lastCols to lastRows)
         if (size.first <= 0 || size.second <= 0) return
+        selectionVersion++
+        pendingEnvironment = null
         scope.launch(Dispatchers.IO) {
             controller.closeSession(sessionId)
             sessionLeases.remove(sessionId)?.release()
+            synchronized(bufferLock) { buffers.remove(sessionId) }
         }
-        synchronized(bufferLock) { buffers.remove(sessionId) }
         sessionSizes.remove(sessionId)
         _uiState.update { state ->
-            state.copy(sessions = state.sessions.filterNot { it.id == sessionId })
+            state.copy(sessions = state.sessions.filterNot { it.id == sessionId },
+                activeSessionId = null, environment = session.environment, connected = false,
+                exited = false, failMessage = null, frame = ConsoleFrame())
         }
         createSession(session.environment, size.first, size.second)
     }
 
-    /** 切换环境 tab：只改目标环境；有该环境的存活会话则切过去，否则由网格回调新建。 */
+    /** 切换环境 tab：复用存活会话，或按最近的网格尺寸新建。 */
     fun switchEnvironment(environment: TerminalEnvironment) {
         val state = _uiState.value
         if (state.environment == environment && state.activeSessionId != null) return
@@ -246,6 +303,8 @@ internal class ConsoleStore(
         if (reusable != null) {
             switchSession(reusable.id)
         } else {
+            selectionVersion++
+            pendingEnvironment = environment
             _uiState.update {
                 it.copy(
                     environment = environment,
@@ -256,13 +315,14 @@ internal class ConsoleStore(
                     frame = ConsoleFrame(),
                 )
             }
+            open(environment, lastCols, lastRows)
         }
     }
 
     /** 当前会话断开后以同一环境与网格尺寸重连。 */
     fun reconnect() {
-        val activeId = _uiState.value.activeSessionId ?: return
-        restartSession(activeId)
+        val activeId = _uiState.value.activeSessionId
+        if (activeId != null) restartSession(activeId) else newSession()
     }
 
     fun write(text: String) {
@@ -273,8 +333,11 @@ internal class ConsoleStore(
 
     /** 功能键按当前会话的光标键模式编码，程序切换 DECCKM 后无需界面感知。 */
     fun sendKey(key: TerminalKey, modifiers: TerminalModifiers = TerminalModifiers.NONE) {
-        val applicationCursorKeys = activeBuffer { it.applicationCursorKeys } ?: return
-        write(TerminalKeyEncoder.key(key, modifiers, applicationCursorKeys))
+        val sessionId = _uiState.value.activeSessionId ?: return
+        scope.launch(inputDispatcher) {
+            val applicationCursorKeys = synchronized(bufferLock) { buffers[sessionId]?.applicationCursorKeys } ?: return@launch
+            controller.write(sessionId, TerminalKeyEncoder.key(key, modifiers, applicationCursorKeys))
+        }
     }
 
     fun sendText(text: String, modifiers: TerminalModifiers = TerminalModifiers.NONE) {
@@ -282,14 +345,20 @@ internal class ConsoleStore(
     }
 
     fun paste(text: String) {
-        val bracketed = activeBuffer { it.bracketedPaste } ?: return
-        write(TerminalKeyEncoder.paste(text, bracketed))
+        val sessionId = _uiState.value.activeSessionId ?: return
+        scope.launch(inputDispatcher) {
+            val bracketed = synchronized(bufferLock) { buffers[sessionId]?.bracketedPaste } ?: return@launch
+            controller.write(sessionId, TerminalKeyEncoder.paste(text, bracketed))
+        }
     }
 
     fun setThemeColors(foreground: Long, background: Long) {
+        scope.launch(inputDispatcher) {
         synchronized(bufferLock) {
             themeColors = foreground to background
             buffers.values.forEach { it.applyTheme() }
+        }
+        _uiState.value.activeSessionId?.let(::flushFrame)
         }
     }
 
@@ -298,21 +367,20 @@ internal class ConsoleStore(
         defaultBackground = themeColors.second
     }
 
-    private fun <T> activeBuffer(read: (TerminalScreenBuffer) -> T): T? {
-        val sessionId = _uiState.value.activeSessionId ?: return null
-        return synchronized(bufferLock) { buffers[sessionId]?.let(read) }
-    }
-
     /** 屏幕缓冲区与 PTY 同步改尺寸；内核随后通知程序重绘，缓冲区先按新尺寸承接旧画面。 */
     private fun resizeSession(sessionId: String, cols: Int, rows: Int) {
         if (sessionSizes[sessionId] == (cols to rows)) return
         sessionSizes[sessionId] = cols to rows
-        synchronized(bufferLock) { buffers[sessionId]?.resize(cols, rows) }
-        scope.launch(inputDispatcher) { controller.resize(sessionId, cols, rows) }
-        flushFrame(sessionId)
+        scope.launch(inputDispatcher) {
+            synchronized(bufferLock) { buffers[sessionId]?.resize(cols, rows) }
+            controller.resize(sessionId, cols, rows)
+            flushFrame(sessionId)
+        }
     }
 
     fun close() {
+        setRenderingEnabled(false)
+        frameRequests.close()
         controller.close()
         sessionLeases.values.forEach { it.release() }
         sessionLeases.clear()
@@ -323,27 +391,62 @@ internal class ConsoleStore(
         lastCols = cols
         lastRows = rows
         creatingSession = true
+        pendingEnvironment = null
+        val requestVersion = selectionVersion
         _uiState.update { it.copy(connected = false, exited = false, failMessage = null) }
         scope.launch(Dispatchers.IO) {
-            try {
+            val result = try {
                 startSession(environment, cols, rows)
-            } finally {
-                withContext(NonCancellable + Dispatchers.Main) { creatingSession = false }
+            } catch (failure: Exception) {
+                ConsoleStartResult.Failed(failure.message ?: "无法启动控制台会话")
             }
-            withContext(Dispatchers.Main) {
-                // 启动期间网格可能已变化，按最新尺寸同步一次。
-                _uiState.value.activeSessionId?.let { resizeSession(it, lastCols, lastRows) }
+            withContext(NonCancellable + Dispatchers.Main) {
+                creatingSession = false
+                if (selectionVersion == requestVersion) {
+                    when (result) {
+                        is ConsoleStartResult.Ready -> {
+                            _uiState.update { state ->
+                                val session = state.sessions.find { it.id == result.sessionId }
+                                if (session != null) {
+                                    state.copy(activeSessionId = session.id, environment = session.environment,
+                                        connected = !session.exited, exited = session.exited,
+                                        failMessage = null, frame = ConsoleFrame())
+                                } else state.copy(connected = false, exited = false,
+                                    failMessage = appContext.getString(R.string.terminal_session_closed))
+                            }
+                            if (_uiState.value.activeSessionId == result.sessionId) {
+                                resizeSession(result.sessionId, lastCols, lastRows)
+                                flushFrame(result.sessionId)
+                            }
+                        }
+                        is ConsoleStartResult.Failed -> _uiState.update {
+                            it.copy(connected = false, failMessage = result.message)
+                        }
+                    }
+                } else {
+                    val activeId = _uiState.value.activeSessionId
+                    val pending = pendingEnvironment
+                    pendingEnvironment = null
+                    if (activeId == null && pending != null && _uiState.value.environment == pending) {
+                        open(pending, lastCols, lastRows)
+                    }
+                    else if (activeId != null) resizeSession(activeId, lastCols, lastRows)
+                }
             }
         }
     }
 
-    private fun startSession(environment: TerminalEnvironment, cols: Int, rows: Int) {
+    private sealed interface ConsoleStartResult {
+        data class Ready(val sessionId: String) : ConsoleStartResult
+        data class Failed(val message: String) : ConsoleStartResult
+    }
+
+    private fun startSession(environment: TerminalEnvironment, cols: Int, rows: Int): ConsoleStartResult {
         val rootfs = environment.linuxDistribution?.let { LinuxEnvironmentPaths.rootfsDir(appContext, it).absolutePath }
         val identity = TerminalRuntime.defaultIdentity(environment, rootfs)
         val lease = if (identity == "user") {
             TerminalSessionLease.acquire(appContext) { sessionId -> scope.launch { closeSession(sessionId) } } ?: run {
-                _uiState.update { it.copy(failMessage = appContext.getString(R.string.capability_background_failed)) }
-                return
+                return ConsoleStartResult.Failed(appContext.getString(R.string.capability_background_failed))
             }
         } else null
         val result = try {
@@ -357,6 +460,18 @@ internal class ConsoleStore(
                     lease?.release()
                     onExit(sessionId)
                 },
+                onSessionCreated = { sessionId ->
+                    try {
+                        synchronized(bufferLock) {
+                            buffers[sessionId] = TerminalScreenBuffer(cols, rows, SCROLLBACK_LINES).apply { applyTheme() }
+                        }
+                        sessionSizes[sessionId] = cols to rows
+                    } catch (failure: Throwable) {
+                        synchronized(bufferLock) { buffers.remove(sessionId) }
+                        sessionSizes.remove(sessionId)
+                        throw failure
+                    }
+                },
             )
         } catch (failure: Throwable) {
             lease?.release()
@@ -369,28 +484,32 @@ internal class ConsoleStore(
                     if (!lease.attach(result.sessionId) || !controller.sessionAlive(result.sessionId)) {
                         controller.closeSession(result.sessionId)
                         sessionLeases.remove(result.sessionId)?.release()
-                        _uiState.update { it.copy(failMessage = appContext.getString(R.string.terminal_session_closed)) }
-                        return
+                        synchronized(bufferLock) { buffers.remove(result.sessionId) }
+                        sessionSizes.remove(result.sessionId)
+                        return ConsoleStartResult.Failed(appContext.getString(R.string.terminal_session_closed))
                     }
                 }
-                synchronized(bufferLock) {
-                    buffers[result.sessionId] = TerminalScreenBuffer(cols, rows, SCROLLBACK_LINES).apply { applyTheme() }
+                _uiState.update { state -> state.copy(sessions = state.sessions + ConsoleSessionUi(result.sessionId, environment)) }
+                if (lease?.isStopped() == true || _uiState.value.sessions.none { it.id == result.sessionId }) {
+                    controller.closeSession(result.sessionId)
+                    sessionLeases.remove(result.sessionId)?.release()
+                    synchronized(bufferLock) { buffers.remove(result.sessionId) }
+                    sessionSizes.remove(result.sessionId)
+                    _uiState.update { state ->
+                        val sessions = state.sessions.filterNot { it.id == result.sessionId }
+                        if (state.activeSessionId == result.sessionId) state.copy(sessions = sessions,
+                            activeSessionId = null, connected = false, exited = false,
+                            failMessage = appContext.getString(R.string.terminal_session_closed), frame = ConsoleFrame())
+                        else state.copy(sessions = sessions)
+                    }
+                    return ConsoleStartResult.Failed(appContext.getString(R.string.terminal_session_closed))
                 }
-                sessionSizes[result.sessionId] = cols to rows
-                _uiState.update { state ->
-                    state.copy(
-                        sessions = state.sessions + ConsoleSessionUi(result.sessionId, environment),
-                        activeSessionId = result.sessionId,
-                        environment = environment,
-                        connected = true,
-                        exited = false,
-                        frame = ConsoleFrame(),
-                    )
-                }
+                if (!controller.sessionAlive(result.sessionId)) onExit(result.sessionId)
+                return ConsoleStartResult.Ready(result.sessionId)
             }
             is ConsoleSessionController.OpenResult.Failed -> {
                 lease?.release()
-                _uiState.update { it.copy(connected = false, failMessage = result.message) }
+                return ConsoleStartResult.Failed(result.message)
             }
         }
     }
@@ -406,39 +525,23 @@ internal class ConsoleStore(
         }
         // 查询应答不经过界面，后台会话也要及时回复，否则程序会阻塞在等待上。
         responses?.let { reply -> scope.launch(inputDispatcher) { controller.write(sessionId, reply) } }
-        if (sessionId != _uiState.value.activeSessionId) return
-        val now = System.currentTimeMillis()
+        if (!renderingEnabled || sessionId != _uiState.value.activeSessionId) return
+        val now = android.os.SystemClock.elapsedRealtime()
         when {
             synchronizing -> scheduleFlush(sessionId, SYNCHRONIZED_OUTPUT_TIMEOUT_MS)
             now - lastFlushMs >= FLUSH_INTERVAL_MS -> flushFrame(sessionId)
-            else -> scheduleFlush(sessionId, FLUSH_INTERVAL_MS)
+            else -> scheduleFlush(sessionId, (FLUSH_INTERVAL_MS - (now - lastFlushMs)).coerceAtLeast(0L))
         }
     }
 
     private fun scheduleFlush(sessionId: String, delayMs: Long) {
-        if (flushScheduled) return
-        flushScheduled = true
-        scope.launch {
-            delay(delayMs)
-            flushScheduled = false
-            flushFrame(sessionId)
+        if (renderingEnabled && sessionId == _uiState.value.activeSessionId) {
+            frameRequests.trySend(delayMs)
         }
     }
 
     private fun flushFrame(sessionId: String) {
-        val frame = synchronized(bufferLock) {
-            val current = buffers[sessionId] ?: return
-            ConsoleFrame(
-                lines = current.renderLines(),
-                screenRows = current.rows,
-                cursorRow = current.cursorRow,
-                cursorCol = current.cursorCol,
-                cursorVisible = current.cursorVisible,
-            )
-        }
-        if (sessionId != _uiState.value.activeSessionId) return
-        lastFlushMs = System.currentTimeMillis()
-        _uiState.update { it.copy(frame = frame) }
+        scheduleFlush(sessionId, 0L)
     }
 
     private fun onExit(sessionId: String) {

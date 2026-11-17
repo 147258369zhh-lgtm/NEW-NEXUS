@@ -7,11 +7,19 @@
     <string name="compat_mode_standard">Standard mode · App target API %1$d · Root is optional</string>
     <string name="compat_optional_title">Optional enhancements</string>
     <string name="compat_accessibility_connected">The service is connected and available for screen observation and actions.</string>
-    <string name="compat_accessibility_disconnected">Enabled in system settings, but the service is disconnected. Open accessibility settings and turn Nexus off and on again. Screen actions are unavailable until it reconnects.</string>
-    <string name="compat_accessibility_disabled">Enable Nexus in system accessibility settings to allow screen observation and actions.</string>
-    <string name="compat_accessibility_unknown">Unable to read the system setting. Check Nexus in accessibility settings; screen actions require an actual service connection.</string>
+    <string name="compat_accessibility_disconnected">Enabled in system settings, but the service is disconnected. Open accessibility settings and turn NEXA off and on again. Screen actions are unavailable until it reconnects.</string>
+    <string name="compat_accessibility_disabled">Enable NEXA in system accessibility settings to allow screen observation and actions.</string>
+    <string name="compat_accessibility_unknown">Unable to read the system setting. Check NEXA in accessibility settings; screen actions require an actual service connection.</string>
+    <string name="compat_accessibility_disconnect_history">Disconnects this session: %1$d. Most recent: %2$s, %3$s.</string>
+    <string name="compat_accessibility_disconnect_unbound">service unbound</string>
+    <string name="compat_accessibility_disconnect_destroyed">service destroyed</string>
+    <string name="compat_accessibility_disconnect_process_exit">process ended; exact cause unavailable</string>
+    <string name="compat_accessibility_disconnect_unknown_reason">reason unavailable</string>
+    <string name="compat_accessibility_disconnect_seconds_ago">%1$d seconds ago</string>
+    <string name="compat_accessibility_disconnect_minutes_ago">%1$d minutes ago</string>
+    <string name="compat_accessibility_disconnect_time_unavailable">time unavailable</string>
     <string name="compat_microphone_title">Microphone</string>
     <string name="compat_microphone_summary">Used for voice input. Permission alone does not guarantee background recording; Android and system power settings also apply.</string>
-    <string name="compat_settings_unavailable">Unable to open system settings. Open Nexus’s app info in system settings.</string>
+    <string name="compat_settings_unavailable">Unable to open system settings. Open NEXA’s app info in system settings.</string>
     <string name="compat_lan_connection_permission">The local service connection failed and local network permission is missing. Allow it in Settings → Permission health, then try again. If it still fails, check the service address and network.</string>
 </resources>

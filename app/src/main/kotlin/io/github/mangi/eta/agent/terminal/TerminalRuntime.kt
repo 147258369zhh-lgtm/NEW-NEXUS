@@ -15,6 +15,8 @@ internal enum class LinuxExecutionBackend(val wireName: String) {
 internal object TerminalRuntime {
     const val ROOT_WORKSPACE_PATH = "/data/local/tmp/eta"
     const val LINUX_WORKSPACE_PATH = "/workspace"
+    /** 会话输入目录（App 私密工作区）在 Linux 中的固定入口。 */
+    const val LINUX_INPUTS_PATH = "/nexus-inputs"
 
     @Volatile private var appContext: Context? = null
     private var backgroundJobs: BackgroundTerminalJobs? = null

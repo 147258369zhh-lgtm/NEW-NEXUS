@@ -124,11 +124,81 @@ class SpeechLifecycleTest {
         }
     }
 
+    @Test fun leaseCloseRemovesOwnerEvenWhenReceiverUnregisterFails() {
+        val app = RuntimeEnvironment.getApplication()
+        val lease = SpeechAudioLease(app) {}
+        lease.acquire(playback = false)
+        val receiverField = SpeechAudioLease::class.java.getDeclaredField("receiver").apply { isAccessible = true }
+        val receiver = receiverField.get(lease) as android.content.BroadcastReceiver
+        app.unregisterReceiver(receiver)
+        try {
+            assertThrows(IllegalArgumentException::class.java) { lease.close() }
+            assertFalse(SpeechAudioLease.occupied.value)
+            lease.close()
+            assertFalse(SpeechAudioLease.occupied.value)
+        } finally {
+            // close is idempotent after its cleanup pass, including this intentionally faulty receiver.
+        }
+    }
+
+    @Test fun inputCancelResetsStateWhenLeaseCloseThrows() {
+        controller.start(settings = SpeechSettings(), credentials = SpeechCredentials(qwenAsr = "test-key"))
+        shadowOf(Looper.getMainLooper()).idle()
+        val leaseField = SpeechInputController::class.java.getDeclaredField("lease").apply { isAccessible = true }
+        val lease = leaseField.get(controller) as SpeechAudioLease
+        val receiverField = SpeechAudioLease::class.java.getDeclaredField("receiver").apply { isAccessible = true }
+        RuntimeEnvironment.getApplication().unregisterReceiver(receiverField.get(lease) as android.content.BroadcastReceiver)
+
+        controller.cancel()
+
+        assertFalse(controller.state.value.active)
+        assertNull(controller.state.value.error)
+        assertFalse(SpeechAudioLease.occupied.value)
+    }
+
     @Test fun ownerCancellationReleasesRecorder() {
         val session = start()
         scope.cancel()
         shadowOf(Looper.getMainLooper()).idle()
         assertTrue(session.canceled)
+    }
+
+    @Test fun frameForwardingFailureReachesRecognitionAndReleasesCapture() {
+        var beforeCapture = 0
+        var afterCapture = 0
+        var recorder: FailingFrameCapture? = null
+        val failureController = SpeechInputController(
+            context = RuntimeEnvironment.getApplication(),
+            scope = scope,
+            beforeCapture = { beforeCapture++ },
+            afterCapture = { afterCapture++ },
+            createRecorder = { FailingFrameCapture().also { recorder = it } },
+            recognizeStream = { _, _, frames, onReady, _, _, _ ->
+                onReady()
+                for (frame in frames) Unit
+                "should not complete"
+            },
+            onResult = results::add,
+        )
+        try {
+            failureController.start(
+                settings = SpeechSettings(asr = AsrProvider.QWEN_REALTIME),
+                credentials = SpeechCredentials(qwenAsr = "test-key"),
+            )
+            val deadline = System.nanoTime() + 3_000_000_000
+            while (failureController.state.value.error == null && System.nanoTime() < deadline) {
+                shadowOf(Looper.getMainLooper()).idle()
+                Thread.sleep(1)
+            }
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals("Microphone failed", failureController.state.value.error)
+            assertTrue(results.isEmpty())
+            assertTrue(checkNotNull(recorder).canceled)
+            assertEquals(1, beforeCapture)
+            assertEquals(1, afterCapture)
+        } finally {
+            failureController.cancel()
+        }
     }
 
     @Test fun disabledRecognitionDoesNotAcquireAudioOrRequireCloudCredentials() {
@@ -206,17 +276,8 @@ class SpeechLifecycleTest {
                     baseUrl = "https://fixture.invalid/v1", apiKey = "fixture", model = "fixture", systemPrompt = "",
                 )
             },
-            providerFor = {
-                object : io.github.mangi.eta.agent.model.AgentProviderClient {
-                    override val id = "fixture"
-                    override val capabilities = io.github.mangi.eta.agent.model.OpenAiChatCompletionsProvider.capabilities
-                    override fun complete(
-                        request: io.github.mangi.eta.agent.model.ProviderRequest,
-                        runController: io.github.mangi.eta.agent.runtime.AgentRunController,
-                        onEvent: (io.github.mangi.eta.agent.model.ProviderEvent) -> Unit,
-                    ) = io.github.mangi.eta.agent.model.ProviderResponse(org.json.JSONObject()
-                        .put("role", "assistant").put("content", reply()).put("finish_reason", "stop"))
-                }
+            runTask = { request, _ ->
+                io.github.mangi.eta.agent.runtime.AgentRuntimeWire.RunResult(request.runId, true, reply())
             },
         )
         listOf(
@@ -304,5 +365,20 @@ class SpeechLifecycleTest {
             finish()
             frames.cancel()
         }
+    }
+
+    private class FailingFrameCapture : SpeechAudioCapture {
+        override val frames = Channel<ByteArray>(Channel.UNLIMITED)
+        var canceled = false
+            private set
+
+        init { frames.close(SpeechFailure(SpeechErrorCode.AUDIO, "Microphone failed")) }
+
+        override suspend fun record(onReady: () -> Unit, onLevel: (Float) -> Unit) {
+            onReady()
+        }
+
+        override fun finish() = Unit
+        override fun cancel() { canceled = true; frames.cancel() }
     }
 }

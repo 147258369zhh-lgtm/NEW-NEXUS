@@ -36,8 +36,11 @@ import kotlinx.serialization.json.Json
 internal object AgentRuntimeWire {
     const val MSG_READ_CONTEXT_RESULT = 15
     const val OP_CHAT = "chat"
+    const val OP_RESUME_INPUT = "resume_input"
     const val OP_COMPACT = "compact"
     const val OP_REWRITE_REPLY = "rewrite_reply"
+    const val OP_MODEL_TASK = "model_task"
+    const val OP_PACKAGE_ACTION = "package_action"
 
     const val AGENT_UI_HANDOFF_SOURCE = "agent_ui"
     const val ETA_VOICE_HANDOFF_SOURCE = "eta_voice"
@@ -72,6 +75,10 @@ internal object AgentRuntimeWire {
     /** service -> client：返回一组尚未确认展示的最终结果。 */
     const val MSG_DRAIN_RESULTS_RESPONSE = 7
 
+    const val RESULT_PAGE_SIZE = 8
+    const val KEY_RESULT_AFTER_CREATED_AT = "result_after_created_at"
+    const val KEY_RESULT_AFTER_RUN_ID = "result_after_run_id"
+
     /** service -> client：请求图片已经摄取，入口进程可以关闭文件描述符并删除临时文件。 */
     const val MSG_REQUEST_INGESTED = 8
 
@@ -92,6 +99,8 @@ internal object AgentRuntimeWire {
 
     /** service -> client：返回各运行的会话归属与当前阶段。 */
     const val MSG_QUERY_ACTIVE_RUNS_RESPONSE = 17
+    const val MSG_SUPPLEMENT = 18
+    const val MSG_SUPPLEMENT_RESPONSE = 19
 
     // The source namespace and installed application id are intentionally different in this fork.
     // Resolve the component from the generated build metadata so Runtime binding follows the APK.
@@ -121,6 +130,7 @@ internal object AgentRuntimeWire {
     private const val KEY_OPENAI_ENDPOINT_MODE = "openai_endpoint_mode"
     private const val KEY_SUPPORTS_SEARCH_SUGGESTIONS = "supports_search_suggestions"
     private const val KEY_SUPPORTS_TOOLS = "supports_tools"
+    private const val KEY_SUPPORTS_IMAGE_INPUT = "supports_image_input"
     private const val KEY_HOSTED_WEB_SEARCH_ENABLED = "hosted_web_search_enabled"
     private const val KEY_TERMINAL_TOOLS = "terminal_tools"
     private const val KEY_BROWSER_TOOLS = "browser_tools"
@@ -171,6 +181,14 @@ internal object AgentRuntimeWire {
     private const val MAX_RESULT_REASONING_CHARS = 32_000
     private const val MAX_DRAIN_CONTENT_CHARS = 16_000
     private const val MAX_DRAIN_REASONING_CHARS = 4_000
+    /** 排空结果只携带暂停摘要本身；正文仍走上限更低的预览通道。 */
+    private const val MAX_DRAIN_PAUSE_CHARS = 16_384
+    private const val MAX_PAUSE_QUESTION_CHARS = 2_000
+    private const val MAX_PAUSE_OPTION_CHARS = 200
+    private const val MAX_PAUSE_OPTIONS = 8
+    private const val MAX_PAUSE_REASON_CHARS = 600
+    private const val MAX_PAUSE_SETTLED_CALLS = 32
+    private const val MAX_PAUSE_IDENTITY_CHARS = 128
     private const val TRUNCATED_SUFFIX = "\n\n[跨进程预览过长，已省略中段并保留结尾]\n\n"
     private const val MAX_START_REQUEST_PARCEL_BYTES = 768 * 1024
 
@@ -188,6 +206,15 @@ internal object AgentRuntimeWire {
         val toolPolicy: AgentToolPolicy = AgentToolPolicy.UNRESTRICTED,
         val compactionSelection: IntRange? = null,
         val promptScope: PromptRunScope = PromptRunScope(),
+        val a2aLocalApproval: A2ALocalApprovalGrant? = null,
+        /** Independently supplied execution facts; never parsed from remote A2A metadata. */
+        val a2aContinuationCount: Int? = null,
+        /**
+         * Local digests of inbound A2A calls that already settled before an owner approval.
+         * The runtime blocks an identical tool, effect and canonical-argument call instead of
+         * executing it again. Never populated from remote metadata.
+         */
+        val a2aSettledCalls: List<String> = emptyList(),
     ) {
         // 旧入口沿用会话 handoff；无持久会话的入口以首个 run 为会话起点。
         val effectiveModelSessionId: String
@@ -198,10 +225,28 @@ internal object AgentRuntimeWire {
             }
     }
 
+    /** Internal IPC only. Never populated from remote A2A metadata. */
+    data class A2ALocalApprovalGrant(
+        val taskId: String,
+        val messageId: String,
+        val continuationCount: Int,
+        val allowedTools: Set<String>,
+        /** Stable `toolName=EffectClass` pairs accepted by this one-turn grant. */
+        val allowedToolEffects: Set<String>,
+        val originalGrantFingerprint: String,
+        val currentGrantFingerprint: String,
+        /** Exact call released by this one-shot approval; every other call stays gated or denied. */
+        val pendingTool: String = "",
+        val pendingEffect: String = "",
+        val pendingArgumentsDigest: String = "",
+    )
+
     enum class RunPhase(val wireValue: String) {
         Preparing("preparing"),
         Running("running"),
         WaitingForGui("waiting_for_gui"),
+        WaitingForAuthorization("waiting_for_authorization"),
+        WaitingForInput("waiting_for_input"),
         Paused("paused"),
         Committing("committing");
 
@@ -216,6 +261,7 @@ internal object AgentRuntimeWire {
         val phase: RunPhase = RunPhase.Running,
         val operation: String = OP_CHAT,
         val handoffSource: String = "",
+        val hostStatesJson: String = "[]",
     )
 
     /**
@@ -266,7 +312,42 @@ internal object AgentRuntimeWire {
         val contextSnapshotRef: String = "",
         val operation: String = OP_CHAT,
         val rewriteTargetMessageId: String? = null,
+        val failureCode: String? = null,
+        /**
+         * Set when the run stopped because only the caller of this runtime can unblock it.
+         * Carries a bounded, non-secret summary; never the private local transcript.
+         */
+        val pause: RunPause? = null,
     )
+
+    /**
+     * Safe description of a run that stopped waiting for a caller decision. Entry surfaces that
+     * cannot answer on the user's behalf (an inbound A2A peer, for example) map this to their own
+     * waiting state instead of inventing an answer or replaying the turn.
+     */
+    @Serializable
+    data class RunPause(
+        val kind: String,
+        val question: String = "",
+        val options: List<String> = emptyList(),
+        val allowFreeText: Boolean = true,
+        val reason: String = "",
+        /** Local identity of the call waiting for owner approval; never a remote field. */
+        val pendingCallId: String = "",
+        val pendingTool: String = "",
+        val pendingEffect: String = "",
+        val pendingArgumentsDigest: String = "",
+        /** True only if this pause cannot prove the pending call never started. */
+        val pendingExecuted: Boolean = false,
+        /** tool|effect|argumentsDigest of calls that already settled in this turn. */
+        val settledCalls: List<String> = emptyList(),
+        val settledEffectful: Boolean = false,
+    ) {
+        companion object {
+            const val KIND_INPUT_REQUIRED = "INPUT_REQUIRED"
+            const val KIND_AUTH_REQUIRED = "AUTH_REQUIRED"
+        }
+    }
 
     data class EntryHandoff(
         val id: String,
@@ -354,6 +435,7 @@ internal object AgentRuntimeWire {
         putBoolean(KEY_HOSTED_WEB_SEARCH_ENABLED, request.config.hostedWebSearchEnabled)
         putBoolean(KEY_SUPPORTS_SEARCH_SUGGESTIONS, request.config.supportsSearchSuggestions)
         putBoolean(KEY_SUPPORTS_TOOLS, request.config.supportsTools)
+        putBoolean(KEY_SUPPORTS_IMAGE_INPUT, request.config.supportsImageInput)
         putBoolean(KEY_TERMINAL_TOOLS, request.config.terminalTools)
         putBoolean(KEY_BROWSER_TOOLS, request.config.browserTools)
         putBoolean(KEY_DEVICE_DIRECT_TOOLS, request.config.deviceDirectTools)
@@ -374,6 +456,23 @@ internal object AgentRuntimeWire {
         putStringArrayList(KEY_TOOL_DENYLIST, ArrayList(request.toolPolicy.disallowedTools))
         putString(KEY_PROMPT_SCOPE_JSON, request.promptScope.toJson().toString())
         request.handoff?.let { putBundle(KEY_HANDOFF, toBundle(it)) }
+        request.a2aLocalApproval?.let { grant ->
+            putBundle("a2a_local_approval", Bundle().apply {
+                putString("task_id", grant.taskId); putString("message_id", grant.messageId)
+                putInt("continuation_count", grant.continuationCount)
+                putStringArrayList("allowed_tools", ArrayList(grant.allowedTools))
+                putStringArrayList("allowed_tool_effects", ArrayList(grant.allowedToolEffects))
+                putString("original_fingerprint", grant.originalGrantFingerprint)
+                putString("current_fingerprint", grant.currentGrantFingerprint)
+                putString("pending_tool", grant.pendingTool)
+                putString("pending_effect", grant.pendingEffect)
+                putString("pending_arguments_digest", grant.pendingArgumentsDigest)
+            })
+        }
+        request.a2aContinuationCount?.let { putInt("a2a_continuation_count", it) }
+        if (request.a2aSettledCalls.isNotEmpty()) {
+            putStringArrayList("a2a_settled_calls", ArrayList(request.a2aSettledCalls))
+        }
         putParcelableArrayList(
             KEY_HISTORY,
             ArrayList(AgentConversationCodec.decodeTranscript(AgentLegacyConversationProjection.encode(request.history, AgentLegacyConversationProjection.DIRECT_CHARS)).map { message ->
@@ -471,7 +570,7 @@ internal object AgentRuntimeWire {
             assistantScreenContext = bundle.getString(KEY_ASSISTANT_SCREEN_CONTEXT).orEmpty().also {
                 require(it.length <= AssistantScreenContextProjection.MAX_CHARS) { "助理屏幕上下文超过容量预算" }
             },
-            operation = bundle.getString("operation")?.also { require(it in setOf(OP_CHAT, OP_COMPACT, OP_REWRITE_REPLY)) } ?: OP_CHAT,
+            operation = bundle.getString("operation")?.also { require(it in setOf(OP_CHAT, OP_RESUME_INPUT, OP_COMPACT, OP_REWRITE_REPLY, OP_MODEL_TASK, OP_PACKAGE_ACTION)) } ?: OP_CHAT,
             compactionSelection = if (bundle.containsKey(KEY_COMPACTION_START) && bundle.containsKey(KEY_COMPACTION_END)) {
                 bundle.getInt(KEY_COMPACTION_START)..bundle.getInt(KEY_COMPACTION_END)
             } else null,
@@ -504,7 +603,10 @@ internal object AgentRuntimeWire {
                     .ifBlank { io.github.mangi.eta.data.model.OpenAiEndpointMode.CHAT_COMPLETIONS },
                 hostedWebSearchEnabled = bundle.getBoolean(KEY_HOSTED_WEB_SEARCH_ENABLED, false),
                 supportsSearchSuggestions = bundle.getBoolean(KEY_SUPPORTS_SEARCH_SUGGESTIONS, false),
-                supportsTools = bundle.getBoolean(KEY_SUPPORTS_TOOLS, true),
+                // Missing capability fields come from older IPC payloads. Keep them closed,
+                // matching the model database projection and avoiding unsupported provider fields.
+                supportsTools = bundle.getBoolean(KEY_SUPPORTS_TOOLS, false),
+                supportsImageInput = bundle.getBoolean(KEY_SUPPORTS_IMAGE_INPUT, false),
                 terminalTools = bundle.getBoolean(KEY_TERMINAL_TOOLS),
                 browserTools = if (bundle.containsKey(KEY_BROWSER_TOOLS)) {
                     bundle.getBoolean(KEY_BROWSER_TOOLS)
@@ -556,6 +658,18 @@ internal object AgentRuntimeWire {
                 disallowedTools = bundle.getStringArrayList(KEY_TOOL_DENYLIST).orEmpty(),
             ),
             promptScope = PromptRunScope.fromJson(bundle.getString(KEY_PROMPT_SCOPE_JSON)),
+            a2aLocalApproval = bundle.getBundle("a2a_local_approval")?.let { grant ->
+                A2ALocalApprovalGrant(grant.getString("task_id").orEmpty(), grant.getString("message_id").orEmpty(),
+                    grant.getInt("continuation_count"), grant.getStringArrayList("allowed_tools").orEmpty().toSet(),
+                    grant.getStringArrayList("allowed_tool_effects").orEmpty().toSet(),
+                    grant.getString("original_fingerprint").orEmpty(), grant.getString("current_fingerprint").orEmpty(),
+                    grant.getString("pending_tool").orEmpty(), grant.getString("pending_effect").orEmpty(),
+                    grant.getString("pending_arguments_digest").orEmpty())
+            },
+            a2aContinuationCount = if (bundle.containsKey("a2a_continuation_count")) {
+                bundle.getInt("a2a_continuation_count")
+            } else null,
+            a2aSettledCalls = bundle.getStringArrayList("a2a_settled_calls").orEmpty().toList(),
         )
 
     fun toBundle(handoff: EntryHandoff): Bundle = Bundle().apply {
@@ -611,6 +725,13 @@ internal object AgentRuntimeWire {
             ),
         )
         putString(KEY_ERROR, error?.boundedText(MAX_DRAIN_CONTENT_CHARS))
+        failureCode?.let { putString("failure_code", it) }
+        // 暂停详情不是正文预览：它决定 A2A 能否恢复待答问题/待批调用。排空结果也必须带上，
+        // 否则客户端断连后 outbox 只剩 A2A_* 失败码，暂停无法在重连时恢复。
+        pause?.let { pause ->
+            val encoded = json.encodeToString(if (compactForDrain) pause.boundedForDrain() else pause)
+            if (!compactForDrain || encoded.length <= MAX_DRAIN_PAUSE_CHARS) putString("pause_json", encoded)
+        }
         putString(
             KEY_TRANSCRIPT_JSON,
             if (compactForDrain) {
@@ -631,9 +752,19 @@ internal object AgentRuntimeWire {
             ok = bundle.getBoolean(KEY_OK),
             content = bundle.getString(KEY_CONTENT).orEmpty(),
             error = bundle.getString(KEY_ERROR),
+            failureCode = bundle.getString("failure_code"),
+            pause = pauseFromJson(bundle.getString("pause_json")),
             reasoningContent = bundle.getString(KEY_REASONING_CONTENT).orEmpty(),
             transcript = AgentConversationCodec.decodeTranscript(bundle.getString(KEY_TRANSCRIPT_JSON)),
         )
+
+    /** 终端结果落 outbox 时复用同一 [RunPause] 编码，恢复时不需要第二套格式。 */
+    fun pauseToJson(pause: RunPause): String = json.encodeToString(pause)
+
+    /** 缺失、损坏或跨版本的暂停摘要按无暂停处理，绝不猜测。 */
+    fun pauseFromJson(encoded: String?): RunPause? =
+        encoded?.takeIf(String::isNotBlank)
+            ?.let { value -> runCatching { json.decodeFromString<RunPause>(value) }.getOrNull() }
 
     fun toBundle(completedRun: CompletedRun): Bundle = completedRun.toBundle(compactForDrain = false)
 
@@ -649,6 +780,13 @@ internal object AgentRuntimeWire {
             result = runResultFromBundle(bundle.getBundle(KEY_RESULT) ?: Bundle()),
             createdAt = bundle.getLong(KEY_CREATED_AT)
         )
+
+    fun completedResultsQueryBundle(source: String?, after: CompletedRun? = null): Bundle = Bundle().apply {
+        putBoolean("complete_result_refs", true)
+        putString("handoff_source", source)
+        putLong(KEY_RESULT_AFTER_CREATED_AT, after?.createdAt ?: Long.MIN_VALUE)
+        putString(KEY_RESULT_AFTER_RUN_ID, after?.result?.runId.orEmpty())
+    }
 
     fun completedRunsToBundle(results: List<CompletedRun>): Bundle = Bundle().apply {
         putParcelableArrayList(
@@ -674,6 +812,7 @@ internal object AgentRuntimeWire {
                 putString("phase", run.phase.wireValue)
                 putString("operation", run.operation)
                 putString("handoff_source", run.handoffSource)
+                putString("host_states", run.hostStatesJson.take(64_000))
             }
         }))
     }
@@ -687,6 +826,7 @@ internal object AgentRuntimeWire {
                 phase = RunPhase.fromWireValue(item.getString("phase").orEmpty()),
                 operation = item.getString("operation") ?: OP_CHAT,
                 handoffSource = item.getString("handoff_source").orEmpty(),
+                hostStatesJson = item.getString("host_states") ?: "[]",
             )
         }
 
@@ -710,6 +850,22 @@ internal object AgentRuntimeWire {
             take(headChars) + TRUNCATED_SUFFIX + takeLast(tailChars)
         }
 
+    /**
+     * 排空通道的暂停摘要：字段与生成端已有的校验上限一致，只截断不重写。
+     * 仍由调用方在编码后检查总长度，超限时退回失败码，绝不发送被截断的半截 JSON。
+     */
+    private fun RunPause.boundedForDrain(): RunPause = copy(
+        question = question.take(MAX_PAUSE_QUESTION_CHARS),
+        options = options.take(MAX_PAUSE_OPTIONS).map { it.take(MAX_PAUSE_OPTION_CHARS) },
+        reason = reason.take(MAX_PAUSE_REASON_CHARS),
+        pendingCallId = pendingCallId.take(MAX_PAUSE_IDENTITY_CHARS),
+        pendingTool = pendingTool.take(MAX_PAUSE_IDENTITY_CHARS),
+        pendingEffect = pendingEffect.take(MAX_PAUSE_IDENTITY_CHARS),
+        pendingArgumentsDigest = pendingArgumentsDigest.take(MAX_PAUSE_IDENTITY_CHARS),
+        settledCalls = settledCalls.take(MAX_PAUSE_SETTLED_CALLS)
+            .map { it.take(MAX_PAUSE_IDENTITY_CHARS * 2) },
+    )
+
     private fun requireStartRequestWithinBinderBudget(bundle: Bundle) {
         val parcel = Parcel.obtain()
         val sizeBytes = try {
@@ -726,6 +882,11 @@ internal object AgentRuntimeWire {
     /** 将 [AgentEvent] 打包为可跨进程传递的 [Bundle]。 */
     fun eventToBundle(event: AgentEvent): Bundle = Bundle().apply {
         when (event) {
+            is AgentEvent.PluginUiFrame -> {
+                putString(KEY_TYPE, "plugin_ui_frame")
+                putString("package_id", event.packageId); putString("digest", event.digest); putString("module_id", event.moduleId)
+                putInt("sequence", event.sequence); putString("document_json", event.documentJson)
+            }
             is AgentEvent.AccessibilityWaiting -> {
                 putString(KEY_TYPE, "accessibility_wait")
                 putInt("outage", event.outage)
@@ -734,6 +895,12 @@ internal object AgentRuntimeWire {
             is AgentEvent.GuiControlChanged -> {
                 putString(KEY_TYPE, "gui_control_changed")
                 putString("status", event.status.wireValue)
+            }
+            is AgentEvent.ApprovalChanged -> {
+                putString(KEY_TYPE, "approval_changed")
+                putString("approval_id", event.approvalId)
+                putString("tool_name", event.toolName)
+                putString("phase", event.phase.name)
             }
             is AgentEvent.RunStarted -> {
                 putString(KEY_TYPE, "run_started")
@@ -821,6 +988,7 @@ internal object AgentRuntimeWire {
                 putInt("content_chars", event.contentChars)
                 putString("reasoning_content", event.reasoningContent)
                 putStringArrayList("tool_names", ArrayList(event.toolNames))
+                if (event.artifacts.isNotEmpty()) putString("artifacts", AgentArtifactReference.encode(event.artifacts).toString())
             }
 
             is AgentEvent.UsageReceived -> {
@@ -853,7 +1021,12 @@ internal object AgentRuntimeWire {
                 putInt("image_count", event.imageCount)
                 putInt("image_bytes", event.imageBytes)
                 event.success?.let { putBoolean("success", it) }
+                if (event.effectUnknown) putBoolean("effect_unknown", true)
                 event.command?.let { putString("command", it.boundedText(MAX_DRAIN_CONTENT_CHARS)) }
+                event.artifactId?.let { putString("artifact_id", it) }
+                event.artifactName?.let { putString("artifact_name", it) }
+                if (event.artifacts.isNotEmpty()) putString("artifacts", AgentArtifactReference.encode(event.artifacts).toString())
+                event.workflowReference?.let { putString("workflow_reference", it) }
             }
 
             is AgentEvent.SubagentProgress -> {
@@ -863,6 +1036,23 @@ internal object AgentRuntimeWire {
                 putString("subagent_id", event.subagentId)
                 putString("subagent_type", event.subagentType)
                 putString("snapshot_json", event.snapshotJson.boundedText(MAX_DRAIN_CONTENT_CHARS))
+            }
+
+            is AgentEvent.SubagentQueued -> {
+                putString(KEY_TYPE, "subagent_queued")
+                putInt("round", event.round)
+                putString("tool_call_id", event.toolCallId)
+                putString("subagent_type", event.subagentType)
+                putInt("max_parallel_agents", event.maxParallelAgents)
+                putInt("queue_position", event.queuePosition)
+            }
+
+            is AgentEvent.SubagentAdmitted -> {
+                putString(KEY_TYPE, "subagent_admitted")
+                putInt("round", event.round)
+                putString("tool_call_id", event.toolCallId)
+                putString("subagent_type", event.subagentType)
+                putLong("waited_millis", event.waitedMillis)
             }
 
             is AgentEvent.HostedToolStarted -> {
@@ -903,6 +1093,15 @@ internal object AgentRuntimeWire {
 
     /** 将 [Bundle] 还原为 [AgentEvent]，无法识别时返回 null。 */
     fun eventFromBundle(bundle: Bundle): AgentEvent? = when (bundle.getString(KEY_TYPE)) {
+        "approval_changed" -> RunApprovalPhase.entries.firstOrNull {
+            it.name == bundle.getString("phase")
+        }?.let { phase ->
+            AgentEvent.ApprovalChanged(
+                bundle.getString("approval_id").orEmpty(),
+                bundle.getString("tool_name").orEmpty(),
+                phase,
+            )
+        }
         "accessibility_wait" -> io.github.mangi.eta.agent.accessibility.AccessibilityWaitPhase
             .fromWireValue(bundle.getString("phase").orEmpty())
             ?.let { AgentEvent.AccessibilityWaiting(bundle.getInt("outage"), it) }
@@ -976,6 +1175,8 @@ internal object AgentRuntimeWire {
             replacementContent = bundle.getString("replacement_content"),
         )
 
+        "plugin_ui_frame" -> runCatching { AgentEvent.PluginUiFrame(bundle.getString("package_id").orEmpty(), bundle.getString("digest").orEmpty(),
+            bundle.getString("module_id").orEmpty(), bundle.getInt("sequence"), bundle.getString("document_json").orEmpty()) }.getOrNull()
         "search_suggestions" -> bundle.getString("html")
             ?.takeIf(SearchSuggestionsPayload::isValidHtml)
             ?.let { html ->
@@ -988,6 +1189,7 @@ internal object AgentRuntimeWire {
             contentChars = bundle.getInt("content_chars"),
             reasoningContent = bundle.getString("reasoning_content").orEmpty(),
             toolNames = bundle.getStringArrayList("tool_names").orEmpty(),
+            artifacts = AgentArtifactReference.decode(bundle.getString("artifacts")),
         )
 
         "usage_received" -> AgentEvent.UsageReceived(
@@ -1017,7 +1219,14 @@ internal object AgentRuntimeWire {
             imageBytes = bundle.getInt("image_bytes"),
             // 旧版本 Runtime 不发送 success，缺省为 null 由消费端回退判断
             success = if (bundle.containsKey("success")) bundle.getBoolean("success") else null,
+            effectUnknown = bundle.getBoolean("effect_unknown", false),
             command = bundle.getString("command"),
+            artifactId = bundle.getString("artifact_id")?.takeIf { it.matches(Regex("[A-Za-z0-9][A-Za-z0-9._:-]{0,255}")) },
+            artifactName = bundle.getString("artifact_name")?.take(255),
+            artifacts = AgentArtifactReference.decode(bundle.getString("artifacts")),
+            workflowReference = bundle.getString("workflow_reference")?.takeIf {
+                it.matches(Regex("nexus-workflow://[a-f0-9]{64}/(?:plan|goal|notepad)/[a-f0-9]{64}"))
+            },
         )
 
         "subagent_progress" -> AgentEvent.SubagentProgress(
@@ -1026,6 +1235,21 @@ internal object AgentRuntimeWire {
             subagentId = bundle.getString("subagent_id").orEmpty(),
             subagentType = bundle.getString("subagent_type").orEmpty(),
             snapshotJson = bundle.getString("snapshot_json").orEmpty(),
+        )
+
+        "subagent_queued" -> AgentEvent.SubagentQueued(
+            round = bundle.getInt("round"),
+            toolCallId = bundle.getString("tool_call_id").orEmpty(),
+            subagentType = bundle.getString("subagent_type").orEmpty(),
+            maxParallelAgents = bundle.getInt("max_parallel_agents"),
+            queuePosition = bundle.getInt("queue_position"),
+        )
+
+        "subagent_admitted" -> AgentEvent.SubagentAdmitted(
+            round = bundle.getInt("round"),
+            toolCallId = bundle.getString("tool_call_id").orEmpty(),
+            subagentType = bundle.getString("subagent_type").orEmpty(),
+            waitedMillis = bundle.getLong("waited_millis"),
         )
 
         "hosted_tool_started" -> AgentEvent.HostedToolStarted(

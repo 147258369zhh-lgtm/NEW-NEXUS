@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.Settings
 import androidx.core.content.edit
 import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.agent.device.BoundedRootCommandExecutor
@@ -47,7 +48,7 @@ internal object RootAccessibilityRecovery {
     private val mutableState = MutableStateFlow(RootAccessibilityRecoveryState())
     val state = mutableState.asStateFlow()
     private val running = AtomicBoolean()
-    private val budget = AccessibilityRecoveryBudget()
+    private var recoveryBudget: AccessibilityRecoveryBudget? = null
     private val executionLock = ReentrantLock()
     @Volatile private var appContext: Context? = null
     @Volatile private var lease: AccessibilityRecoveryLease? = null
@@ -57,6 +58,7 @@ internal object RootAccessibilityRecovery {
         if (appContext != null) return
         val app = context.applicationContext
         appContext = app
+        budget(app)
         mutableState.value = RootAccessibilityRecoveryState(preferences(app).getBoolean(ENABLED, false))
         scope.launch { RootAccess.state.collect { schedule(app) } }
         scope.launch { AgentAccessibilityHealth.observeChanges(app).collect { schedule(app) } }
@@ -76,15 +78,29 @@ internal object RootAccessibilityRecovery {
             return
         }
         mutableState.value = RootAccessibilityRecoveryState(enabled)
-        budget.reset()
+        if (enabled && !budget(context).reset()) {
+            mutableState.value = RootAccessibilityRecoveryState(enabled, RootAccessibilityRecoveryStatus.SAVE_FAILED)
+            return
+        }
         schedule(context.applicationContext)
     }
 
-    fun retry(context: Context) {
+    fun retry(context: Context): Boolean {
         initialize(context)
-        budget.reset()
+        if (!isEnabled(context)) {
+            mutableState.value = RootAccessibilityRecoveryState(false, RootAccessibilityRecoveryStatus.OFF)
+            return false
+        }
+        if (!resetRecoveryBudget(context)) {
+            mutableState.value = mutableState.value.copy(status = RootAccessibilityRecoveryStatus.SAVE_FAILED)
+            return false
+        }
         schedule(context.applicationContext)
+        return true
     }
+
+    /** Explicit user retry is the only path that opens a new recovery budget. */
+    internal fun resetRecoveryBudget(context: Context): Boolean = budget(context).reset()
 
     private fun schedule(context: Context) {
         if (!running.compareAndSet(false, true)) return
@@ -118,7 +134,15 @@ internal object RootAccessibilityRecovery {
         try {
             val connected = AgentAccessibilityService.isAvailable()
             val history = AgentAccessibilityHealth.history.value
-            budget.recordConnection(history.lastConnectedAtMs, history.lastDisconnectedAtMs, SystemClock.elapsedRealtime(), connected)
+            val bootCount = bootCount(context)
+            val sameBoot = history.connectionBootCount != null && history.connectionBootCount == bootCount
+            budget(context).recordConnection(
+                history.lastConnectedAtMs.takeIf { sameBoot },
+                history.lastDisconnectedAtMs.takeIf { sameBoot },
+                SystemClock.elapsedRealtime(),
+                connected,
+                bootCount,
+            )
             if (connected) {
                 update(context, if (isEnabled(context)) RootAccessibilityRecoveryStatus.READY else RootAccessibilityRecoveryStatus.OFF)
                 return AccessibilityEnableResult.available(false)
@@ -135,7 +159,7 @@ internal object RootAccessibilityRecovery {
                 update(context, RootAccessibilityRecoveryStatus.READY)
                 return failure("ACCESSIBILITY_PROTECTION_ACTIVE") // 两种恢复后端不同时写入。
             }
-            val wait = budget.acquire(SystemClock.elapsedRealtime())
+            val wait = budget(context).acquire(System.currentTimeMillis(), bootCount)
             if (wait == null) { update(context, RootAccessibilityRecoveryStatus.EXHAUSTED); return failure("ACCESSIBILITY_RECOVERY_EXHAUSTED") }
             if (wait > 0L) { update(context, RootAccessibilityRecoveryStatus.WAITING); return failure("ACCESSIBILITY_RECOVERY_COOLDOWN") }
             update(context, RootAccessibilityRecoveryStatus.RECOVERING)
@@ -274,6 +298,18 @@ internal object RootAccessibilityRecovery {
         return saved
     }
 
+    @Synchronized
+    private fun budget(context: Context): AccessibilityRecoveryBudget {
+        recoveryBudget?.let { return it }
+        return AccessibilityRecoveryBudget(PrefsAccessibilityRecoveryBudgetStore(preferences(context)))
+            .also { recoveryBudget = it }
+    }
+
+    /** Settings.Global boot_count identifies a boot; unavailable identity forces conservative backoff. */
+    private fun bootCount(context: Context): Int? = runCatching {
+        Settings.Global.getInt(context.contentResolver, "boot_count").takeIf { it >= 0 }
+    }.getOrNull()
+
     private fun pending(context: Context) = preferences(context).getBoolean(PENDING, false)
     private fun preferences(context: Context) = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private fun update(context: Context, status: RootAccessibilityRecoveryStatus) {
@@ -307,4 +343,40 @@ internal object RootAccessibilityRecovery {
     private fun failure(code: String, requested: Boolean = false) = AccessibilityEnableResult.failure(
         code, "无障碍恢复未完成（$code）；请检查权限健康页或在系统设置中重新开启 Nexus。本次屏幕操作未执行。", requested,
     )
+}
+
+internal class PrefsAccessibilityRecoveryBudgetStore(
+    private val preferences: android.content.SharedPreferences,
+) : AccessibilityRecoveryBudgetStore {
+    override fun load(): AccessibilityRecoveryBudgetRecord {
+        val values = runCatching { preferences.all }.getOrDefault(emptyMap())
+        val attemptsValue = values[MapAccessibilityRecoveryBudgetStore.KEY_ATTEMPTS]
+        val timestampValue = values[MapAccessibilityRecoveryBudgetStore.KEY_ATTEMPT_AT_EPOCH_MS]
+        val bootValue = values[MapAccessibilityRecoveryBudgetStore.KEY_ATTEMPT_BOOT_COUNT]
+        // A malformed record must never reopen an automatic Root recovery budget.
+        val attempts = (attemptsValue as? Number)?.toLong()?.let { stored ->
+            if (stored !in 0L..3L) 3 else stored.toInt()
+        } ?: if (attemptsValue == null && timestampValue == null && bootValue == null) 0 else 3
+        val timestamp = (timestampValue as? Number)?.toLong()
+        val boot = (bootValue as? Number)?.toInt()?.takeIf { it >= 0 }
+        val malformedAttempt = attempts > 0 && (timestamp == null || timestamp <= 0L || boot == null)
+        return AccessibilityRecoveryBudgetRecord(
+            attempts = if (malformedAttempt) 3 else attempts,
+            lastAttemptAtEpochMs = timestamp,
+            lastAttemptBootCount = boot,
+        )
+    }
+
+    override fun save(record: AccessibilityRecoveryBudgetRecord): Boolean =
+        runCatching {
+            preferences.edit()
+                .putInt(MapAccessibilityRecoveryBudgetStore.KEY_ATTEMPTS, record.attempts)
+                .apply {
+                    record.lastAttemptAtEpochMs?.let { putLong(MapAccessibilityRecoveryBudgetStore.KEY_ATTEMPT_AT_EPOCH_MS, it) }
+                        ?: remove(MapAccessibilityRecoveryBudgetStore.KEY_ATTEMPT_AT_EPOCH_MS)
+                    record.lastAttemptBootCount?.let { putInt(MapAccessibilityRecoveryBudgetStore.KEY_ATTEMPT_BOOT_COUNT, it) }
+                        ?: remove(MapAccessibilityRecoveryBudgetStore.KEY_ATTEMPT_BOOT_COUNT)
+                }
+                .commit()
+        }.getOrDefault(false)
 }

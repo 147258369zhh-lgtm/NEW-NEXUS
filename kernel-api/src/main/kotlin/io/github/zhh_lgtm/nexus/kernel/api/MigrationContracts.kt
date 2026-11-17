@@ -24,7 +24,8 @@ data class MigrationArtifactEntry(
     val category: MigrationCategory,
 ) {
     init {
-        require(path.isNotBlank() && !path.startsWith('/') && !path.contains("..")) { "Unsafe migration path" }
+        require(path.isNotBlank() && path.length <= 4096 && !path.startsWith('/') && '\\' !in path && '\u0000' !in path &&
+            !Regex("^[A-Za-z]:").containsMatchIn(path) && path.split('/').none { it.isEmpty() || it == "." || it == ".." }) { "Unsafe migration path" }
         require(sha256.matches(Regex("[a-fA-F0-9]{64}"))) { "Invalid SHA-256" }
         require(bytes >= 0) { "Invalid artifact size" }
     }

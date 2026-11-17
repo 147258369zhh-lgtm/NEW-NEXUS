@@ -55,7 +55,7 @@ internal object AgentMemoryToolCatalog {
                 .put("enum", JSONArray().put("replace_range").put("append").put("clear"))
                 .put("description", "replace_range edits inclusive 1-based lines; append adds a distinct section; clear removes all memory."))
             .put("revision", JSONObject().put("type", "string").put("minLength", 64).put("maxLength", 64)
-                .put("description", "Exact SHA-256 revision from the most recent memory_write or memory_get result, or the session memory snapshot."))
+                .put("description", "Exact SHA-256 revision returned by memory_get or memory_write for the same target scope. Read that scope first."))
             .put("start_line", JSONObject().put("type", "integer").put("minimum", 1)
                 .put("description", "Required for replace_range; inclusive 1-based first line."))
             .put("end_line", JSONObject().put("type", "integer").put("minimum", 1)
@@ -67,7 +67,7 @@ internal object AgentMemoryToolCatalog {
                 .put("description", "For append: optional memory layer; defaults to the existing Markdown behavior."))
             .put("scope", JSONObject().put("type", "string")
                 .put("enum", JSONArray().put("global").put("project").put("current"))
-                .put("description", "Optional target scope. The model can only access scopes attached to the current run."))
+                .put("description", "Target scope. Specify it explicitly; read the same scope first to obtain its revision. The model can only access scopes attached to the current run."))
         tools.put(
             AgentToolSchema.function(
                 name = "memory_write",

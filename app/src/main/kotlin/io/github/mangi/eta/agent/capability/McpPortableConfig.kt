@@ -2,6 +2,8 @@ package io.github.mangi.eta.agent.capability
 
 import android.content.Context
 import io.github.mangi.eta.agent.mcp.validateMcpEndpoint
+import io.github.mangi.eta.agent.mcp.McpServerLifecycleService
+import io.github.mangi.eta.data.model.McpExecutionTarget
 import io.github.mangi.eta.data.model.McpAuthorizationType
 import io.github.mangi.eta.data.model.McpProtocolMode
 import io.github.mangi.eta.data.model.McpServerSetting
@@ -22,6 +24,8 @@ data class McpPortableConnection(
     val stdioArguments: List<String> = emptyList(),
     val launchCommand: String = "",
     val workingDirectory: String = "",
+    val executionTarget: String = McpExecutionTarget.ANDROID,
+    val linuxBackend: String = "chroot",
     val enabled: Boolean = true,
     val protocolMode: String = McpProtocolMode.AUTO,
     val authorizationType: String = McpAuthorizationType.NONE,
@@ -63,6 +67,8 @@ internal object McpPortableCodec {
                             .put("stdioArguments", JSONArray(server.stdioArguments))
                             .put("launchCommand", server.launchCommand)
                             .put("workingDirectory", server.workingDirectory)
+                            .put("executionTarget", server.executionTarget)
+                            .put("linuxBackend", server.linuxBackend)
                             .put("enabled", server.enabled)
                             .put("protocolMode", supportedProtocol(server.protocolMode))
                             .put("authorizationType", supportedAuthorization(server.authorizationType))
@@ -96,7 +102,7 @@ internal object McpPortableCodec {
                 add(parseConnection(value, index))
             }
         }
-        if (connections.map { it.transportType to (it.url.ifBlank { it.stdioCommand }) }.distinct().size != connections.size) {
+        if (connections.map { listOf(it.transportType, it.url.ifBlank { it.stdioCommand }, it.executionTarget, it.linuxBackend) }.distinct().size != connections.size) {
             throw McpPortableConfigException("MCP 配置中存在重复连接")
         }
         return McpPortableBundle(
@@ -127,6 +133,10 @@ internal object McpPortableCodec {
         if (parsedUrl != null && (parsedUrl.query != null || parsedUrl.fragment != null)) {
             throw McpPortableConfigException("${label}地址不能包含查询参数或片段，请使用独立认证字段")
         }
+        val target = value.optString("executionTarget", McpExecutionTarget.ANDROID)
+        val backend = value.optString("linuxBackend", "chroot")
+        if (target !in McpExecutionTarget.values || backend !in McpExecutionTarget.backends)
+            throw McpPortableConfigException("${label}执行位置无效")
         val protocol = value.optString("protocolMode", McpProtocolMode.AUTO)
         if (protocol !in supportedProtocols) throw McpPortableConfigException("${label}协议模式无效")
         val authorization = value.optString("authorizationType", McpAuthorizationType.NONE)
@@ -163,6 +173,8 @@ internal object McpPortableCodec {
             stdioArguments = arguments,
             launchCommand = value.optString("launchCommand").take(8_000),
             workingDirectory = value.optString("workingDirectory").take(2_000),
+            executionTarget = target,
+            linuxBackend = backend,
             enabled = value.optBoolean("enabled", true),
             protocolMode = protocol,
             authorizationType = authorization,
@@ -196,7 +208,7 @@ internal class McpPortableConfigService(
     constructor(context: Context) : this(
         listServers = { McpServerRepository.servers() },
         addServer = { server -> McpServerRepository.addUnconfigured(server) },
-        deleteServer = { serverId -> McpServerRepository.delete(serverId) },
+        deleteServer = { serverId -> McpServerLifecycleService().delete(serverId) },
     )
 
     suspend fun exportJson(): String {
@@ -206,9 +218,9 @@ internal class McpPortableConfigService(
     suspend fun importJson(raw: String): McpPortableImportResult {
         val bundle = McpPortableCodec.decode(raw)
         val existing = listServers()
-        val seenUrls = existing.mapTo(mutableSetOf()) { it.transportType to (it.url.ifBlank { it.stdioCommand }) }
+        val seenUrls = existing.mapTo(mutableSetOf()) { listOf(it.transportType, it.url.ifBlank { it.stdioCommand }, it.executionTarget, it.linuxBackend) }
         val unique = bundle.connections.filter { connection ->
-            seenUrls.add(connection.transportType to (connection.url.ifBlank { connection.stdioCommand }))
+            seenUrls.add(listOf(connection.transportType, connection.url.ifBlank { connection.stdioCommand }, connection.executionTarget, connection.linuxBackend))
         }
         val added = mutableListOf<String>()
         try {
@@ -222,6 +234,8 @@ internal class McpPortableConfigService(
                     stdioArguments = connection.stdioArguments,
                     launchCommand = connection.launchCommand,
                     workingDirectory = connection.workingDirectory,
+                    executionTarget = connection.executionTarget,
+                    linuxBackend = connection.linuxBackend,
                     enabled = connection.enabled,
                     protocolMode = connection.protocolMode,
                     authorizationType = connection.authorizationType,

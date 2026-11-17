@@ -10,6 +10,19 @@ import kotlin.concurrent.thread
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** 停止结果必须由进程检查得出；未识别的退出码一律视为“无法确认”。 */
+internal enum class StopVerification {
+    CONFIRMED_GONE,
+    OWNED_PROCESS_REMAINS,
+    UNCONFIRMED,
+}
+
+internal fun classifyStopExit(exitCode: Int): StopVerification = when (exitCode) {
+    0 -> StopVerification.CONFIRMED_GONE
+    81 -> StopVerification.OWNED_PROCESS_REMAINS
+    else -> StopVerification.UNCONFIRMED
+}
+
 /**
  * 守护任务（detached task）宿主：启动脱离任何命令会话进程组的长驻进程，并托管其生命周期。
  *
@@ -28,7 +41,9 @@ internal class DetachedTaskSupervisor(
     private val daemonDir: String = DEFAULT_DAEMON_DIR,
     private val linuxSharedMountsProvider: () -> List<SharedFolderMount> = { emptyList() },
     private val rootAvailable: () -> Boolean = { TerminalRuntime.rootAvailable },
-    private val oneShotSupervisor: ShellProcessSupervisor = ShellProcessSupervisor(rootAvailable = rootAvailable),
+    private val workspacePath: String? = null,
+    private val linuxLimits: LinuxExecutionLimits? = null,
+    private val oneShotSupervisor: ShellProcessSupervisor = ShellProcessSupervisor(rootAvailable = rootAvailable, workspacePath = workspacePath, linuxLimits = linuxLimits),
     private val acquireUserLease: (String, () -> Unit) -> Boolean = TerminalRuntime::acquireUserTask,
     private val releaseUserLease: (String) -> Unit = TerminalRuntime::releaseUserTask,
 ) {
@@ -125,6 +140,8 @@ internal class DetachedTaskSupervisor(
             commandTask = commandTask,
             description = description,
             timeoutMs = timeoutMs,
+            backend = LinuxEnvironmentPaths.backendOf(rootfsPath(environment)),
+            hostWorkspace = if (environment.isLinux) hostWorkspaceFor(environment, identity) else null,
         )
         if (!synchronized(RECORDS_LOCK) { saveTasksLocked(loadTasksLocked() + task) }) {
             stopTaskProcess(task)
@@ -211,7 +228,7 @@ internal class DetachedTaskSupervisor(
 
     private fun startCommand(id: String, command: String, cwd: String, identity: String,
         environment: TerminalEnvironment, description: String, timeoutMs: Long): DaemonStartResult {
-        val workspace = if (identity == "user") TerminalRuntime.userWorkspacePath else TerminalRuntime.ROOT_WORKSPACE_PATH
+        val workspace = hostWorkspaceFor(environment, identity)
         val wireDir = when {
             environment.isLinux -> LINUX_DAEMON_DIR
             identity == "user" && daemonDir == DEFAULT_DAEMON_DIR -> "$workspace/daemon"
@@ -260,8 +277,14 @@ internal class DetachedTaskSupervisor(
         val task = findTask(id)?.takeIf { it.commandTask } ?: return false
         if (task.completedAt != null) return true
         if (task.identity == "root" && !rootAvailable()) return false
-        COMMAND_PROCESSES[id]?.stopReason = reason
-        if (!stopTaskProcess(task, removeFiles = false)) return false
+        val live = COMMAND_PROCESSES[id]
+        live?.stopReason = reason
+        if (!stopTaskProcess(task, removeFiles = false)) {
+            // 停止未确认时恢复运行语义，避免完成线程把残留进程记成 stopped。
+            live?.stopReason = null
+            logger.warn("Agent terminal command action=stop outcome=unconfirmed taskId=$id")
+            return false
+        }
         return completeCommand(id, null, reason) != null
     }
 
@@ -325,33 +348,49 @@ internal class DetachedTaskSupervisor(
     private fun stopTaskProcess(task: DetachedTask, removeFiles: Boolean = true): Boolean {
         COMMAND_PROCESSES[task.id]?.let { live ->
             live.supervisor.terminateAndReap(live.process)
-            if (!removeFiles) return true
+        }
+        val proof = ownerProof(task)
+        fun groupSignal(signal: String): String = if (task.isolatedGroup != null) {
+            "kill -$signal ${if (task.isolatedGroup) "-" else ""}${task.pid} 2>/dev/null"
+        } else {
+            "if [ -d /proc ]; then kill -$signal -${task.pid} 2>/dev/null; else kill -$signal ${task.pid} 2>/dev/null; fi"
         }
         val stopScript = buildString {
             appendLine(aliveCheckFunction())
-            appendLine("if eta_alive ${task.pid} ${shellQuote(ownerProof(task))}; then")
+            appendLine(ownedProcessesFunction())
+            appendLine("eta_proof=${shellQuote(proof)}")
+            appendLine("if eta_alive ${task.pid} \"\$eta_proof\"; then")
             // setsid 路径下 pgid==pid，按组一次收整棵树；无 setsid 的退化环境只杀主进程。
-            if (task.isolatedGroup != null) {
-                appendLine("  kill -TERM ${if (task.isolatedGroup) "-" else ""}${task.pid} 2>/dev/null")
-            } else appendLine("  if [ -d /proc ]; then kill -TERM -${task.pid} 2>/dev/null; else kill -TERM ${task.pid} 2>/dev/null; fi")
-            appendLine("  sleep 1")
-            appendLine("  if eta_alive ${task.pid} ${shellQuote(ownerProof(task))}; then")
-            if (task.isolatedGroup != null) {
-                appendLine("    kill -9 ${if (task.isolatedGroup) "-" else ""}${task.pid} 2>/dev/null")
-            } else appendLine("    if [ -d /proc ]; then kill -9 -${task.pid} 2>/dev/null; else kill -9 ${task.pid} 2>/dev/null; fi")
-            appendLine("  fi")
-            appendLine("  sleep 0.1")
-            appendLine("  eta_alive ${task.pid} ${shellQuote(ownerProof(task))} && exit 81")
+            appendLine("  ${groupSignal("TERM")}")
             appendLine("fi")
+            // 组长先退出时，剩余子进程仍带 ownership token，按 token 收回。
+            appendLine("eta_pids=\$(eta_owned \"\$eta_proof\")")
+            appendLine("[ -n \"\$eta_pids\" ] && kill -TERM \$eta_pids 2>/dev/null")
+            appendLine("  sleep 1")
+            appendLine("  if eta_alive ${task.pid} \"\$eta_proof\"; then")
+            appendLine("    ${groupSignal("KILL")}")
+            appendLine("  fi")
+            appendLine("  eta_pids=\$(eta_owned \"\$eta_proof\")")
+            appendLine("  [ -n \"\$eta_pids\" ] && kill -9 \$eta_pids 2>/dev/null")
+            appendLine("  sleep 0.1")
+            // 先检查再清记录：仍有本任务进程时失败关闭，记录保留可重试。
+            appendLine("  [ -n \"\$(eta_owned \"\$eta_proof\")\" ] && exit 81")
+            appendLine("  if [ ! -d /proc ] && eta_alive ${task.pid} \"\$eta_proof\"; then exit 81; fi")
             if (removeFiles) append("rm -f ${shellQuote(hostDaemonPath(task, task.logPath))} ${shellQuote(hostDaemonPath(task, task.logPath.removeSuffix(".log") + ".pid"))} ${shellQuote(hostDaemonPath(task, task.logPath.removeSuffix(".log") + ".exit"))}")
         }
         val result = runOneShotShell(
             processSupervisor = oneShotSupervisor,
             identity = task.identity,
             command = stopScript,
-            timeoutSeconds = 10,
+            timeoutSeconds = 20,
         )
-        return result.exitCode == 0
+        return when (val verification = classifyStopExit(result.exitCode)) {
+            StopVerification.CONFIRMED_GONE -> true
+            else -> {
+                logger.warn("Agent terminal task stop outcome=$verification taskId=${task.id}")
+                false
+            }
+        }
     }
 
     /** 存活判定校验 ownership token：PID 被系统复用时不会把无关进程当作本任务。无 /proc 的环境退化为存在性探测。 */
@@ -363,16 +402,28 @@ internal class DetachedTaskSupervisor(
             "else kill -0 \"\$1\" 2>/dev/null; fi; " +
             "}"
 
+    /** 按 ownership token 找出仍存活的本任务进程，组长死亡后也覆盖换组的子进程。 */
+    private fun ownedProcessesFunction(): String =
+        "eta_owned() { " +
+            "if [ -d /proc ]; then " +
+                "for eta_env in /proc/[0-9]*/environ; do " +
+                    "[ -r \"\$eta_env\" ] || continue; " +
+                    "grep -F -q \"\$1\" \"\$eta_env\" 2>/dev/null || continue; " +
+                    "eta_dir=\${eta_env%/environ}; echo \${eta_dir#/proc/}; " +
+                "done; " +
+            "fi; " +
+            "}"
+
     private fun ownerProof(task: DetachedTask): String = "$ETA_PROCESS_OWNER_ENV=${task.token}"
 
     /** 普通守护任务保留完整宿主壳和 tracer；guest 内不能再次脱离 PRoot 的生命周期。 */
     private fun startUserDaemon(id: String, token: String, command: String, cwd: String, environment: TerminalEnvironment): DaemonStartResult {
-        val workspace = if (environment.isLinux || daemonDir == DEFAULT_DAEMON_DIR) TerminalRuntime.userWorkspacePath else File(daemonDir).parent!!
+        val workspace = if (environment.isLinux || daemonDir == DEFAULT_DAEMON_DIR) hostWorkspaceFor(environment, "user") else File(daemonDir).parent!!
         val hostDir = if (environment.isLinux || daemonDir == DEFAULT_DAEMON_DIR) File(workspace, "daemon") else File(daemonDir)
         if (!hostDir.mkdirs() && !hostDir.isDirectory) return DaemonStartResult.Failed("WORKSPACE_UNAVAILABLE", "工作目录不可访问")
         val pidFile = File(hostDir, "$id.pid")
         val logFile = File(hostDir, "$id.log")
-        val commandBody = "exec sh -c ${shellQuote(command)}"
+        val commandBody = "exec sh -c ${shellQuote(if (environment.isLinux) linuxLimits?.command(command) ?: command else command)}"
         val payload = if (environment.isLinux) {
             val rootfs = rootfsPath(environment)
             if (!LinuxEnvironmentPaths.rootfsReady(rootfs)) return DaemonStartResult.Failed("LINUX_ENVIRONMENT_NOT_READY", "Linux 环境尚未安装")
@@ -524,6 +575,10 @@ internal class DetachedTaskSupervisor(
 
     private fun rootfsPath(environment: TerminalEnvironment): String? =
         linuxRootfsPathProvider?.invoke(environment) ?: linuxRootfsPath
+
+    internal fun hostWorkspaceFor(environment: TerminalEnvironment, identity: String): String =
+        if (environment.isLinux && workspacePath != null) workspacePath
+        else if (identity == "user") TerminalRuntime.userWorkspacePath else TerminalRuntime.ROOT_WORKSPACE_PATH
 
     private fun pruneExitedRecords(statuses: List<DetachedTaskStatus>) {
         val excess = statuses.size - MAX_RETAINED_RECORDS

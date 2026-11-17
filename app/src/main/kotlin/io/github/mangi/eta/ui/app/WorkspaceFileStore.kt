@@ -38,10 +38,11 @@ internal data class WorkspacePreview(
 
 internal class WorkspaceFileStore(
     context: Context,
+    private val boundaryPath: String = "",
     private val backendFor: (File) -> FileToolBackend = ::workspaceBackend,
 ) {
     private val appContext = context.applicationContext
-    private val artifactStore = WorkspaceArtifactStore(appContext)
+    private val artifactStore = io.github.mangi.eta.data.repository.NexusArtifactLedger(appContext)
     private val root: File
         get() {
             val workspace = TerminalPrivateStorage.workspace(appContext.filesDir)
@@ -50,6 +51,19 @@ internal class WorkspaceFileStore(
             }
             if (!workspace.isDirectory) throw IOException("WORKSPACE_DIRECTORY_UNAVAILABLE")
             return workspace.canonicalFile
+        }
+
+    private val boundary: File
+        get() {
+            val workspace = root
+            val portable = boundaryPath.replace('\\', '/').trim()
+            require(!portable.startsWith('/') && !portable.matches(Regex("^[A-Za-z]:/.*")) &&
+                portable.split('/').none { it == "." || it == ".." || '\u0000' in it }) { "WORKSPACE_PATH_OUTSIDE_ROOT" }
+            val selected = if (portable.isEmpty()) workspace else File(workspace, portable)
+            val canonical = selected.canonicalFile
+            require(canonical.toPath().startsWith(workspace.toPath()) &&
+                canonical.toPath() == selected.absoluteFile.toPath().normalize()) { "WORKSPACE_PATH_OUTSIDE_ROOT" }
+            return canonical
         }
 
     suspend fun list(path: String): List<WorkspaceEntry> = withContext(Dispatchers.IO) {
@@ -64,7 +78,7 @@ internal class WorkspaceFileStore(
             revision = page.revision
             page.entries.forEach { entry ->
                 val target = if (entry.kind == FileToolKind.SYMLINK) backend.stat(backend.resolve(entry.path)) else entry
-                if (File(target.path).toPath().startsWith(root.toPath()) && target.kind in setOf(FileToolKind.FILE, FileToolKind.DIRECTORY)) {
+                if (File(target.path).canonicalFile.toPath().startsWith(boundary.toPath()) && target.kind in setOf(FileToolKind.FILE, FileToolKind.DIRECTORY)) {
                     entries += WorkspaceEntry(File(entry.path).relativeTo(root).invariantSeparatorsPath, entry.name,
                         target.kind == FileToolKind.DIRECTORY, target.sizeBytes)
                 }
@@ -76,7 +90,8 @@ internal class WorkspaceFileStore(
         entries.sortedWith(compareByDescending<WorkspaceEntry> { it.directory }.thenBy { it.name.lowercase() })
     }
 
-    suspend fun importFile(uri: Uri): Boolean = withContext(Dispatchers.IO) {
+    suspend fun importFile(uri: Uri, subjectType: String? = null, subjectId: String? = null, projectId: String? = null): Boolean = withContext(Dispatchers.IO) {
+        require(boundary == root) { "WORKSPACE_PATH_OUTSIDE_ROOT" }
         when (val result = AgentFileReferenceGateway.importDocumentUri(appContext, uri)) {
             is AgentFileReferenceGateway.Resolution.Success -> {
                 val workspacePath = runCatching {
@@ -85,7 +100,9 @@ internal class WorkspaceFileStore(
                         .let { root.toPath().relativize(it).toString().replace(File.separatorChar, '/') }
                 }.getOrNull()
                 workspacePath?.let {
-                    artifactStore.record("manual-import", it, result.reference.displayName, status = WorkspaceArtifact.STATUS_VERIFIED)
+                    artifactStore.record(io.github.zhh_lgtm.nexus.application.api.ArtifactRecord("artifact-${UUID.randomUUID()}",
+                        "manual-import", it, result.reference.displayName, "file", io.github.zhh_lgtm.nexus.application.api.ArtifactStatus.VERIFIED,
+                        System.currentTimeMillis(), System.currentTimeMillis(), projectId, subjectType, subjectId))
                 }
                 true
             }
@@ -277,7 +294,7 @@ internal class WorkspaceFileStore(
         require(!portable.startsWith('/') && !portable.matches(Regex("^[A-Za-z]:/.*"))) { "WORKSPACE_PATH_OUTSIDE_ROOT" }
         require(portable.split('/').none { it == ".." || it == "." || '\u0000' in it }) { "WORKSPACE_PATH_OUTSIDE_ROOT" }
         return File(backend.resolve(portable)).canonicalFile.path.also {
-            require(File(it).toPath().startsWith(root.toPath())) { "WORKSPACE_PATH_OUTSIDE_ROOT" }
+            require(File(it).toPath().startsWith(boundary.toPath())) { "WORKSPACE_PATH_OUTSIDE_ROOT" }
         }
     }
 
@@ -292,7 +309,7 @@ internal class WorkspaceFileStore(
 
     private fun absoluteUnder(parent: String, name: String): String {
         val candidate = File(parent, name).canonicalFile
-        require(candidate.toPath().startsWith(root.toPath())) { "WORKSPACE_PATH_OUTSIDE_ROOT" }
+        require(candidate.toPath().startsWith(boundary.toPath())) { "WORKSPACE_PATH_OUTSIDE_ROOT" }
         return candidate.path
     }
 
@@ -301,7 +318,7 @@ internal class WorkspaceFileStore(
     }
 
     private fun requireNotRoot(path: String) {
-        require(File(path).canonicalFile != root) { "WORKSPACE_ROOT_PROTECTED" }
+        require(File(path).canonicalFile != boundary) { "WORKSPACE_ROOT_PROTECTED" }
     }
 
     private suspend fun copyBackendBytes(

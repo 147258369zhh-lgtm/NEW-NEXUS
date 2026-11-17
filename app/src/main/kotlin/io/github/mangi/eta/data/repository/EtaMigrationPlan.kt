@@ -8,14 +8,16 @@ internal object EtaMigrationPlan {
 
     val entries = listOf(
         Entry("core", ETA_DATABASE_VERSION, "core", "eta.db"),
-        Entry("conversation_extensions", 5, "conversation_extensions", "eta_fork.db"),
-        Entry("meeting", 5, "meeting", "eta_meeting.db"),
-        Entry("learning", 3, "learning", "eta_learning.db"),
-        Entry("tasks", 2, "tasks", "eta_task.db"),
-        Entry("a2a", 2, "a2a", "eta_a2a.db"),
+        Entry("conversation_extensions", 7, "conversation_extensions", "eta_fork.db"),
+        Entry("meeting", 7, "meeting", "eta_meeting.db"),
+        Entry("learning", 5, "learning", "eta_learning.db"),
+        Entry("tasks", 5, "tasks", "eta_task.db"),
+        Entry("a2a", 5, "a2a", "eta_a2a.db"),
         Entry("projects", 2, "projects", "eta_projects.db"),
         Entry("mcp_skills", ETA_DATABASE_VERSION, "mcp_skills", "eta.db"),
-        Entry("run_metrics", 3, "runtime", "eta_run_metrics.db"),
+        Entry("run_metrics", 4, "runtime", "eta_run_metrics.db"),
+        Entry("execution_ledger", NexusExecutionStore.VERSION, "runtime", NexusExecutionStore.DATABASE_NAME),
+        Entry("input_resume_outbox", 1, "runtime", "nexa_run_input_outbox.db"),
     )
 
     fun sectionForDatabase(name: String): String = entries.firstOrNull { name == it.name || name == it.databaseName }?.backupSection

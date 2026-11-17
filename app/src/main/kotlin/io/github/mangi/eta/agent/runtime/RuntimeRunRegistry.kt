@@ -23,7 +23,7 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
         private val onRequestIngested: () -> Unit = {},
     ) {
         val runId: String get() = session.runId
-        val conversationId: String = AgentConversationIdentity.fromHandoff(initialRequest.handoff, initialRequest.runId)
+        val conversationId: String = checkNotNull(NexusRunMapper.fromLegacy(initialRequest).request.sessionId).value
         @Volatile var request: AgentRuntimeWire.RunRequest = initialRequest
             private set
         @Volatile var preparing: Boolean = true
@@ -38,18 +38,18 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
         private val ingested = AtomicBoolean(false)
         private var pendingIncoming = incoming
         private val supplementsLock = Any()
-        private val supplements = initialRequest.handoff
-            ?.takeIf { it.source == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE }
-            ?.let { AgentUiHandoffPayload.from(it.payload).supplements }
-            .orEmpty().toMutableList()
+        private val supplements = initialRequest.handoff?.let {
+            if (it.source == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE) AgentUiHandoffPayload.from(it.payload).supplements
+            else AgentExternalArchivePayload.from(it.payload)?.supplements
+        }.orEmpty().toMutableList()
         private var nextSupplementIndex = initialRequest.handoff
             ?.takeIf { it.source == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE }
             ?.let { AgentUiHandoffPayload.from(it.payload).lastSupplementIndex + 1 }
-            ?: 1
+            ?: ((supplements.maxOfOrNull { it.index } ?: 0) + 1)
 
         fun prepared(request: AgentRuntimeWire.RunRequest) {
             check(request.runId == runId)
-            check(AgentConversationIdentity.fromHandoff(request.handoff, request.runId) == conversationId)
+            check(NexusRunMapper.fromLegacy(request).request.sessionId?.value == conversationId)
             this.request = request
             preparing = false
             releaseIncoming()
@@ -81,23 +81,29 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
             onRequestIngested()
         }
 
-        fun supplement(text: String): AgentEvent.UserSupplementReceived? = session.steer(text) {
-            synchronized(supplementsLock) {
-                val supplement = AgentUiHandoffPayload.Supplement(
-                    index = nextSupplementIndex++,
-                    text = text,
-                    createdAt = System.currentTimeMillis(),
-                )
-                supplements += supplement
-                AgentEvent.UserSupplementReceived(supplement.index, supplement.text)
+        fun supplement(text: String): AgentEvent.UserSupplementReceived? {
+            if (text.trim().length !in 1..12_000 || synchronized(supplementsLock) { supplements.size >= 200 }) return null
+            return session.steer(text) {
+                synchronized(supplementsLock) {
+                    val supplement = AgentUiHandoffPayload.Supplement(
+                        index = nextSupplementIndex++,
+                        text = text,
+                        createdAt = System.currentTimeMillis(),
+                    )
+                    supplements += supplement
+                    AgentEvent.UserSupplementReceived(supplement.index, supplement.text)
+                }
             }
         }
 
         fun snapshotRequest(request: AgentRuntimeWire.RunRequest = this.request): AgentRuntimeWire.RunRequest {
             val handoff = request.handoff ?: return request
-            if (handoff.source != AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE) return request
             val snapshot = synchronized(supplementsLock) { supplements.toList() }
             if (snapshot.isEmpty()) return request
+            if (handoff.source != AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE) {
+                val payload = AgentExternalArchivePayload.from(handoff.payload) ?: return request
+                return request.copy(handoff = handoff.copy(payload = payload.copy(supplements = snapshot).toJson()))
+            }
             return request.copy(handoff = handoff.copy(
                 payload = AgentUiHandoffPayload.from(handoff.payload).copy(supplements = snapshot).toJson(),
             ))
@@ -108,11 +114,14 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
             conversationId = conversationId,
             operation = request.operation,
             handoffSource = request.handoff?.source.orEmpty(),
+            hostStatesJson = session.controller.hostsJson(),
             phase = when {
                 session.isCommitting -> AgentRuntimeWire.RunPhase.Committing
                 preparing -> AgentRuntimeWire.RunPhase.Preparing
-                guiStatus == GuiControlStatus.Waiting -> AgentRuntimeWire.RunPhase.WaitingForGui
+                session.controller.waitingForApproval -> AgentRuntimeWire.RunPhase.WaitingForAuthorization
                 session.controller.isPaused -> AgentRuntimeWire.RunPhase.Paused
+                session.controller.waitingForUser -> AgentRuntimeWire.RunPhase.WaitingForInput
+                guiStatus == GuiControlStatus.Waiting -> AgentRuntimeWire.RunPhase.WaitingForGui
                 else -> AgentRuntimeWire.RunPhase.Running
             },
         )
@@ -127,7 +136,7 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
     private val runs = linkedMapOf<String, Run>()
 
     fun admit(request: AgentRuntimeWire.RunRequest, create: () -> Run): Admission = synchronized(lock) {
-        val conversationId = AgentConversationIdentity.fromHandoff(request.handoff, request.runId)
+        val conversationId = checkNotNull(NexusRunMapper.fromLegacy(request).request.sessionId).value
         runs[request.runId]?.let { existing ->
             return if (existing.conversationId == conversationId) Admission.Duplicate(existing)
             else Admission.Rejected("RUN_ID_CONFLICT", "运行标识与已有会话不一致，请重新发起任务")

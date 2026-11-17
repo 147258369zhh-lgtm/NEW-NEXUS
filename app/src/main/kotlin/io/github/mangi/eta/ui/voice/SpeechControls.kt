@@ -8,7 +8,11 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -18,14 +22,18 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Check
@@ -50,15 +58,21 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -78,6 +92,8 @@ import io.github.mangi.eta.ui.components.AnswerActionSize
 import io.github.mangi.eta.ui.components.ChatInputActionIconSize
 import io.github.mangi.eta.ui.components.ChatInputActionSize
 import io.github.mangi.eta.ui.components.StatusError
+import kotlin.math.PI
+import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.random.Random
 import top.yukonga.miuix.kmp.basic.Icon
@@ -109,11 +125,14 @@ internal fun SpeechLifecycle(onStop: () -> Unit) {
 }
 
 @Composable
-internal fun rememberSpeechInput(onResult: (String) -> Unit): SpeechInputController {
+internal fun rememberSpeechInput(onPreview: (String) -> Unit = {}, onResult: (String) -> Unit): SpeechInputController {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val result by rememberUpdatedState(onResult)
-    val controller = remember(context, scope) { SpeechInputController(context, scope, onResult = { result(it) }) }
+    val preview by rememberUpdatedState(onPreview)
+    val controller = remember(context, scope) {
+        SpeechInputController(context, scope, onPreview = { preview(it) }, onResult = { result(it) })
+    }
     SpeechLifecycle { controller.cancel() }
     return controller
 }
@@ -141,11 +160,14 @@ internal fun SpeechDictationButton(
     controller: SpeechInputController,
     enabled: Boolean,
     modifier: Modifier = Modifier,
+    onStart: () -> Unit = {},
+    onFinish: () -> Unit = controller::finish,
 ) {
+    val context = LocalContext.current
     val state by controller.state.collectAsState()
-    val request = rememberSpeechPermission { if (enabled) controller.start() }
+    val request = rememberSpeechPermission { if (enabled) { onStart(); controller.start() } }
     IconButton(
-        onClick = { if (state.active) controller.finish() else request() },
+        onClick = { if (state.active) onFinish() else { io.github.mangi.eta.agent.dsh.DshMediaController.stopForInput(context); request() } },
         enabled = enabled && state.phase != EtaSpeechPhase.RECOGNIZING,
         minWidth = ChatInputActionSize,
         minHeight = ChatInputActionSize,
@@ -168,11 +190,28 @@ internal fun SpeechDictationButton(
 
 /** 输入栏上方的听写状态条：录音中显示电平与完成/取消，错误给出设置或关闭出口。 */
 @Composable
-internal fun SpeechInputFeedback(controller: SpeechInputController) {
+internal fun SpeechInputFeedback(controller: SpeechInputController, showActiveOverlay: Boolean = true) {
     val state by controller.state.collectAsState()
     val context = LocalContext.current
+    if (state.active && showActiveOverlay) {
+        Dialog(
+            onDismissRequest = controller::cancel,
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false,
+            ),
+        ) {
+            VoiceInputOverlay(
+                preview = state.preview.ifBlank { state.progress },
+                level = { controller.state.value.level },
+                onCancel = controller::cancel,
+                onFinish = controller::finish,
+            )
+        }
+        return
+    }
     AnimatedVisibility(
-        visible = state.active || state.error != null,
+        visible = state.error != null,
         enter = fadeIn(tween(160)) + expandVertically(tween(160)),
         exit = fadeOut(tween(100)) + shrinkVertically(tween(140)),
     ) {
@@ -194,9 +233,7 @@ internal fun SpeechInputFeedback(controller: SpeechInputController) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            if (state.active) {
-                SpeechLevelBars(level = { controller.state.value.level })
-            } else if (state.error != null) {
+            if (state.error != null) {
                 Box(
                     modifier = Modifier
                         .size(6.dp)
@@ -217,31 +254,220 @@ internal fun SpeechInputFeedback(controller: SpeechInputController) {
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            if (state.active) {
-                SpeechFeedbackAction(text = stringResource(R.string.action_cancel), onClick = controller::cancel)
+            if (state.configureAvailable) {
                 SpeechFeedbackAction(
-                    text = stringResource(R.string.action_done),
+                    text = stringResource(R.string.speech_open_settings),
                     primary = true,
-                    onClick = controller::finish,
+                    onClick = { openSpeechSettings(context) },
                 )
-            } else {
-                if (state.configureAvailable) {
-                    SpeechFeedbackAction(
-                        text = stringResource(R.string.speech_open_settings),
-                        primary = true,
-                        onClick = { openSpeechSettings(context) },
-                    )
-                }
-                IconButton(onClick = controller::cancel, minWidth = 28.dp, minHeight = 28.dp) {
-                    Icon(
-                        imageVector = Icons.Rounded.Close,
-                        contentDescription = stringResource(R.string.action_cancel),
-                        modifier = Modifier.size(15.dp),
-                        tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    )
-                }
+            }
+            IconButton(onClick = controller::cancel, minWidth = 28.dp, minHeight = 28.dp) {
+                Icon(
+                    imageVector = Icons.Rounded.Close,
+                    contentDescription = stringResource(R.string.action_cancel),
+                    modifier = Modifier.size(15.dp),
+                    tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
             }
         }
+    }
+}
+
+@Composable
+private fun VoiceInputOverlay(
+    preview: String,
+    level: () -> Float,
+    onCancel: () -> Unit,
+    onFinish: () -> Unit,
+) {
+    val colors = MiuixTheme.colorScheme
+    val accent = colors.primary
+    val pulse = rememberInfiniteTransition(label = "voice_pulse")
+    val phase by pulse.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 2200),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "voice_phase",
+    )
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(colors.background.copy(alpha = 0.42f)),
+        contentAlignment = Alignment.BottomCenter,
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(horizontal = 24.dp, vertical = 28.dp)
+                .padding(bottom = 120.dp)
+                .widthIn(max = 330.dp)
+                .dropShadow(
+                    shape = RoundedCornerShape(26.dp),
+                    shadow = Shadow(radius = 24.dp, color = accent, alpha = 0.20f),
+                )
+                .clip(RoundedCornerShape(26.dp))
+                .background(
+                    Brush.linearGradient(
+                        listOf(
+                            colors.surfaceContainerHigh.copy(alpha = 0.96f),
+                            colors.secondaryContainer.copy(alpha = 0.90f),
+                            colors.surfaceContainer.copy(alpha = 0.96f),
+                        )
+                    )
+                )
+                .squircleBorder(
+                    0.7.dp,
+                    accent.copy(alpha = 0.34f),
+                    26.dp,
+                )
+                .padding(horizontal = 20.dp, vertical = 18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(11.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .background(accent, CircleShape),
+                )
+                Spacer(modifier = Modifier.width(7.dp))
+                Text(
+                    text = "实时语音",
+                    color = colors.onSurface,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                Text(
+                    text = "正在聆听",
+                    color = accent,
+                    fontSize = 12.sp,
+                )
+            }
+            VoiceInputOrb(
+                level = level,
+                phase = phase,
+                accent = accent,
+                modifier = Modifier.size(126.dp),
+            )
+            Text(
+                text = preview.ifBlank { "请开始说话…" },
+                color = colors.onSurface.copy(alpha = if (preview.isBlank()) 0.58f else 0.9f),
+                fontSize = 14.sp,
+                lineHeight = 20.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                VoiceOverlayAction(
+                    label = stringResource(R.string.action_cancel),
+                    icon = Icons.Rounded.Close,
+                    onClick = onCancel,
+                )
+                VoiceOverlayAction(
+                    label = stringResource(R.string.action_done),
+                    icon = Icons.Rounded.Check,
+                    primary = true,
+                    onClick = onFinish,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun VoiceInputOrb(
+    level: () -> Float,
+    phase: Float,
+    accent: Color,
+    modifier: Modifier = Modifier,
+) {
+    val highlight = MiuixTheme.colorScheme.onPrimary
+    Canvas(modifier = modifier) {
+        val liveLevel = sqrt(level().coerceIn(0f, 1f))
+        val radius = size.minDimension / 2f
+        for (index in 0..3) {
+            val progress = (phase + index * 0.25f) % 1f
+            drawCircle(
+                color = accent.copy(alpha = (1f - progress) * 0.20f),
+                radius = radius * (0.42f + progress * 0.54f),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.4.dp.toPx()),
+            )
+        }
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    highlight.copy(alpha = 0.95f),
+                    accent.copy(alpha = 0.58f),
+                    Color.Transparent,
+                ),
+                center = center,
+                radius = radius * (0.60f + liveLevel * 0.22f),
+            ),
+            radius = radius * (0.54f + liveLevel * 0.18f),
+        )
+        val barCount = 9
+        val barWidth = 3.2.dp.toPx()
+        val gap = 4.2.dp.toPx()
+        val totalWidth = barCount * barWidth + (barCount - 1) * gap
+        val startX = center.x - totalWidth / 2f
+        repeat(barCount) { index ->
+            val wave = (sin((phase * PI * 2f) + index * 0.68f).toFloat() + 1f) / 2f
+            val barHeight = 8.dp.toPx() + (24.dp.toPx() * (0.32f + liveLevel * 0.72f) * wave)
+            drawRoundRect(
+                color = highlight.copy(alpha = 0.90f),
+                topLeft = Offset(startX + index * (barWidth + gap), center.y - barHeight / 2f),
+                size = Size(barWidth, barHeight),
+                cornerRadius = CornerRadius(barWidth / 2f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun VoiceOverlayAction(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    primary: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val colors = MiuixTheme.colorScheme
+    Row(
+        modifier = Modifier
+            .heightIn(min = 36.dp)
+            .clip(CircleShape)
+            .background(
+                if (primary) colors.primary.copy(alpha = 0.22f)
+                else colors.surfaceContainerHigh.copy(alpha = 0.72f)
+            )
+            .squircleBorder(
+                0.5.dp,
+                if (primary) colors.primary.copy(alpha = 0.52f)
+                else colors.outline.copy(alpha = 0.24f),
+                18.dp,
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+            tint = if (primary) colors.primary else colors.onSurface.copy(alpha = 0.76f),
+        )
+        Text(
+            text = label,
+            color = if (primary) colors.primary else colors.onSurface.copy(alpha = 0.78f),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+        )
     }
 }
 

@@ -33,7 +33,7 @@ internal object AgentToolRequirements {
         }
         register(
             RootRequirement.NONE,
-            "goal_manage", "plan_manage", "notepad_manage",
+            "goal_manage", "plan_manage", "notepad_manage", "request_user_input",
             "get_current_context", "search_apps", "launch_app", "present_to_user", "open_uri", "browser_use", "web_search", "fetch_url",
             "observe_screen", "release_gui", "tap", "tap_area", "tap_element", "long_press",
             "long_press_element", "swipe", "scroll", "scroll_element", "type_text", "input_text",
@@ -42,9 +42,9 @@ internal object AgentToolRequirements {
             "set_alarm", "set_timer", "device_status", "inspect_app", "media_control", "set_volume",
             "search_notification_history", "recent_app_activity", "app_usage_summary",
             "get_current_location", "get_device_environment", "memory_get", "memory_write",
-            "voice_synthesize",
+            "voice_synthesize", "download_media", "cloud_document", "cloud_media",
             "character_memory_get", "character_memory_write",
-            "skills_list", "skills_read", "skills_read_resource", "skills_list_curated",
+            "skills_list", "skills_read", "skills_read_resource", "skills_list_curated", "skills_prepare_runtime",
             "skills_inspect_github", "skills_install_from_github",
             "schedule_create", "schedule_list", "schedule_pause", "schedule_delete",
             "automation_manage",
@@ -56,7 +56,9 @@ internal object AgentToolRequirements {
             RootRequirement.PARTIAL,
             "press_key", "network_info", "get_setting", "recent_notifications",
             "search_personal_orders", "terminal", "terminal_job", "terminal_daemon", "read_file",
-            "write_file", "list_directory", "read_image", "edit_file", "stat_file", "glob_files", "grep_files",
+            "write_file", "deliver_file", "list_directory", "read_image", "edit_file", "stat_file", "glob_files", "grep_files",
+            "make_directory", "copy_file", "move_file", "delete_file",
+            "project_workspace_status", "project_workspace_publish",
         )
         register(
             RootRequirement.REQUIRED,

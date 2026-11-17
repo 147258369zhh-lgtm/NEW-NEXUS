@@ -9,6 +9,16 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 internal interface MeetingDao {
+    @Query("SELECT r.id, r.title, r.archived_at AS archivedAt, " +
+        "(SELECT COUNT(*) FROM meeting_messages WHERE room_id = r.id) AS messageCount, " +
+        "COALESCE((SELECT substr(content, 1, 240) FROM meeting_messages WHERE room_id = r.id ORDER BY sort_index DESC LIMIT 1), '') AS preview " +
+        "FROM meeting_rooms r WHERE r.archived_at IS NOT NULL AND " +
+        "(:before IS NULL OR r.archived_at < :before OR (:includeSameTime AND r.archived_at = :before AND r.id > :afterId)) AND " +
+        "(:query = '' OR instr(lower(r.title), lower(:query)) > 0 OR EXISTS(" +
+        "SELECT 1 FROM meeting_messages WHERE room_id = r.id AND instr(lower(content), lower(:query)) > 0)) " +
+        "ORDER BY r.archived_at DESC, r.id LIMIT :limit")
+    suspend fun archivedPage(before: Long?, afterId: String, includeSameTime: Boolean, query: String, limit: Int): List<ArchivedMeetingRow>
+
     @Query("SELECT * FROM meeting_rooms ORDER BY (pinned_at IS NULL), pinned_at DESC, updated_at DESC")
     fun roomsFlow(): Flow<List<MeetingRoomEntity>>
 
@@ -29,10 +39,18 @@ internal interface MeetingDao {
     @Query("SELECT * FROM meeting_rooms WHERE id = :roomId")
     suspend fun room(roomId: String): MeetingRoomEntity?
 
-    @Query("SELECT * FROM meeting_rooms WHERE status = 'running' ORDER BY updated_at, id")
-    suspend fun runningRooms(): List<MeetingRoomEntity>
+    @Query(
+        "SELECT * FROM meeting_rooms WHERE status = 'running' OR id IN (" +
+            "SELECT room_id FROM meeting_tasks " +
+            "WHERE status NOT IN ('completed', 'failed', 'cancelled')) " +
+            "ORDER BY updated_at, id",
+    )
+    suspend fun recoverableRooms(): List<MeetingRoomEntity>
 
-    @Query("SELECT * FROM meeting_tasks WHERE room_id = :roomId AND status IN ('queued', 'running') ORDER BY created_at, id")
+    @Query(
+        "SELECT * FROM meeting_tasks WHERE room_id = :roomId " +
+            "AND status NOT IN ('completed', 'failed', 'cancelled') ORDER BY created_at, id",
+    )
     suspend fun unfinishedTasks(roomId: String): List<MeetingTaskEntity>
 
     // The room UI still shows disabled agents so their process and history remain inspectable.
@@ -55,20 +73,29 @@ internal interface MeetingDao {
     @Query("SELECT * FROM meeting_events WHERE room_id = :roomId AND type = :type ORDER BY id DESC LIMIT 1")
     suspend fun latestEvent(roomId: String, type: String): MeetingEventEntity?
 
+    @Query("SELECT * FROM meeting_events WHERE room_id = :roomId AND type LIKE 'workflow_checkpoint:%' ORDER BY id")
+    suspend fun workflowCheckpoints(roomId: String): List<MeetingEventEntity>
+
+    @Query("SELECT * FROM meeting_events WHERE type LIKE 'pending_turn:%' ORDER BY id")
+    suspend fun pendingTurnEvents(): List<MeetingEventEntity>
+
+    @Query("DELETE FROM meeting_events WHERE room_id = :roomId AND type = :type")
+    suspend fun deleteEventType(roomId: String, type: String)
+
     @Query("SELECT * FROM meeting_events WHERE room_id = :roomId AND type LIKE 'accessibility_wait:%' ORDER BY id ASC")
     suspend fun accessibilityWaitEvents(roomId: String): List<MeetingEventEntity>
 
     // Only the most recent phase for each visible card; do not load the whole event journal into the UI.
     @Query("SELECT * FROM meeting_events WHERE room_id = :roomId " +
-        "AND (type LIKE 'accessibility_wait:%' OR type LIKE 'tool_activity:%' OR type LIKE 'stream_activity:%' OR type LIKE 'message_attachments:%') " +
+        "AND (type LIKE 'accessibility_wait:%' OR type LIKE 'approval_wait:%' OR type LIKE 'tool_activity:%' OR type LIKE 'stream_activity:%' OR type LIKE 'message_attachments:%') " +
         "AND id IN (SELECT MAX(id) FROM meeting_events WHERE room_id = :roomId " +
-        "AND (type LIKE 'accessibility_wait:%' OR type LIKE 'tool_activity:%' OR type LIKE 'stream_activity:%' OR type LIKE 'message_attachments:%') GROUP BY type) ORDER BY id")
+        "AND (type LIKE 'accessibility_wait:%' OR type LIKE 'approval_wait:%' OR type LIKE 'tool_activity:%' OR type LIKE 'stream_activity:%' OR type LIKE 'message_attachments:%') GROUP BY type) ORDER BY id")
     fun timelineEventsFlow(roomId: String): Flow<List<MeetingEventEntity>>
 
     @Query("SELECT * FROM meeting_events WHERE room_id = :roomId " +
-        "AND (type LIKE 'accessibility_wait:%' OR type LIKE 'tool_activity:%' OR type LIKE 'stream_activity:%' OR type LIKE 'message_attachments:%') " +
+        "AND (type LIKE 'accessibility_wait:%' OR type LIKE 'approval_wait:%' OR type LIKE 'tool_activity:%' OR type LIKE 'stream_activity:%' OR type LIKE 'message_attachments:%') " +
         "AND id IN (SELECT MAX(id) FROM meeting_events WHERE room_id = :roomId " +
-        "AND (type LIKE 'accessibility_wait:%' OR type LIKE 'tool_activity:%' OR type LIKE 'stream_activity:%' OR type LIKE 'message_attachments:%') GROUP BY type) ORDER BY id")
+        "AND (type LIKE 'accessibility_wait:%' OR type LIKE 'approval_wait:%' OR type LIKE 'tool_activity:%' OR type LIKE 'stream_activity:%' OR type LIKE 'message_attachments:%') GROUP BY type) ORDER BY id")
     suspend fun timelineEvents(roomId: String): List<MeetingEventEntity>
 
     @Query("SELECT * FROM meeting_events WHERE room_id = :roomId AND type LIKE 'tool_activity:%' ORDER BY id")

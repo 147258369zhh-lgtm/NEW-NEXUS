@@ -32,6 +32,22 @@ class EtaBackupDocumentExportTest {
         assertTrue(phases.any { it.phase == "read_document" && it.bytes > 0 })
         assertTrue(context.cacheDir.listFiles().orEmpty().none { it.name.startsWith("eta-document-import-") })
     }
+
+    @Test fun restoreRejectsAChangedDocumentBeforePassingAnyDataToTheImporter() = runBlocking {
+        val file = File(context.cacheDir, "changing-backup").apply { writeText("previewed bytes") }
+        var hash: String? = null
+        val first = EtaBackupDocumentImport.read(context, Uri.fromFile(file), {}, onSnapshot = { hash = it }) { it.readBytes() }
+        assertEquals("previewed bytes", String(first))
+        assertEquals(64, hash!!.length)
+        file.writeText("different backup")
+        var importCalled = false
+        val failure = runCatching { EtaBackupDocumentImport.read(context, Uri.fromFile(file), {}, expectedSha256 = hash) {
+            importCalled = true; it.readBytes()
+        } }.exceptionOrNull()
+        assertTrue(failure is EtaBackupException)
+        assertFalse(importCalled)
+        assertTrue(context.cacheDir.listFiles().orEmpty().none { it.name.startsWith("eta-document-import-") })
+    }
     private val context = RuntimeEnvironment.getApplication()
     private val summary = EtaBackupSummary(1, 2, 3, 4, 5)
     private fun assertClean() = assertTrue(context.cacheDir.listFiles().orEmpty().none { it.name.startsWith("eta-document-export-") })

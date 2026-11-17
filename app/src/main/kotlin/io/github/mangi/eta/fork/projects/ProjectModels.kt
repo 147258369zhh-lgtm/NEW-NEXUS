@@ -21,3 +21,12 @@ internal data class ProjectSubjectBinding(
     val subjectType: String,
     val subjectId: String,
 )
+
+internal data class ProjectSubjectOption(
+    val type: String,
+    val id: String,
+    val title: String,
+    val updatedAt: Long,
+    val projectId: String?,
+    val projectName: String?,
+)

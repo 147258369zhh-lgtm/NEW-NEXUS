@@ -14,8 +14,12 @@ internal class AgentContextCompactor(
     private val controller: AgentRunController,
     private val roleplay: Boolean = false,
     private val metricsScope: io.github.mangi.eta.agent.runtime.AgentMetricScope? = null,
+    private val summaryConfig: AgentModelClient.ModelConfig = config,
+    private val summaryProvider: AgentProviderClient = provider,
 ) {
     var lastDemotedToolResults: Int = 0
+        private set
+    var summaryFallbackUsed: Boolean = false
         private set
 
     fun compact(
@@ -35,7 +39,9 @@ internal class AgentContextCompactor(
         }
         val selected = if (selection == null) {
             // 最新用户请求及其后尚在进行的工具链必须可以继续；长任务允许压缩该请求之前的已完成批次。
-            val automaticEnd = (history.size downTo 1).firstOrNull { canSplit(history, it) }
+            // Keep the most recent complete answer after the preserved user request. Moving a
+            // finished request to the end without its answer makes it look unexecuted next turn.
+            val automaticEnd = automaticEnd(history, config.knownContextWindow)
                 ?: throw failure("CONTEXT_NOT_COMPACTABLE", "没有可安全压缩的完整历史批次。")
             ContextCompactionSelection.Range(systemCount, systemCount + automaticEnd)
         } else {
@@ -65,9 +71,26 @@ internal class AgentContextCompactor(
         val demoted = ContextBudgetPolicy.demoteOversizedToolResults(normalized)
         lastDemotedToolResults = demoted.demotedCount
         val safe = demoted.messages
-        val summarizer = AgentContextSummarizer(config, provider, controller, roleplay, metricsScope)
-        val budget = ContextBudgetPolicy.forCompaction(config.knownContextWindow)
-        val summary = summarizeInChunks(summarizer, safe, budget)
+        val summarizer = AgentContextSummarizer(
+            config = summaryConfig,
+            provider = summaryProvider,
+            controller = controller,
+            roleplay = roleplay,
+            metricsScope = metricsScope,
+            summaryTargetContextWindow = config.knownContextWindow,
+        )
+        val summary = try {
+            summarizeInChunks(summarizer, safe)
+        } catch (failure: Throwable) {
+            if (failure is kotlinx.coroutines.CancellationException || failure is InterruptedException) throw failure
+            controller.throwIfCancelled()
+            if (sameModel(summaryConfig, config)) throw failure
+            summaryFallbackUsed = true
+            summarizeInChunks(
+                AgentContextSummarizer(config, provider, controller, roleplay, metricsScope),
+                safe,
+            )
+        }
         val covered = safe.sumOf { it.compactedUserTurns + if (it.role == "user") 1 else 0 }
         val sourceReferences = safe.asSequence()
             .map(ContextBudgetPolicy::sourceReference)
@@ -79,6 +102,11 @@ internal class AgentContextCompactor(
         history.take(start).forEach { result.put(GeminiEphemeralState.withoutState(
             AnthropicEphemeralState.withoutContentBlocks(it),
         )) }
+        // If the answer itself was too large to retain, keep the original request before the
+        // assistant summary. A trailing user message would incorrectly invite execution again.
+        val completedRequestWasSummarized = protectedUser != null && end == history.size &&
+            history.lastOrNull()?.optString("role") == "assistant"
+        if (completedRequestWasSummarized) protectedUser?.let(result::put)
         result.put(AgentConversationCodec.toJsonObject(AgentModelClient.ConversationMessage(
             role = "assistant",
             content = buildString {
@@ -96,7 +124,7 @@ internal class AgentContextCompactor(
             compactedUserTurns = covered,
             summaryThroughUserTurn = covered + if (protectedUser != null) 1 else 0,
         )))
-        protectedUser?.let(result::put)
+        if (!completedRequestWasSummarized) protectedUser?.let(result::put)
         history.drop(end).forEach { message ->
             // 新摘要改变了前缀；旧 opaque items 不再代表同一份 Provider 上下文。
             val withoutResponsesItems = if (ResponsesEphemeralState.outputItems(message) != null) {
@@ -115,17 +143,17 @@ internal class AgentContextCompactor(
     private fun summarizeInChunks(
         summarizer: AgentContextSummarizer,
         history: List<AgentModelClient.ConversationMessage>,
-        budget: ContextBudget,
     ): String {
+        val inputLimit = summarizer.historyInputBudget()
         var summaries = summarizeChunks(
             summarizer = summarizer,
-            chunks = ContextBudgetPolicy.chunk(history, budget.summaryInputTokens),
+            chunks = ContextBudgetPolicy.chunk(history, inputLimit, asSummaryData = true),
         )
         var level = 0
         while (
             summaries.size > 1 &&
             level < MAX_SUMMARY_HIERARCHY_LEVELS &&
-            ContextBudgetPolicy.estimateTextTokens(summaries.joinToString("\n\n")) > budget.summaryInputTokens
+            ContextBudgetPolicy.estimateTextTokens(summaries.joinToString("\n\n")) > inputLimit
         ) {
             val summaryMessages = summaries.mapIndexed { index, text ->
                 AgentModelClient.ConversationMessage(
@@ -134,10 +162,12 @@ internal class AgentContextCompactor(
                     contextSummary = true,
                 )
             }
-            val chunks = ContextBudgetPolicy.chunk(summaryMessages, budget.summaryInputTokens)
-            if (chunks.size >= summaries.size) break
+            val chunks = ContextBudgetPolicy.chunk(summaryMessages, inputLimit, asSummaryData = true)
             summaries = summarizeChunks(summarizer, chunks)
             level += 1
+        }
+        if (ContextBudgetPolicy.estimateTextTokens(summaries.joinToString("\n\n")) > inputLimit) {
+            throw failure("CONTEXT_SUMMARY_TOO_LARGE", "分层摘要未能收敛到安全窗口，原始上下文已保留。")
         }
         return summaries.joinToString(separator = "\n\n")
     }
@@ -156,7 +186,7 @@ internal class AgentContextCompactor(
         return try {
             chunks.map { chunk ->
                 executor.submit<String> { summarizer.summarize(chunk) }
-            }.mapIndexed { index, future ->
+            }.map { future ->
                 try {
                     future.get()
                 } catch (failure: ExecutionException) {
@@ -181,10 +211,25 @@ internal class AgentContextCompactor(
 
     companion object {
         private const val MAX_SUMMARY_SOURCE_REFERENCES = 24
-        private const val MAX_SUMMARY_HIERARCHY_LEVELS = 4
+        private const val MAX_SUMMARY_HIERARCHY_LEVELS = 12
         private const val MAX_PARALLEL_SUMMARY_REQUESTS = 3
+        fun automaticEnd(history: List<JSONObject>, contextWindow: Int?): Int? {
+            val latestAnswer = history.lastOrNull()?.takeIf {
+                it.optString("role") == "assistant" && !it.optBoolean("_eta_context_summary") &&
+                    AgentConversationCodec.parseToolCalls(it).isEmpty() &&
+                    ContextBudgetPolicy.estimateMessages(JSONArray().put(it)) <=
+                        ContextBudgetPolicy.forCompaction(contextWindow).usableInputTokens / 3
+            }
+            // A short first answer and its request have no older history to reduce. Fixed
+            // system/tool overhead must not trigger a paid summary of that finished pair.
+            // Large answers remain eligible, as do completed tool batches in the first turn.
+            val preferredEnd = history.size - if (latestAnswer != null) 1 else 0
+            return (preferredEnd downTo 1).firstOrNull { canSplit(history, it) }
+        }
+
         fun canSplit(history: List<JSONObject>, end: Int): Boolean {
-            if (end <= 0 || end > history.size) return false
+            if (end == 0) return history.firstOrNull()?.optString("role") != "tool"
+            if (end < 0 || end > history.size) return false
             val last = history[end - 1]
             if (
                 (last.optString("role") == "user" && !last.optBoolean(PROMPT_INJECTION_MARKER)) ||
@@ -199,5 +244,11 @@ internal class AgentContextCompactor(
         }
 
         fun failure(code: String, message: String) = AgentModelFailure(code, false, message)
+
+        private fun sameModel(first: AgentModelClient.ModelConfig, second: AgentModelClient.ModelConfig): Boolean =
+            first.providerId == second.providerId &&
+                first.baseUrl == second.baseUrl &&
+                first.authMode == second.authMode &&
+                first.model == second.model
     }
 }

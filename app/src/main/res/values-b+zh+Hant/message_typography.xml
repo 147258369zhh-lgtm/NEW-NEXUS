@@ -1,0 +1,8 @@
+<resources>
+    <string name="message_typography_title">訊息排版</string>
+    <string name="message_typography_style">排版風格</string>
+    <string name="message_typography_preset">排版預設</string>
+    <string name="message_typography_font">聊天字體</string>
+    <string name="message_typography_summary">聊天字體、行距、程式碼與表格</string>
+    <string name="message_typography_reset">恢復預設</string>
+</resources>

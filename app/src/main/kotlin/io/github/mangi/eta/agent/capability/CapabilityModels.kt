@@ -2,6 +2,8 @@ package io.github.mangi.eta.agent.capability
 
 object SkillSourceType {
     const val GITHUB_REPOSITORY = "github_repository"
+    const val GITLAB_REPOSITORY = "gitlab_repository"
+    const val GITEE_REPOSITORY = "gitee_repository"
     const val HTTP_CATALOG = "http_catalog"
 }
 
@@ -39,10 +41,12 @@ data class SkillMarketItem(
     val ref: String? = null,
     val path: String? = null,
     val archiveUrl: String? = null,
+    val archiveMirrors: List<String> = emptyList(),
     val archiveSha256: String? = null,
     val tags: List<String> = emptyList(),
     val usage: String? = null,
     val dependencies: List<String> = emptyList(),
+    val dependenciesDeclared: Boolean = false,
     val permissions: List<String> = emptyList(),
     val releaseNotes: String? = null,
 ) {
@@ -50,7 +54,8 @@ data class SkillMarketItem(
 
     val integrityVerified: Boolean
         get() = archiveSha256 != null ||
-            (sourceType == SkillSourceType.GITHUB_REPOSITORY && Regex("[a-f0-9]{40}").matches(ref.orEmpty()))
+            (sourceType in setOf(SkillSourceType.GITHUB_REPOSITORY, SkillSourceType.GITLAB_REPOSITORY, SkillSourceType.GITEE_REPOSITORY) &&
+                Regex("[a-f0-9]{40}").matches(ref.orEmpty()))
 }
 
 data class SkillMarketDetails(

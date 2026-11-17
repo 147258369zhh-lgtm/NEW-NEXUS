@@ -3,6 +3,7 @@ package io.github.mangi.eta.data.repository
 import io.github.mangi.eta.data.model.Model
 import io.github.mangi.eta.data.model.ModelSource
 import io.github.mangi.eta.data.model.ProviderAuthModes
+import io.github.mangi.eta.data.model.isChatModel
 
 internal data class RemoteModelReconciliation(
     val models: List<Model>,
@@ -33,11 +34,7 @@ internal fun reconcileRemoteModels(
             when {
                 remote != null -> {
                     consumed += key
-                    // Codex 账号目录可以声明不同于公共 API 预设的窗口；预填值不能覆盖它。
-                    val configuredWindow = stored.contextWindowOverride.takeUnless {
-                        authMode == ProviderAuthModes.OPENAI_CHATGPT && stored.source == ModelSource.CATALOG &&
-                            it == stored.contextWindow
-                    }
+                    val configuredWindow = stored.contextWindowOverride
                     add(remote.copy(
                         id = stored.id,
                         modelId = remote.modelId.trim(),
@@ -46,6 +43,15 @@ internal fun reconcileRemoteModels(
                         isBuiltIn = stored.isBuiltIn || remote.isBuiltIn,
                         customHeaders = stored.customHeaders,
                         customBody = stored.customBody,
+                        inputModalities = if (stored.source == ModelSource.MANUAL) stored.inputModalities
+                            else remote.inputModalities,
+                        // Manual output capabilities are explicitly configured by the user;
+                        // many /models endpoints omit them altogether.
+                        outputModalities = if (stored.source == ModelSource.MANUAL) stored.outputModalities
+                            else remote.outputModalities,
+                        attachment = stored.attachment ?: remote.attachment,
+                        toolCall = stored.toolCall ?: remote.toolCall,
+                        tryUnknownCapabilities = stored.tryUnknownCapabilities,
                         // 运行窗口只读覆盖值；用户未填写时才采用远端明确给出的窗口。
                         contextWindowOverride = configuredWindow ?: remote.contextWindow,
                         reasoningOverride = stored.reasoningOverride,
@@ -60,7 +66,7 @@ internal fun reconcileRemoteModels(
         remoteByKey.forEach { (key, remote) ->
             if (key !in consumed && key in adopted) {
                 require(remote.id.isNotBlank()) { "远端模型缺少本地标识" }
-                add(remote.copy(
+                add(remote.withNewChatDefaults().copy(
                     modelId = remote.modelId.trim(),
                     displayName = remote.displayName.trim().ifBlank { remote.modelId.trim() },
                     isBuiltIn = false,
@@ -81,3 +87,5 @@ internal fun reconcileRemoteModels(
 }
 
 internal fun String.normalizedModelId(): String = trim().lowercase()
+
+internal fun Model.withNewChatDefaults(): Model = if (!isChatModel()) this else copy(tryUnknownCapabilities = true)

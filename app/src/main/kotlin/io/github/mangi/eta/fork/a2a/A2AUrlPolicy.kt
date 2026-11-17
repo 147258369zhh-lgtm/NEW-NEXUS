@@ -122,5 +122,6 @@ internal fun isLocalEndpointHost(host: String): Boolean {
 private fun isPrivateLanAddress(address: InetAddress): Boolean {
     if (address.isLoopbackAddress || address.isSiteLocalAddress) return true
     val bytes = address.address
+    if (bytes.size == 4 && (bytes[0].toInt() and 0xff) == 100 && (bytes[1].toInt() and 0xff) in 64..127) return true
     return bytes.size == 16 && (bytes[0].toInt() and 0xfe) == 0xfc
 }

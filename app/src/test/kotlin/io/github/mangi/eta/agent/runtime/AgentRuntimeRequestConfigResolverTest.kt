@@ -13,6 +13,16 @@ import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class AgentRuntimeRequestConfigResolverTest {
+    @Test fun oauthMaintenanceKeepsTheFixedInstructionAndNeverReenablesTools() {
+        val local = AgentModelClient.ModelConfig(providerId = "account", authMode = ProviderAuthModes.OPENAI_CHATGPT,
+            baseUrl = "https://fixture.invalid", apiKey = "", model = "fixture", systemPrompt = "chat-system", supportsTools = true)
+        val request = RuntimeModelTasks.request(RuntimeModelTaskKind.MEMORY, local, "fixed-extractor", "source data", "source-1")
+        val resolved = AgentRuntimeRequestConfigResolver.applyRuntimeConfig(request, local)
+        assertEquals("fixed-extractor", resolved.config.systemPrompt)
+        assertFalse(resolved.config.supportsTools)
+        assertFalse(resolved.config.hostedWebSearchEnabled)
+        assertEquals("source data", resolved.prompt)
+    }
     @Test
     fun onlyEtaProcessesWithSupportedEntryCanDeclareSearchPresentation() {
         val sources = listOf(AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE,

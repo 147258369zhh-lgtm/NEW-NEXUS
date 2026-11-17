@@ -16,9 +16,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.zhh_lgtm.nexus.application.api.WorkflowSnapshot
+import io.github.zhh_lgtm.nexus.kernel.api.GoalState
+import io.github.mangi.eta.R
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -33,9 +36,8 @@ internal fun NexusWorkflowStatusCard(
     if (plan == null && goal == null) return
     var expanded by rememberSaveable(snapshot.scopeId) { mutableStateOf(false) }
     val title = when {
-        goal != null && plan != null -> "目标 · ${goal.state.name} · 计划 r${plan.revision}"
-        goal != null -> "目标 · ${goal.state.name}"
-        plan != null -> "计划 r${plan.revision}"
+        goal != null -> stringResource(R.string.workflow_goal_status, stringResource(goalStateLabel(goal.state)))
+        plan != null -> stringResource(R.string.workflow_plan_title)
         else -> ""
     }
     Column(
@@ -80,6 +82,10 @@ internal fun NexusWorkflowStatusCard(
         }
         AnimatedVisibility(visible = expanded) {
             Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                plan?.let {
+                    Text(stringResource(R.string.workflow_plan_revision, it.revision), style = MiuixTheme.textStyles.footnote2,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                }
                 plan?.steps.orEmpty().forEachIndexed { index, step ->
                     Text(
                         "${index + 1}. ${step.title}${step.verification.takeIf { it.isNotBlank() }?.let { " · 验证：$it" }.orEmpty()}",
@@ -97,4 +103,17 @@ internal fun NexusWorkflowStatusCard(
             }
         }
     }
+}
+
+private fun goalStateLabel(state: GoalState): Int = when (state) {
+    GoalState.DRAFT -> R.string.workflow_goal_draft
+    GoalState.WAITING_PLAN_APPROVAL -> R.string.workflow_goal_waiting_plan
+    GoalState.RUNNING -> R.string.workflow_goal_running
+    GoalState.PAUSED -> R.string.workflow_goal_paused
+    GoalState.VERIFYING -> R.string.workflow_goal_verifying
+    GoalState.WAITING_USER -> R.string.workflow_goal_waiting_user
+    GoalState.BUDGET_PAUSED -> R.string.workflow_goal_budget_paused
+    GoalState.COMPLETED -> R.string.workflow_goal_completed
+    GoalState.FAILED -> R.string.workflow_goal_failed
+    GoalState.CANCELLED -> R.string.workflow_goal_cancelled
 }

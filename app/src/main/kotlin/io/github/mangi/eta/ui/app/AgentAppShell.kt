@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.automirrored.rounded.VolumeOff
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.rounded.Language
+import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.SupportAgent
 import androidx.compose.material.icons.rounded.Terminal
@@ -58,6 +60,9 @@ import io.github.mangi.eta.ui.components.ConversationSidePaneScaffold
 import io.github.mangi.eta.ui.components.MiuixBackButton
 import io.github.mangi.eta.ui.components.RoleplayChatUi
 import io.github.mangi.eta.ui.components.TopBarBackdrop
+import io.github.mangi.eta.ui.components.NexusGlassBackdrop
+import io.github.mangi.eta.ui.components.etaGlassSurface
+import io.github.mangi.eta.ui.components.etaPageAtmosphere
 import io.github.mangi.eta.ui.components.captureForTopBar
 import io.github.mangi.eta.ui.components.rememberTopBarBackdrop
 import io.github.mangi.eta.ui.components.topBarContainerColor
@@ -78,6 +83,7 @@ import top.yukonga.miuix.kmp.basic.ScrollBehavior
 import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.squircle.squircleSurface
+import top.yukonga.miuix.kmp.squircle.squircleBorder
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowListPopup
 
@@ -117,6 +123,7 @@ internal fun AgentAppShell(
     onConversationRestore: (ConversationSummaryUi) -> Unit,
     onConversationMoveToFolder: (ConversationSummaryUi) -> Unit,
     onConversationDropToFolder: (conversationId: String, folderId: String) -> Unit = { _, _ -> },
+    onPanePlacement: (io.github.mangi.eta.fork.conversations.ConversationPanePlacement) -> Unit = {},
     onOpenMeetingRoom: (String) -> Unit,
     onMeetingRoomRename: (MeetingRoomSummaryRow) -> Unit,
     onMeetingRoomTogglePin: (MeetingRoomSummaryRow) -> Unit,
@@ -133,6 +140,7 @@ internal fun AgentAppShell(
     onOpenSettings: () -> Unit,
     onOpenAppControl: () -> Unit,
     onOpenModelProviders: () -> Unit,
+    onOpenNotepad: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     homeTitle: String? = null,
     showMeetingsByDefault: Boolean = false,
@@ -144,6 +152,7 @@ internal fun AgentAppShell(
     content: @Composable (PaddingValues) -> Unit,
 ) {
     val scrollBehavior = MiuixScrollBehavior()
+    val glass = LocalEtaDesignTokens.current.skin.isGlass
     val backdrop = rememberTopBarBackdrop()
     val topBarColor = topBarContainerColor(backdrop)
     val pageContent: @Composable () -> Unit = {
@@ -176,16 +185,28 @@ internal fun AgentAppShell(
                                 onOpenAppControl = onOpenAppControl,
                             )
                             if (currentRoute is AppRoute.Home) {
-                                Box(
+                                Row(
                                     modifier = Modifier
                                         .matchParentSize()
                                         .windowInsetsPadding(WindowInsets.statusBars.only(WindowInsetsSides.Top)),
-                                    contentAlignment = Alignment.Center,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                                    verticalAlignment = Alignment.CenterVertically,
                                 ) {
-                                    HomeModeSwitch(
-                                        showMeetings = showMeetingsByDefault,
-                                        onSelect = { onConversationPaneModeChange(it, null) },
-                                    )
+                                    Row(
+                                        modifier = Modifier.offset(x = 25.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        HomeModeSwitch(
+                                            showMeetings = showMeetingsByDefault,
+                                            onSelect = { onConversationPaneModeChange(it, null) },
+                                        )
+                                        onOpenNotepad?.let { openNotepad ->
+                                            NotepadQuickButton(onClick = openNotepad)
+                                        } ?: Spacer(
+                                            modifier = Modifier.size(if (glass) 42.dp else 32.dp),
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -193,13 +214,16 @@ internal fun AgentAppShell(
                 }
             },
         ) { padding ->
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .captureForTopBar(backdrop)
-                    .nestedScroll(scrollBehavior.nestedScrollConnection),
-            ) {
-                content(padding)
+            Box(Modifier.fillMaxSize()) {
+                if (glass) Box(Modifier.matchParentSize().captureForTopBar(backdrop).etaPageAtmosphere())
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .then(if (glass) Modifier else Modifier.captureForTopBar(backdrop))
+                        .nestedScroll(scrollBehavior.nestedScrollConnection),
+                ) {
+                    content(padding)
+                }
             }
         }
     }
@@ -222,6 +246,7 @@ internal fun AgentAppShell(
                 onConversationRestore = onConversationRestore,
                 onConversationMoveToFolder = onConversationMoveToFolder,
                 onConversationDropToFolder = onConversationDropToFolder,
+                onPanePlacement = onPanePlacement,
                 onOpenMeetingRoom = onOpenMeetingRoom,
                 onMeetingRoomRename = onMeetingRoomRename,
                 onMeetingRoomTogglePin = onMeetingRoomTogglePin,
@@ -310,7 +335,9 @@ private fun AgentTopBar(
     // 首页聊天舞台与终端这类整屏工具页没有可驱动折叠的滚动列表，大标题会一直展开、
     // 白占一屏顶部；它们使用紧凑标题，其余二级内容页统一使用可折叠大标题。
     val compactTitle = isHome || route is AppRoute.Terminal
-    val topBarTitle = if (isHome) homeTitle.orEmpty() else titleForRoute(route)
+    // The centered mode capsules own the home title slot. A room name in the
+    // underlying app bar otherwise shows through underneath those controls.
+    val topBarTitle = if (isHome) "" else titleForRoute(route)
     if (compactTitle) {
         SmallTopAppBar(
             title = topBarTitle,
@@ -341,29 +368,78 @@ private fun HomeModeSwitch(
     modifier: Modifier = Modifier,
 ) {
     val colors = MiuixTheme.colorScheme
-    Row(
+    val glass = LocalEtaDesignTokens.current.skin.isGlass
+    Box(
         modifier = modifier
-            .width(126.dp)
-            .height(32.dp)
-            .squircleSurface(colors.surfaceContainerHigh.copy(alpha = .98f), 16.dp)
-            .border(.5.dp, colors.outline.copy(alpha = .20f), CircleShape)
-            .padding(3.dp),
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .width(132.dp)
+            .height(if (glass) 42.dp else 32.dp),
     ) {
-        HomeModeSwitchItem(
-            label = "会话",
-            selected = !showMeetings,
-            onClick = { onSelect(false) },
-            modifier = Modifier.weight(1f),
-        )
-        HomeModeSwitchItem(
-            label = "会议室",
-            selected = showMeetings,
-            onClick = { onSelect(true) },
-            modifier = Modifier.weight(1f),
-        )
+        if (glass) NexonGlassModeBackdrop(Modifier.matchParentSize(), cornerRadius = 21.dp)
+        Row(
+            modifier = Modifier
+                .matchParentSize()
+                .then(if (glass) Modifier else Modifier.squircleSurface(colors.surfaceContainerHigh, 16.dp))
+                .squircleBorder(
+                    width = .5.dp,
+                    color = colors.outline.copy(alpha = .24f),
+                    cornerRadius = 21.dp,
+                )
+                .padding(3.dp),
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            HomeModeSwitchItem(
+                label = "会 话",
+                selected = !showMeetings,
+                onClick = { onSelect(false) },
+                modifier = Modifier.weight(1f),
+            )
+            HomeModeSwitchItem(
+                label = "会议室",
+                selected = showMeetings,
+                onClick = { onSelect(true) },
+                modifier = Modifier.weight(1f),
+            )
+        }
     }
+}
+
+@Composable
+private fun NotepadQuickButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = MiuixTheme.colorScheme
+    val glass = LocalEtaDesignTokens.current.skin.isGlass
+    Box(
+        modifier = modifier
+            .size(if (glass) 42.dp else 32.dp)
+            .squircleBorder(
+                width = 0.5.dp,
+                color = colors.outline.copy(alpha = 0.34f),
+                cornerRadius = 21.dp,
+            )
+            .then(if (glass) Modifier else Modifier.squircleSurface(colors.surface.copy(alpha = 0.54f), 16.dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (glass) NexonGlassModeBackdrop(Modifier.matchParentSize(), cornerRadius = 21.dp)
+        IconButton(
+            onClick = onClick,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.EditNote,
+                contentDescription = "打开记事本",
+                modifier = Modifier.size(20.dp),
+                tint = colors.onSurface,
+            )
+        }
+    }
+}
+
+@Composable
+private fun NexonGlassModeBackdrop(modifier: Modifier, cornerRadius: androidx.compose.ui.unit.Dp) {
+    NexusGlassBackdrop(modifier, cornerRadius = cornerRadius, refract = false)
 }
 
 @Composable
@@ -374,6 +450,7 @@ private fun HomeModeSwitchItem(
     modifier: Modifier = Modifier,
 ) {
     val colors = MiuixTheme.colorScheme
+    val glass = LocalEtaDesignTokens.current.skin.isGlass
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -384,6 +461,7 @@ private fun HomeModeSwitchItem(
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
+        if (glass && selected) NexusGlassBackdrop(Modifier.matchParentSize(), cornerRadius = 12.dp, selected = true, refract = false)
         Text(
             text = label,
             style = MiuixTheme.textStyles.footnote2,
@@ -560,7 +638,9 @@ private fun titleForRoute(route: AppRoute?): String = when (route) {
     is AppRoute.AppControlCenter -> "软件管家"
     is AppRoute.Terminal -> stringResource(R.string.route_terminal)
     is AppRoute.Tools -> stringResource(R.string.route_tools)
+    is AppRoute.ToolsAndDevices -> stringResource(R.string.settings_tools_devices_title)
     is AppRoute.WebToolsSettings -> stringResource(R.string.web_tools_settings_title)
+    is AppRoute.CloudToolsSettings -> "云端工具"
     is AppRoute.Skills -> stringResource(R.string.route_skills)
     is AppRoute.PromptInjection -> "角色与指令"
     is AppRoute.CapabilityCenter -> "能力中心"
@@ -579,11 +659,14 @@ private fun titleForRoute(route: AppRoute?): String = when (route) {
     is AppRoute.Permissions -> stringResource(R.string.route_permissions)
     is AppRoute.SystemEnhance -> stringResource(R.string.route_system_enhancements)
     is AppRoute.Settings -> stringResource(R.string.route_settings)
+    is AppRoute.DigitalAssistantSettings -> stringResource(R.string.settings_digital_assistant_title)
+    is AppRoute.SearchGestureSettings -> stringResource(R.string.settings_search_gestures_title)
     is AppRoute.SpeechSettings -> stringResource(R.string.speech_settings_title)
     is AppRoute.SpeechRecognition -> stringResource(R.string.speech_recognition_title)
     is AppRoute.SpeechSynthesis -> stringResource(R.string.speech_synthesis_title)
     is AppRoute.SpeechOss -> stringResource(R.string.speech_oss_title)
     is AppRoute.AppearanceSettings -> stringResource(R.string.appearance_title)
+    is AppRoute.MessageTypography -> stringResource(R.string.message_typography_title)
     is AppRoute.ConversationArchiveSettings -> stringResource(R.string.conversation_archive_settings_title)
     is AppRoute.MeetingRooms -> stringResource(R.string.meeting_rooms_title)
     is AppRoute.MeetingRoom -> stringResource(R.string.meeting_room_title)

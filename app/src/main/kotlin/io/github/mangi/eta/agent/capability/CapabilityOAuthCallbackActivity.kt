@@ -15,7 +15,7 @@ class CapabilityOAuthCallbackActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         lifecycleScope.launch {
             withContext(Dispatchers.IO) {
-                ApiOAuth2Client(applicationContext).completeAuthorization(intent?.data)
+                ApiOAuth2Client(applicationContext).use { it.completeAuthorization(intent?.data) }
             }
             startActivity(
                 NexusUiContract.launchIntent(this@CapabilityOAuthCallbackActivity).addFlags(

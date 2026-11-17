@@ -100,7 +100,7 @@
     <string name="prompt_injection_block_content">提示詞內容</string>
     <string name="prompt_injection_position">插入位置</string>
     <string name="prompt_injection_position_prefix">對話之前</string>
-    <string name="prompt_injection_position_post">歷史之後</string>
+    <string name="prompt_injection_position_post">目前輸入之後</string>
     <string name="prompt_injection_block_number">第 %1$d 區塊</string>
     <string name="prompt_injection_move_up">上移</string>
     <string name="prompt_injection_move_down">下移</string>
@@ -112,7 +112,7 @@
     <string name="prompt_injection_discard">放棄</string>
     <string name="prompt_injection_transfer_title">在裝置之間移轉範本</string>
     <string name="prompt_injection_transfer_note">檔案只包含範本與範圍綁定，不會匯出供應商憑證或對話內容。</string>
-    <string name="prompt_injection_native_json">Nexus 原生 JSON</string>
+    <string name="prompt_injection_native_json">NEXA 原生 JSON</string>
     <string name="prompt_injection_export_json">匯出全部為 JSON</string>
     <string name="prompt_injection_export_json_summary">完整備份範本與範圍綁定。</string>
     <string name="prompt_injection_import_json">匯入 JSON</string>
@@ -144,7 +144,7 @@
     <string name="prompt_injection_export_txt">TXT</string>
     <string name="prompt_injection_export_picker_title">選擇要匯出的範本</string>
     <string name="prompt_injection_export_picker_note">每個檔案包含一個範本；移轉整個範本庫請使用 JSON。</string>
-    <string name="prompt_injection_format_native">Nexus 原生備份</string>
+    <string name="prompt_injection_format_native">NEXA 原生備份</string>
     <string name="prompt_injection_format_pro">小 PRO 預設</string>
     <string name="prompt_injection_format_sillytavern">SillyTavern 預設</string>
     <string name="prompt_injection_format_json">通用 JSON</string>
@@ -158,4 +158,5 @@
     <string name="skills_tools_search_tools">搜尋工具</string>
     <string name="skills_tools_save_failed">工具權限儲存失敗</string>
     <string name="skills_tools_group_blocked">%1$s · 能力群組已關閉</string>
+    <string name="prompt_injection_scope_project">项目</string>
 </resources>

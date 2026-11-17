@@ -15,6 +15,8 @@ import io.github.mangi.eta.agent.accessibility.RootAccessibilityRecoveryStatus
 import io.github.mangi.eta.agent.device.DeviceLocationProvider
 import io.github.mangi.eta.agent.device.DeviceRuntimeSnapshot
 import io.github.mangi.eta.agent.device.RootAccess
+import io.github.mangi.eta.agent.permission.AgentPermissionPolicy
+import io.github.mangi.eta.data.model.AgentPermissionMode
 import io.github.mangi.eta.ui.model.DeviceRuntimeUi
 import io.github.mangi.eta.ui.model.RootAccessibilityRecoveryUi
 import io.github.mangi.eta.ui.model.PermissionHealthItemUi
@@ -23,6 +25,7 @@ import io.github.mangi.eta.ui.model.PermissionStatusUi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -38,6 +41,7 @@ internal class PermissionHealthStore(
         private set
 
     private var permissionRefreshJob: Job? = null
+    private var permissionMode = AgentPermissionMode.SMART_APPROVAL
 
     init {
         scope.launch {
@@ -49,12 +53,21 @@ internal class PermissionHealthStore(
         scope.launch {
             RootAccessibilityRecovery.state.collectLatest { refreshPermissionHealth() }
         }
+        scope.launch {
+            AgentPermissionPolicy.modeFlow().collectLatest { mode ->
+                permissionMode = mode
+                refreshPermissionHealth()
+            }
+        }
     }
 
     fun refreshPermissionHealth() {
         permissionRefreshJob?.cancel()
         permissionRefreshJob = scope.launch(Dispatchers.IO) {
-            val refreshed = buildPermissionHealthState(appContext)
+            // Root, recovery, permission mode and accessibility emit together on resume.
+            // Coalesce the burst before starting non-cancellable PackageManager/Binder work.
+            delay(80)
+            val refreshed = buildPermissionHealthState(appContext, permissionMode)
             withContext(Dispatchers.Main) { permissionHealthState = refreshed }
         }
     }
@@ -66,12 +79,18 @@ internal class PermissionHealthStore(
         }
     }
 
-    fun retryRootAccessibilityRecovery() {
-        RootAccessibilityRecovery.retry(appContext)
+    fun retryRootAccessibilityRecovery(): Boolean {
+        return RootAccessibilityRecovery.retry(appContext)
+    }
+
+    fun setAgentPermissionMode(mode: AgentPermissionMode) {
+        scope.launch(Dispatchers.IO) {
+            AgentPermissionPolicy.setMode(mode)
+        }
     }
 }
 
-private fun buildPermissionHealthState(context: Context): PermissionHealthUiState {
+private fun buildPermissionHealthState(context: Context, permissionMode: AgentPermissionMode): PermissionHealthUiState {
     val backgroundRunningEnabled = isIgnoringBatteryOptimizations(context)
     val overlayEnabled = Settings.canDrawOverlays(context)
     val appListEnabled = hasAppListAccess(context)
@@ -85,6 +104,7 @@ private fun buildPermissionHealthState(context: Context): PermissionHealthUiStat
     val recovery = RootAccessibilityRecovery.state.value
 
     return PermissionHealthUiState(
+        agentPermissionMode = permissionMode,
         rootAccessibilityRecovery = RootAccessibilityRecoveryUi(
             enabled = recovery.enabled,
             canToggle = rootEnabled || recovery.enabled,
@@ -153,10 +173,9 @@ private fun buildPermissionHealthState(context: Context): PermissionHealthUiStat
                 status = if (io.github.mangi.eta.agent.device.CalendarPermissions.granted(context, true)) PermissionStatusUi.Available else PermissionStatusUi.Missing,
                 primaryActionLabel = if (io.github.mangi.eta.agent.device.CalendarPermissions.granted(context, true)) null else "授权",
             ),
-            PermissionHealthItemUi(
-                id = "notification_policy", title = "勿扰访问", summary = "允许普通权限下切换静音、振动和响铃模式。",
-                status = if (context.getSystemService(android.app.NotificationManager::class.java)?.isNotificationPolicyAccessGranted == true) PermissionStatusUi.Available else PermissionStatusUi.Missing,
-                primaryActionLabel = "设置",
+            notificationPolicyPermissionHealthItem(
+                context.getSystemService(android.app.NotificationManager::class.java)
+                    ?.isNotificationPolicyAccessGranted == true,
             ),
             PermissionHealthItemUi(
                 id = "location",
@@ -217,6 +236,14 @@ private fun buildPermissionHealthState(context: Context): PermissionHealthUiStat
         )
     )
 }
+
+internal fun notificationPolicyPermissionHealthItem(granted: Boolean) = PermissionHealthItemUi(
+    id = "notification_policy",
+    title = "勿扰访问",
+    summary = "允许普通权限下切换静音、振动和响铃模式。",
+    status = if (granted) PermissionStatusUi.Available else PermissionStatusUi.Missing,
+    primaryActionLabel = if (granted) null else "设置",
+)
 
 private fun isIgnoringBatteryOptimizations(context: Context): Boolean {
     val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager

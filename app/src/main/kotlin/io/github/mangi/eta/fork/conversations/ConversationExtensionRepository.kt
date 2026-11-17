@@ -5,9 +5,18 @@ import androidx.room.withTransaction
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 
 internal object ConversationExtensionRepository {
+    fun observeArchiveSettings(context: Context): Flow<ConversationArchiveSettings> =
+        ConversationExtensionDatabase.get(context).conversationExtensionDao().archiveSettingsFlow()
+            .map { it?.toModel() ?: ConversationArchiveSettings() }.distinctUntilChanged()
+    suspend fun recordMessageActivity(context: Context, conversationId: String, now: Long) {
+        ensureConversations(context, listOf(conversationId), defaultLastActiveAt = now)
+        ConversationExtensionDatabase.get(context).conversationExtensionDao().touchMessageActivity(conversationId, now)
+    }
+
     suspend fun initializeBranch(
         context: Context, setup: io.github.mangi.eta.data.db.ConversationBranchSetupEntity, useCurrent: Boolean,
     ) {
@@ -120,6 +129,29 @@ internal object ConversationExtensionRepository {
         }
     }
 
+    suspend fun setFolderPinned(
+        context: Context,
+        folderId: String,
+        pinned: Boolean,
+        now: Long = System.currentTimeMillis(),
+    ) {
+        val database = ConversationExtensionDatabase.get(context)
+        database.withTransaction {
+            val dao = database.conversationExtensionDao()
+            val current = dao.folder(folderId) ?: throw ConversationFolderException("NOT_FOUND")
+            val nextOrder = when {
+                pinned && current.sortOrder >= 0L -> {
+                    (dao.folders().filter { it.sortOrder < 0L }.minOfOrNull { it.sortOrder } ?: 0L) - 1L
+                }
+                !pinned && current.sortOrder < 0L -> dao.maxFolderSortOrder() + 1L
+                else -> current.sortOrder
+            }
+            if (nextOrder != current.sortOrder) {
+                dao.updateFolderEntity(current.copy(sortOrder = nextOrder, updatedAt = now))
+            }
+        }
+    }
+
     suspend fun moveFolder(context: Context, folderId: String, parentId: String?, now: Long = System.currentTimeMillis()) {
         val database = ConversationExtensionDatabase.get(context)
         database.withTransaction {
@@ -171,7 +203,8 @@ internal object ConversationExtensionRepository {
         database.withTransaction {
             val dao = database.conversationExtensionDao()
             requireParent(dao.folders(), folderId)
-            if (dao.extension(conversationId) == null) throw ConversationFolderException("CONVERSATION_NOT_FOUND")
+            val current = dao.extension(conversationId) ?: throw ConversationFolderException("CONVERSATION_NOT_FOUND")
+            if (current.folderId == folderId) return@withTransaction
             val sortOrder = folderId?.let { dao.maxFolderConversationSortOrder(it) + 1 } ?: 0L
             dao.updateFolder(conversationId, folderId, sortOrder, now)
         }
@@ -272,6 +305,29 @@ internal object ConversationExtensionRepository {
         }
         val updated = ConversationExtensionDatabase.get(context).conversationExtensionDao()
             .setContextWindowOverride(conversationId, contextWindow, now)
+        if (updated == 0) throw ConversationFolderException("CONVERSATION_NOT_FOUND")
+    }
+
+    suspend fun compactionBinding(context: Context, conversationId: String): io.github.mangi.eta.data.model.ModelRoleBinding? =
+        ConversationExtensionDatabase.get(context).conversationExtensionDao()
+            .extension(conversationId)
+            ?.let { extension ->
+                extension.compactionModelId?.let { modelId ->
+                    io.github.mangi.eta.data.model.ModelRoleBinding(
+                        modelId = modelId,
+                        providerId = extension.compactionProviderId,
+                    )
+                }
+            }
+
+    suspend fun setCompactionBinding(
+        context: Context,
+        conversationId: String,
+        binding: io.github.mangi.eta.data.model.ModelRoleBinding?,
+        now: Long = System.currentTimeMillis(),
+    ) {
+        val updated = ConversationExtensionDatabase.get(context).conversationExtensionDao()
+            .setCompactionBinding(conversationId, binding?.modelId, binding?.providerId, now)
         if (updated == 0) throw ConversationFolderException("CONVERSATION_NOT_FOUND")
     }
 

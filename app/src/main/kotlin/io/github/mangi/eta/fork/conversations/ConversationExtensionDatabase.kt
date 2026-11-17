@@ -16,7 +16,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ConversationArchiveSettingsEntity::class,
         io.github.mangi.eta.data.db.BranchSetupReceiptEntity::class,
     ],
-    version = 5,
+    version = 7,
     exportSchema = false,
 )
 internal abstract class ConversationExtensionDatabase : RoomDatabase() {
@@ -35,7 +35,7 @@ internal abstract class ConversationExtensionDatabase : RoomDatabase() {
                     ConversationExtensionDatabase::class.java,
                     DATABASE_NAME,
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                     .build()
                     .also { instance = it }
             }
@@ -99,3 +99,14 @@ internal val MIGRATION_3_4 = object : Migration(3, 4) {
 }
 
 internal val MIGRATION_4_5 = Migration(4, 5) { io.github.mangi.eta.data.db.createBranchSetupReceipts(it) }
+
+internal val MIGRATION_5_6 = Migration(5, 6) { database ->
+    database.execSQL("ALTER TABLE conversation_extensions ADD COLUMN compaction_model_id TEXT")
+    database.execSQL("ALTER TABLE conversation_extensions ADD COLUMN compaction_provider_id TEXT")
+}
+
+internal val MIGRATION_6_7 = Migration(6, 7) { database ->
+    database.execSQL("ALTER TABLE conversation_extensions ADD COLUMN last_message_at INTEGER NOT NULL DEFAULT 0")
+    // Preserve the best legacy baseline; future viewing and management do not change message recency.
+    database.execSQL("UPDATE conversation_extensions SET last_message_at = last_active_at")
+}

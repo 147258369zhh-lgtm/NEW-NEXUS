@@ -19,6 +19,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -51,6 +53,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -58,6 +61,8 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.mangi.eta.EtaApp
+import io.github.mangi.eta.R
+import io.github.mangi.eta.ui.components.NexusSettingsTabs
 import io.github.mangi.eta.agent.subagent.SubagentProfile
 import io.github.mangi.eta.agent.subagent.SubagentProfileCatalog
 import io.github.mangi.eta.agent.subagent.SubagentDraftGenerator
@@ -97,20 +102,19 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
 import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InputField
-import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.basic.TabRow
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle as SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.overlay.OverlayBottomSheet
-import top.yukonga.miuix.kmp.preference.ArrowPreference
-import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
-import top.yukonga.miuix.kmp.preference.SwitchPreference
+import io.github.mangi.eta.ui.components.NexusSettingsArrowPreference as ArrowPreference
+import io.github.mangi.eta.ui.components.NexusSettingsDropdownPreference as OverlayDropdownPreference
+import io.github.mangi.eta.ui.components.NexusSettingsSwitchPreference as SwitchPreference
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
@@ -149,6 +153,7 @@ private fun SubagentSettings.withProfileBinding(
         it.providerId == null &&
             it.modelId == null &&
             it.reasoningEffort == null &&
+            it.candidateRoutingEnabled == null &&
             it.tools == null &&
             it.disallowedTools.isEmpty() &&
             it.contextWindow == null &&
@@ -164,11 +169,12 @@ private fun SubagentSettings.renamedProfileBinding(
     newName: String,
 ): SubagentSettings {
     val oldKey = oldName.trim().lowercase()
-    val binding = profiles[oldKey] ?: return this
+    val binding = profiles[oldKey]
     val updated = profiles.toMutableMap()
     updated.remove(oldKey)
-    updated[newName.trim().lowercase()] = binding
-    return copy(profiles = updated)
+    if (binding != null) updated[newName.trim().lowercase()] = binding
+    return copy(profiles = updated,
+        defaultMeetingHostProfile = if (defaultMeetingHostProfile == oldKey) newName.trim().lowercase() else defaultMeetingHostProfile)
 }
 
 private fun SubagentProfileBinding?.orEmpty(): SubagentProfileBinding =
@@ -193,12 +199,8 @@ private fun tokenBudgetLabel(value: Int): String = when {
     else -> value.toString()
 }
 
-private fun subagentDisplayName(name: String): String = when (name) {
-    SubagentProfile.TYPE_EXPLORE -> "探索 Agent"
-    SubagentProfile.TYPE_CODER -> "工程 Agent"
-    SubagentProfile.TYPE_PLAN -> "规划 Agent"
-    else -> name
-}
+private fun subagentDisplayName(name: String): String =
+    SubagentProfile.BUILTIN_PROFILES.firstOrNull { it.name == name }?.displayName ?: name
 
 private fun subagentRoleIcon(profile: SubagentProfile): ImageVector = when (profile.name) {
     SubagentProfile.TYPE_EXPLORE -> Icons.Rounded.Psychology
@@ -218,12 +220,19 @@ internal fun SubagentSettingsScreen(
         mutableStateOf(agentPrefs?.getBoolean(Prefs.Keys.AGENT_SUBAGENT_ENABLED, defaultEnabled) ?: defaultEnabled)
     }
 
-    val providers by ProviderRepository.providersFlow().collectAsState(initial = emptyList())
-    val primaryProviderId by RuntimeConfigRepository.selectedProviderIdFlow().collectAsState(initial = null)
-    val primaryModelId by RuntimeConfigRepository.selectedModelIdFlow().collectAsState(initial = null)
-    val subagentSettings by RuntimeConfigRepository.subagentSettingsFlow().collectAsState(initial = SubagentSettings())
+    val providers by remember { ProviderRepository.providersFlow() }.collectAsState(initial = emptyList())
+    val primaryProviderId by remember { RuntimeConfigRepository.selectedProviderIdFlow() }.collectAsState(initial = null)
+    val primaryModelId by remember { RuntimeConfigRepository.selectedModelIdFlow() }.collectAsState(initial = null)
+    val subagentSettings by remember { RuntimeConfigRepository.subagentSettingsFlow() }.collectAsState(initial = SubagentSettings())
 
     var customProfiles by remember { mutableStateOf<List<SubagentProfile>>(emptyList()) }
+    val profilesByName = remember(customProfiles) {
+        val profiles = SubagentProfile.BUILTIN_PROFILES.associateByTo(linkedMapOf()) { it.name }
+        customProfiles.forEach { profile ->
+            if (profiles[profile.name]?.builtin != true || profile.override || profile.name !in SubagentProfile.LEGACY_BUILTIN_NAMES) profiles[profile.name] = profile
+        }
+        profiles
+    }
     fun reloadCustomProfiles() {
         scope.launch {
             customProfiles = withContext(Dispatchers.IO) {
@@ -316,6 +325,8 @@ internal fun SubagentSettingsScreen(
             RuntimeConfigRepository.setSubagentSettings(
                 subagentSettings.copy(
                     profiles = subagentSettings.profiles - profile.name.lowercase(),
+                    defaultMeetingHostProfile = if (subagentSettings.defaultMeetingHostProfile == profile.name)
+                        SubagentProfile.TYPE_MEETING_HOST else subagentSettings.defaultMeetingHostProfile,
                 ),
             )
             reloadCustomProfiles()
@@ -323,13 +334,41 @@ internal fun SubagentSettingsScreen(
     }
 
     val selectedProfile = inspectedProfile
+    var settingsTab by rememberSaveable { mutableIntStateOf(0) }
+    var profileTab by rememberSaveable(selectedProfile?.name) { mutableIntStateOf(0) }
+    val defaultsListState = rememberLazyListState()
+    val builtinListState = rememberLazyListState()
+    val customListState = rememberLazyListState()
+    val profileRuntimeListState = rememberSaveable(selectedProfile?.name, saver = LazyListState.Saver) { LazyListState() }
+    val profileRoleListState = rememberSaveable(selectedProfile?.name, saver = LazyListState.Saver) { LazyListState() }
+    val profileToolsListState = rememberSaveable(selectedProfile?.name, saver = LazyListState.Saver) { LazyListState() }
     BackHandler(enabled = selectedProfile != null) {
         inspectedProfile = null
     }
 
     MiuixScaffoldPage(
-        title = selectedProfile?.let { subagentDisplayName(it.name) } ?: "子 Agent",
+        title = selectedProfile?.displayName ?: "子 Agent",
         compactTitle = selectedProfile != null,
+        listState = if (selectedProfile == null) {
+            when (settingsTab) { 0 -> defaultsListState; 1 -> builtinListState; else -> customListState }
+        } else {
+            when (profileTab) { 0 -> profileRuntimeListState; 1 -> profileRoleListState; else -> profileToolsListState }
+        },
+        aboveContent = {
+            NexusSettingsTabs(
+                tabs = if (selectedProfile == null) listOf(
+                    stringResource(R.string.settings_tab_subagent_defaults),
+                    stringResource(R.string.settings_tab_subagent_builtin),
+                    stringResource(R.string.settings_tab_subagent_custom),
+                ) else listOf(
+                    stringResource(R.string.settings_tab_subagent_runtime),
+                    stringResource(R.string.settings_tab_subagent_role),
+                    stringResource(R.string.settings_tab_subagent_tools),
+                ),
+                selectedTab = if (selectedProfile == null) settingsTab else profileTab,
+                onTabSelected = { if (selectedProfile == null) settingsTab = it else profileTab = it },
+            )
+        },
         onBack = {
             if (selectedProfile != null) inspectedProfile = null else onBack()
         },
@@ -375,6 +414,12 @@ internal fun SubagentSettingsScreen(
                         targetBinding?.modelId
                     },
                     primaryModelName = primaryModelName,
+                    candidateRoutingEnabled = if (targetProfileName == null) {
+                        subagentSettings.candidateRoutingEnabled
+                    } else {
+                        targetBinding?.candidateRoutingEnabled
+                            ?: subagentSettings.candidateRoutingEnabled
+                    },
                     onSelectModel = { providerId, modelId ->
                         showModelSheet = false
                         scope.launch {
@@ -397,7 +442,7 @@ internal fun SubagentSettingsScreen(
 
             val policyProfileName = toolPolicyProfileName
             val policyBinding = policyProfileName?.let(subagentSettings::bindingFor)
-            val policyProfile = policyProfileName?.let(SubagentProfileCatalog::get)
+            val policyProfile = policyProfileName?.trim()?.lowercase()?.let(profilesByName::get)
             var selectedPermissionTools by remember(
                 policyProfileName,
                 policyBinding?.tools,
@@ -419,7 +464,7 @@ internal fun SubagentSettingsScreen(
             ) {
                 if (policyProfileName != null) {
                     Column(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 560.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         Text(
@@ -428,9 +473,11 @@ internal fun SubagentSettingsScreen(
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         )
                         SubagentPermissionEditor(
+                            modifier = Modifier.weight(1f, fill = false),
                             selectedTools = selectedPermissionTools,
                             onSelectedToolsChange = { selectedPermissionTools = it },
                             maxHeight = 430.dp,
+                            fitAvailableHeight = true,
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         MiuixDialogActions(
@@ -590,8 +637,11 @@ internal fun SubagentSettingsScreen(
                     ?.takeIf { it.isNotEmpty() }
                     ?.let { " · 禁用 ${it.size} 项" }
                     .orEmpty()
+                val profileCandidateRoutingEnabled = profileBinding?.candidateRoutingEnabled
+                    ?: subagentSettings.candidateRoutingEnabled
                 SubagentProfileDetailContent(
                     profile = selectedProfile,
+                    selectedTab = profileTab,
                     modelSummary = profileModelSummary,
                     effortOptions = profileEffortOptions,
                     effortLabels = profileEffortLabels,
@@ -599,14 +649,16 @@ internal fun SubagentSettingsScreen(
                     toolPolicySummary = toolPolicySummary,
                     contextBudgetOptions = profileContextBudgetOptions,
                     contextBudgetLabels = profileContextBudgetOptions.map { value ->
-                        value?.let { "${tokenBudgetLabel(it)} tokens" } ?: "跟随模型窗口"
+                        value?.let { "${tokenBudgetLabel(it)} tokens" }
+                            ?: selectedProfile.defaultContextWindow?.let { "${tokenBudgetLabel(it)} tokens（岗位默认）" } ?: "跟随模型窗口"
                     },
                     selectedContextBudgetIndex = contextBudgetIndex,
                     toolCallBudgetOptions = profileToolCallBudgetOptions,
                     toolCallBudgetLabels = profileToolCallBudgetOptions.map { value ->
-                        value?.let { "$it 次" } ?: "不设插件上限"
+                        value?.let { "$it 次" } ?: selectedProfile.defaultMaxToolCalls?.let { "$it 次（岗位默认）" } ?: "不设插件上限"
                     },
                     selectedToolCallBudgetIndex = toolCallBudgetIndex,
+                    candidateRoutingEnabled = profileCandidateRoutingEnabled,
                     onConfigureModel = {
                         modelSheetProfileName = selectedProfile.name
                         showModelSheet = true
@@ -644,6 +696,16 @@ internal fun SubagentSettingsScreen(
                             )
                         }
                     },
+                    onCandidateRoutingChange = { enabled ->
+                        scope.launch {
+                            RuntimeConfigRepository.setSubagentSettings(
+                                subagentSettings.withProfileBinding(
+                                    selectedProfile.name,
+                                    profileBinding.orEmpty().copy(candidateRoutingEnabled = enabled),
+                                ),
+                            )
+                        }
+                    },
                     onEdit = if (!selectedProfile.builtin) {
                         { editProfile(selectedProfile) }
                     } else {
@@ -657,11 +719,11 @@ internal fun SubagentSettingsScreen(
                 )
             }
         } else {
-            item(key = "config_group") {
+            if (settingsTab == 0) item(key = "config_group") {
                 SmallTitle("调度与默认配置")
                 Card(
                     modifier = Modifier
-                        .padding(horizontal = 12.dp)
+                        .padding(horizontal = 16.dp)
                         .padding(bottom = 12.dp),
                 ) {
                     Row(
@@ -692,7 +754,7 @@ internal fun SubagentSettingsScreen(
                                 fontWeight = FontWeight.SemiBold,
                             )
                             Text(
-                                text = "为检索、工程和规划任务选择独立的能力边界。",
+                                text = "1位主持与12类专业岗位，按任务选择职责、工具、模型和预算。",
                                 style = MiuixTheme.textStyles.footnote1,
                                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                             )
@@ -722,6 +784,44 @@ internal fun SubagentSettingsScreen(
                             showModelSheet = true
                         },
                     )
+                    val hostProfiles = profilesByName.values.toList()
+                    OverlayDropdownPreference(
+                        title = "全局默认会议主 Agent",
+                        summary = "新会议默认使用此主持；每场可临时新建或覆盖，专家由你多选。",
+                        items = hostProfiles.map { it.displayName },
+                        selectedIndex = hostProfiles.indexOfFirst { it.name == subagentSettings.defaultMeetingHostProfile }
+                            .takeIf { it >= 0 } ?: 0,
+                        onSelectedIndexChange = { index -> hostProfiles.getOrNull(index)?.let { profile ->
+                            scope.launch { RuntimeConfigRepository.setSubagentSettings(
+                                subagentSettings.copy(defaultMeetingHostProfile = profile.name)) }
+                        } },
+                    )
+                    SwitchPreference(
+                        title = "候选模型路由",
+                        summary = "需先在模型设置开启候选路由；按「子 Agent」用途选择，无合格候选时不启动",
+                        checked = subagentSettings.candidateRoutingEnabled,
+                        enabled = subagentEnabled,
+                        onCheckedChange = { enabled ->
+                            scope.launch {
+                                RuntimeConfigRepository.setSubagentSettings(
+                                    subagentSettings.copy(candidateRoutingEnabled = enabled),
+                                )
+                            }
+                        },
+                    )
+                    OverlayDropdownPreference(
+                        title = "同时运行上限",
+                        items = (1..SubagentSettings.MAX_PARALLEL_AGENTS).map { "$it 个" },
+                        selectedIndex = subagentSettings.resolvedMaxParallelAgents - 1,
+                        enabled = subagentEnabled,
+                        onSelectedIndexChange = { index ->
+                            scope.launch {
+                                RuntimeConfigRepository.setSubagentSettings(
+                                    subagentSettings.copy(maxParallelAgents = (index + 1).coerceIn(1, SubagentSettings.MAX_PARALLEL_AGENTS)),
+                                )
+                            }
+                        },
+                    )
                     if (effortOptions.size > 1) {
                         OverlayDropdownPreference(
                             title = "默认思考强度",
@@ -741,11 +841,11 @@ internal fun SubagentSettingsScreen(
                 }
             }
 
-            item(key = "builtin_group") {
+            if (settingsTab == 1) item(key = "builtin_group") {
                 SmallTitle("内置 Agent", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
                 Card(
                     modifier = Modifier
-                        .padding(horizontal = 12.dp)
+                        .padding(horizontal = 16.dp)
                         .padding(bottom = EtaUiMetrics.groupGap),
                 ) {
                     SubagentProfile.BUILTIN_PROFILES.forEach { profile ->
@@ -757,11 +857,11 @@ internal fun SubagentSettingsScreen(
                 }
             }
 
-            item(key = "custom_group") {
+            if (settingsTab == 2) item(key = "custom_group") {
                 SmallTitle("自定义 Agent", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
                 Card(
                     modifier = Modifier
-                        .padding(horizontal = 12.dp)
+                        .padding(horizontal = 16.dp)
                         .padding(bottom = EtaUiMetrics.groupGap),
                 ) {
                     if (customProfiles.isEmpty()) {
@@ -813,7 +913,7 @@ private fun SubagentProfileRow(
             .padding(horizontal = 16.dp, vertical = 11.dp),
     ) {
         AgentIdentityAvatar(
-            displayName = subagentDisplayName(profile.name),
+            displayName = profile.displayName,
             seed = profile.name,
             size = 42.dp,
             icon = subagentRoleIcon(profile),
@@ -827,7 +927,7 @@ private fun SubagentProfileRow(
                 horizontalArrangement = Arrangement.spacedBy(7.dp),
             ) {
                 Text(
-                    text = subagentDisplayName(profile.name),
+                    text = profile.displayName,
                     style = MiuixTheme.textStyles.body2.copy(fontSize = 16.sp, lineHeight = 22.sp),
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
@@ -863,6 +963,8 @@ private fun SubagentPermissionEditor(
     selectedTools: Set<String>,
     onSelectedToolsChange: (Set<String>) -> Unit,
     maxHeight: androidx.compose.ui.unit.Dp,
+    modifier: Modifier = Modifier,
+    fitAvailableHeight: Boolean = false,
 ) {
     var expandedCategory by remember { mutableStateOf<String?>(null) }
     val selectedCategories = SubagentPermissionCatalog.selectedCategoryIds(selectedTools)
@@ -871,7 +973,7 @@ private fun SubagentPermissionEditor(
         .filter { it.risk == SubagentPermissionCategory.Risk.READ }
         .flatMapTo(linkedSetOf()) { it.tools }
 
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -896,6 +998,7 @@ private fun SubagentPermissionEditor(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(max = maxHeight)
+                .then(if (fitAvailableHeight) Modifier.weight(1f, fill = false) else Modifier)
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(7.dp),
         ) {
@@ -921,7 +1024,7 @@ private fun SubagentPermissionEditor(
                             }
                             onSelectedToolsChange(next)
                         }
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1002,7 +1105,7 @@ private fun SubagentPermissionEditor(
                 modifier = Modifier
                     .fillMaxWidth()
                     .squircleSurface(MiuixTheme.colorScheme.surfaceContainer, 12.dp)
-                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                    .padding(horizontal = 16.dp, vertical = 9.dp),
             )
         }
     }
@@ -1022,6 +1125,11 @@ private fun SubagentEditorSheet(
 ) {
     val scope = rememberCoroutineScope()
     var tab by rememberSaveable(draft.originalName) { mutableIntStateOf(0) }
+    val identityScrollState = rememberScrollState()
+    val roleScrollState = rememberScrollState()
+    val toolsScrollState = rememberScrollState()
+    val runtimeScrollState = rememberScrollState()
+    val previewScrollState = rememberScrollState()
     var reference by rememberSaveable(draft.originalName) { mutableStateOf("") }
     var generating by remember { mutableStateOf(false) }
     val density = LocalDensity.current
@@ -1056,9 +1164,15 @@ private fun SubagentEditorSheet(
             .height(editorHeight)
             .navigationBarsPadding(),
     ) {
-        TabRow(
-            tabs = listOf("角色", "权限", "运行", "预览"),
-            selectedTabIndex = tab,
+        NexusSettingsTabs(
+            tabs = listOf(
+                stringResource(R.string.settings_tab_subagent_identity),
+                stringResource(R.string.settings_tab_subagent_role),
+                stringResource(R.string.settings_tab_subagent_tools),
+                stringResource(R.string.settings_tab_subagent_runtime),
+                stringResource(R.string.memory_mode_preview),
+            ),
+            selectedTab = tab,
             onTabSelected = { tab = it },
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
         )
@@ -1066,7 +1180,13 @@ private fun SubagentEditorSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(when (tab) {
+                    0 -> identityScrollState
+                    1 -> roleScrollState
+                    2 -> toolsScrollState
+                    3 -> runtimeScrollState
+                    else -> previewScrollState
+                })
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
@@ -1177,6 +1297,8 @@ private fun SubagentEditorSheet(
                         }
                     }
 
+                }
+                1 -> {
                     SmallTitle("角色指令", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
                     Text(
                         text = "长期行为约束；一次性任务不要写在这里",
@@ -1203,7 +1325,7 @@ private fun SubagentEditorSheet(
                         onDraftChange(draft.copy(role = draft.role.copy(additionalInstructions = it)))
                     }
                 }
-                1 -> {
+                2 -> {
                     SmallTitle("工具授权", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
                     SubagentPermissionEditor(
                         selectedTools = tools,
@@ -1213,7 +1335,7 @@ private fun SubagentEditorSheet(
                         maxHeight = editorHeight * 0.58f,
                     )
                 }
-                2 -> {
+                3 -> {
                     SmallTitle("独立运行配置", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
                     DialogChoicePreference(
                         title = "运行模型",
@@ -1277,15 +1399,15 @@ private fun SubagentEditorSheet(
                     )
                 }
             }
-            error?.let { message ->
-                Text(
-                    text = message,
-                    style = MiuixTheme.textStyles.footnote1,
-                    color = StatusError,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
             Spacer(Modifier.height(8.dp))
+        }
+        error?.let { message ->
+            Text(
+                text = message,
+                style = MiuixTheme.textStyles.footnote1,
+                color = StatusError,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
+            )
         }
         MiuixDialogActions(
             confirmText = if (generating) "生成中" else "保存子 Agent",
@@ -1328,6 +1450,7 @@ private fun SubagentModelPickerContent(
     selectedProviderId: String?,
     selectedSecondaryModelId: String?,
     primaryModelName: String?,
+    candidateRoutingEnabled: Boolean,
     onSelectModel: (providerId: String?, modelId: String?) -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
@@ -1356,6 +1479,14 @@ private fun SubagentModelPickerContent(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         )
+        if (candidateRoutingEnabled) {
+            Text(
+                text = "已开启候选路由：当前模型不满足「子 Agent」用途或能力要求时改用候选模型。",
+                style = MiuixTheme.textStyles.footnote2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+            )
+        }
         if (pickerState.providerGroups.size > 1) {
             LazyRow(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
@@ -1454,7 +1585,7 @@ private fun SubagentModelRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 2.dp)
+            .padding(horizontal = 16.dp, vertical = 2.dp)
             .squircleSurface(
                 color = if (selected) {
                     MiuixTheme.colorScheme.tertiaryContainer
@@ -1464,7 +1595,7 @@ private fun SubagentModelRow(
                 cornerRadius = 14.dp,
             )
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         ModelBrandMark(
@@ -1507,6 +1638,7 @@ private fun SubagentModelRow(
 @Composable
 private fun SubagentProfileDetailContent(
     profile: SubagentProfile,
+    selectedTab: Int,
     modelSummary: String,
     effortOptions: List<ReasoningEffort?>,
     effortLabels: List<String>,
@@ -1518,11 +1650,13 @@ private fun SubagentProfileDetailContent(
     toolCallBudgetOptions: List<Int?>,
     toolCallBudgetLabels: List<String>,
     selectedToolCallBudgetIndex: Int,
+    candidateRoutingEnabled: Boolean,
     onConfigureModel: () -> Unit,
     onConfigureTools: () -> Unit,
     onSelectEffort: (ReasoningEffort?) -> Unit,
     onSelectContextBudget: (Int?) -> Unit,
     onSelectToolCallBudget: (Int?) -> Unit,
+    onCandidateRoutingChange: (Boolean) -> Unit,
     onEdit: (() -> Unit)? = null,
     onDelete: (() -> Unit)? = null,
 ) {
@@ -1540,7 +1674,7 @@ private fun SubagentProfileDetailContent(
     ) {
         Card(
             modifier = Modifier
-                .padding(horizontal = 12.dp)
+                .padding(horizontal = 16.dp)
                 .padding(top = 8.dp, bottom = 12.dp),
         ) {
             Column(
@@ -1552,7 +1686,7 @@ private fun SubagentProfileDetailContent(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     AgentIdentityAvatar(
-                        displayName = subagentDisplayName(profile.name),
+                        displayName = profile.displayName,
                         seed = profile.name,
                         size = 50.dp,
                         icon = subagentRoleIcon(profile),
@@ -1562,7 +1696,7 @@ private fun SubagentProfileDetailContent(
                         verticalArrangement = Arrangement.spacedBy(3.dp),
                     ) {
                         Text(
-                            text = subagentDisplayName(profile.name),
+                            text = profile.displayName,
                             style = MiuixTheme.textStyles.title3,
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1,
@@ -1591,16 +1725,23 @@ private fun SubagentProfileDetailContent(
             }
         }
 
+        if (selectedTab == 0) {
         SmallTitle("运行配置", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
         Card(
             modifier = Modifier
-                .padding(horizontal = 12.dp)
+                .padding(horizontal = 16.dp)
                 .padding(bottom = EtaUiMetrics.groupGap),
         ) {
             ArrowPreference(
                 title = "独立模型",
                 summary = modelSummary,
                 onClick = onConfigureModel,
+            )
+            SwitchPreference(
+                title = "候选模型路由",
+                summary = "需先在模型设置开启候选路由；按「子 Agent」用途选择，无合格候选时不启动",
+                checked = candidateRoutingEnabled,
+                onCheckedChange = onCandidateRoutingChange,
             )
             if (effortOptions.size > 1) {
                 DialogChoicePreference(
@@ -1633,17 +1774,19 @@ private fun SubagentProfileDetailContent(
             )
         }
 
+        }
+        if (selectedTab == 1) {
         SmallTitle("角色与边界", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
         Card(
             modifier = Modifier
-                .padding(horizontal = 12.dp)
+                .padding(horizontal = 16.dp)
                 .padding(bottom = EtaUiMetrics.groupGap),
         ) {
             Column(
                 modifier = Modifier.padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(13.dp),
             ) {
-                if (!profile.builtin && profile.whenToUse.isNotBlank()) {
+                if (profile.whenToUse.isNotBlank()) {
                     SubagentRoleBlock("何时派发", profile.whenToUse)
                 }
                 if (!profile.builtin && roleSections.description.isNotBlank()) {
@@ -1667,10 +1810,12 @@ private fun SubagentProfileDetailContent(
             }
         }
 
+        }
+        if (selectedTab == 2) {
         SmallTitle("工具能力", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
         Card(
             modifier = Modifier
-                .padding(horizontal = 12.dp)
+                .padding(horizontal = 16.dp)
                 .padding(bottom = EtaUiMetrics.groupGap),
         ) {
             Column(
@@ -1717,7 +1862,7 @@ private fun SubagentProfileDetailContent(
             SmallTitle("管理", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
             Card(
                 modifier = Modifier
-                    .padding(horizontal = 12.dp)
+                    .padding(horizontal = 16.dp)
                     .padding(bottom = EtaUiMetrics.groupGap),
             ) {
                 Column(
@@ -1742,6 +1887,7 @@ private fun SubagentProfileDetailContent(
                     }
                 }
             }
+        }
         }
     }
 }

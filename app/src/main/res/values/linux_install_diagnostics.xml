@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="linux_profile_stage_waiting">Waiting for the Linux package manager</string>
+    <string name="linux_profile_stage_checksum">Checking %1$s integrity and signature</string>
+    <string name="linux_profile_failure_detail">%1$s failed</string>
+    <string name="linux_profile_failure_timeout">The operation timed out. Installed packages are kept; retry can continue.</string>
+    <string name="linux_profile_failure_start">The Linux process could not start. Check environment access and permissions.</string>
+    <string name="linux_profile_failure_exit_code">Package manager exit code: %1$d</string>
+</resources>

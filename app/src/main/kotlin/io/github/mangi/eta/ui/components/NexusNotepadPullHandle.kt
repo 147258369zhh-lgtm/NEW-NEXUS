@@ -1,7 +1,7 @@
 package io.github.mangi.eta.ui.components
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -15,8 +15,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.res.stringResource
+import io.github.mangi.eta.R
 import androidx.compose.ui.unit.dp
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+
+internal val NexusNotepadHandleTouchHeight = 48.dp
 
 /** A small top-edge handle keeps the note gesture discoverable without stealing list scrolling. */
 @Composable
@@ -25,10 +33,16 @@ internal fun NexusNotepadPullHandle(
     modifier: Modifier = Modifier,
 ) {
     val drag = remember { mutableFloatStateOf(0f) }
+    val openLabel = stringResource(R.string.notepad_open)
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(22.dp)
+            .height(NexusNotepadHandleTouchHeight)
+            .clickable(onClick = onOpen)
+            .semantics {
+                role = Role.Button
+                contentDescription = openLabel
+            }
             .pointerInput(onOpen) {
                 detectVerticalDragGestures(
                     onDragStart = { drag.floatValue = 0f },
@@ -42,13 +56,11 @@ internal fun NexusNotepadPullHandle(
                     },
                     onDragCancel = { drag.floatValue = 0f },
                 )
-            }
-            .pointerInput(onOpen) { detectTapGestures(onTap = { onOpen() }) },
-        contentAlignment = Alignment.TopCenter,
+            },
+        contentAlignment = Alignment.Center,
     ) {
         Box(
             modifier = Modifier
-                .padding(top = 5.dp)
                 .width(30.dp)
                 .height(3.dp)
                 .background(

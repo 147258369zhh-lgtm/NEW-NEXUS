@@ -8,11 +8,11 @@ import io.github.mangi.eta.ui.model.PermissionStatusUi
 import io.github.mangi.eta.ui.model.RunStatusUi
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
-// 语义状态色（对齐 Google 标准色系，饱和度克制柔和）
-val StatusSuccess = Color(0xFF34A853)
-val StatusWarning = Color(0xFFF9AB00)
-val StatusError: Color @Composable get() = MiuixTheme.colorScheme.error
-val StatusRunning: Color @Composable get() = MiuixTheme.colorScheme.primary
+// 鲜亮但保留文本可读性的语义色。皮肤只改变主色，不改变状态含义。
+val StatusSuccess = Color(0xFF22BE7A)
+val StatusWarning = Color(0xFFFFAC2B)
+val StatusError = Color(0xFFFF5470)
+val StatusRunning = Color(0xFF348BFF)
 val StatusIdle: Color @Composable get() = MiuixTheme.colorScheme.onSurfaceVariantSummary
 
 // ── RunStatusUi 映射 ──────────────────────────────────────────────────

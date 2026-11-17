@@ -30,6 +30,7 @@ sealed interface GoalTransition {
     data object StartPlanning : GoalTransition
     data object StartRunning : GoalTransition
     data object StartVerification : GoalTransition
+    data object Pause : GoalTransition
     data object PauseForBudget : GoalTransition
     data object WaitForUser : GoalTransition
     data object Resume : GoalTransition
@@ -45,13 +46,22 @@ object WorkflowStateEngine {
             GoalTransition.StartRunning ->
                 requireState(goal, GoalState.RUNNING, GoalState.WAITING_PLAN_APPROVAL, GoalState.BUDGET_PAUSED, GoalState.WAITING_USER)
             GoalTransition.StartVerification -> requireState(goal, GoalState.VERIFYING, GoalState.RUNNING)
+            GoalTransition.Pause -> requireState(goal, GoalState.PAUSED, GoalState.RUNNING, GoalState.VERIFYING)
             GoalTransition.PauseForBudget -> requireState(goal, GoalState.BUDGET_PAUSED, GoalState.RUNNING)
             GoalTransition.WaitForUser ->
                 requireState(goal, GoalState.WAITING_USER, GoalState.RUNNING, GoalState.VERIFYING, GoalState.BUDGET_PAUSED)
             GoalTransition.Resume ->
-                requireState(goal, GoalState.RUNNING, GoalState.WAITING_USER, GoalState.BUDGET_PAUSED)
-            GoalTransition.Complete -> requireState(goal, GoalState.COMPLETED, GoalState.VERIFYING, GoalState.WAITING_USER)
-            GoalTransition.Fail -> requireState(goal, GoalState.FAILED, GoalState.RUNNING, GoalState.VERIFYING, GoalState.WAITING_USER)
+                requireState(goal, GoalState.RUNNING, GoalState.PAUSED, GoalState.WAITING_USER, GoalState.BUDGET_PAUSED)
+            GoalTransition.Complete -> {
+                // Completion is only a verification conclusion. Repeating it on a completed goal
+                // stays idempotent; other live states must be verified first.
+                val next = requireState(goal, GoalState.COMPLETED, GoalState.VERIFYING, GoalState.COMPLETED)
+                require(goal.completionNote?.coreCriteriaVerified == true) {
+                    "GOAL_COMPLETION_NOTE_REQUIRED"
+                }
+                next
+            }
+            GoalTransition.Fail -> requireState(goal, GoalState.FAILED, GoalState.RUNNING, GoalState.VERIFYING, GoalState.WAITING_USER, GoalState.PAUSED)
             GoalTransition.Cancel -> {
                 if (goal.state in terminal) goal.state else GoalState.CANCELLED
             }
@@ -73,6 +83,11 @@ object WorkflowStateEngine {
             createdAt = now,
         )
     }
+
+    /** A paused goal stops new effectful work until the owner confirms a resume. */
+    fun isPaused(state: GoalState): Boolean = state == GoalState.PAUSED || state == GoalState.BUDGET_PAUSED
+
+    fun isTerminal(state: GoalState): Boolean = state in terminal
 
     private fun requireState(goal: GoalSpec, next: GoalState, vararg expected: GoalState): GoalState {
         require(goal.state in expected) {

@@ -130,6 +130,36 @@ class AgentRequestMetricsTest {
         assertEquals(20L, request.usage.outputTokens)
     }
 
+    @Test fun sparseLateUsageReceiptEnrichesRequestWithoutErasingKnownFieldsOrCostBasis() {
+        val telemetry = AgentRunTelemetry(request(), priceResolver = { _, _ ->
+            AgentTokenPrice.create("USD", "1", "2", cacheRead = "0.1", now = 10)
+        })
+        telemetry.accept(AgentEvent.ProviderRequestStarted(1))
+        telemetry.accept(AgentEvent.UsageReceived(1, AgentTokenUsage(
+            inputTokens = 1_200,
+            outputTokens = 100,
+            cachedTokens = 200,
+            billingBasis = AgentBillingTokens.OPENAI,
+        )))
+        telemetry.accept(AgentEvent.UsageReceived(1, AgentTokenUsage(
+            contextTokens = 1_500,
+            cachedTokens = 250,
+            billingBasis = AgentBillingTokens.OPENAI,
+        )))
+
+        val snapshot = telemetry.finish(true)
+        val usage = snapshot.requests.single().usage
+        assertEquals(1_200L, usage.inputTokens)
+        assertEquals(100L, usage.outputTokens)
+        assertEquals(250L, usage.cachedTokens)
+        assertEquals(1_500, usage.contextTokens)
+        assertEquals(950L, usage.uncachedInputTokens)
+        assertEquals(250L, usage.cacheReadTokens)
+        assertEquals(100L, usage.billableOutputTokens)
+        assertEquals(1_200L, snapshot.metrics.inputTokens)
+        assertEquals(100L, snapshot.metrics.outputTokens)
+    }
+
     private fun request() = AgentRuntimeWire.RunRequest(
         runId = "metric-run",
         prompt = "PRIVATE_PROMPT",

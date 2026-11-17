@@ -10,6 +10,7 @@ import io.github.zhh_lgtm.nexus.application.api.VoiceTransition
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -49,6 +50,7 @@ internal class LocalVoiceSessionCoordinator(
     private val onMonitoringChanged: (Boolean) -> Unit = {},
     private val fadeMs: Int = BARGE_IN_FADE_MS,
     private val stopTimeoutMs: Long = STOP_TIMEOUT_MS,
+    private val startListeningWithCapture: ((SpeechAudioCapture) -> Unit)? = null,
 ) {
     private val mutableState = MutableStateFlow(VoiceSessionState())
     val state: StateFlow<VoiceSessionState> = mutableState.asStateFlow()
@@ -174,33 +176,56 @@ internal class LocalVoiceSessionCoordinator(
             interruption = source,
         )
         interruptJob = scope.launch(Dispatchers.Main.immediate) {
-            // 先把监测麦克风关干净，再收尾播放，最后才让识别去抢输入源。
-            monitorToClose?.let { current ->
-                try {
-                    current.stop()
-                    withTimeoutOrNull(MONITOR_CLOSE_TIMEOUT_MS) {
-                        current.awaitStopped(MONITOR_CLOSE_TIMEOUT_MS)
-                    }
-                } finally {
-                    releaseMonitoringReservation()
+            var capture: SpeechAudioCapture? = null
+            if (source == VoiceInterruptSource.VOICE && listenAfter && startListeningWithCapture != null) {
+                capture = monitorToClose?.takeSpeechCapture()?.let { source ->
+                    ReservedSpeechCapture(source) { scope.launch(Dispatchers.Main.immediate) { releaseMonitoringReservation() } }
                 }
             }
-            // NonCancellable 的淡出只会多花固定几十毫秒；超时是防某一步卡死的兜底。
-            val faded = withTimeoutOrNull(stopTimeoutMs) {
-                runCatching { stopSpeaking(fadeMs) }
+            var delivered = false
+            try {
+                // Transfer AEC capture when available; otherwise release it before opening ASR.
+                if (capture == null) monitorToClose?.let { current ->
+                    try {
+                        current.stop()
+                        withTimeoutOrNull(MONITOR_CLOSE_TIMEOUT_MS) {
+                            current.awaitStopped(MONITOR_CLOSE_TIMEOUT_MS)
+                        }
+                    } finally {
+                        releaseMonitoringReservation()
+                    }
+                }
+                val faded = withTimeoutOrNull(stopTimeoutMs) {
+                    try {
+                        stopSpeaking(fadeMs)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: Exception) {
+                        AndroidAgentLogger.warn("Nexus speech stop failed: type=${failure.javaClass.simpleName}")
+                    }
+                }
+                if (token != interruptToken) return@launch
+                interrupting = false
+                if (faded == null) AndroidAgentLogger.warn("Nexus speech stop timed out, forcing idle")
+                mutableState.value = state.value.copy(
+                    phase = VoiceSessionPhase.IDLE,
+                    canonical = VoiceSessionSnapshot(),
+                    bargeInArmed = false,
+                    interruption = null,
+                )
+                if (listenAfter) {
+                    if (capture != null) { startListeningWithCapture!!.invoke(capture); delivered = true }
+                    else startListening()
+                }
+            } finally {
+                if (token == interruptToken && interrupting) {
+                    interrupting = false
+                    mutableState.value = VoiceSessionState()
+                }
+                if (capture != null) {
+                    if (!delivered) capture.cancel()
+                }
             }
-            if (token != interruptToken) return@launch
-            interrupting = false
-            if (faded == null) {
-                AndroidAgentLogger.warn("Nexus speech stop timed out, forcing idle")
-            }
-            mutableState.value = state.value.copy(
-                phase = VoiceSessionPhase.IDLE,
-                canonical = VoiceSessionSnapshot(),
-                bargeInArmed = false,
-                interruption = null,
-            )
-            if (listenAfter) startListening()
         }
     }
 

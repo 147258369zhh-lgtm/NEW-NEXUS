@@ -28,6 +28,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.res.stringResource
+import io.github.mangi.eta.R
 import io.github.mangi.eta.data.provider.CommunityCatalog
 import io.github.mangi.eta.data.provider.CommunityCatalogProvider
 import io.github.mangi.eta.data.provider.CommunityCatalogSource
@@ -47,10 +49,10 @@ import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import top.yukonga.miuix.kmp.basic.InputField
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle as SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.preference.ArrowPreference
+import io.github.mangi.eta.ui.components.NexusSettingsArrowPreference as ArrowPreference
 import top.yukonga.miuix.kmp.preference.CheckboxLocation
 import top.yukonga.miuix.kmp.preference.CheckboxPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -83,7 +85,7 @@ internal fun CommunityCatalogScreen(
                 onClick = store::refresh,
                 enabled = !store.loading && !store.refreshing,
             ) {
-                Icon(Icons.Rounded.Refresh, contentDescription = "刷新模型目录")
+                Icon(Icons.Rounded.Refresh, contentDescription = stringResource(R.string.community_catalog_refresh))
             }
         },
     ) {
@@ -97,7 +99,7 @@ internal fun CommunityCatalogScreen(
                 label = "搜索提供商",
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
             )
         }
 
@@ -105,7 +107,7 @@ internal fun CommunityCatalogScreen(
             ProviderSection(title = "目录状态") {
                 BasicComponent(
                     title = "models.dev 社区目录",
-                    summary = "读取目录不会上传 Nexus 的 API Key",
+                    summary = "读取目录不会上传 NEXA 的 API Key",
                 )
                 BasicComponent(
                     title = "模型是社区候选条目",
@@ -276,7 +278,7 @@ internal fun CommunityCatalogProviderScreen(
                 label = "搜索模型名称或 ID",
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp)
+                    .padding(horizontal = 16.dp)
                     .padding(top = 4.dp, bottom = 8.dp),
             )
         }

@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="local_models_speech_litert_parameters">音訊參數由語音套件決定。加速後端無法使用時改用 CPU，實際後端顯示於模型狀態。</string>
+</resources>

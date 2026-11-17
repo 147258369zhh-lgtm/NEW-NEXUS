@@ -50,10 +50,10 @@ internal class GuiControlCoordinator {
         val paused = lock.withLock {
             val current = owner?.takeIf { it.runId == runId && !it.closed } ?: return false
             if (userPauseRequested) return true
+            current.controller.pause()
             userPauseRequested = true
             pausedController = current.controller
             generation++
-            current.controller.pause()
             if (current.activeActions == 0) {
                 mutableState.value = snapshotState(current.runId, userPaused = true)
                 current
@@ -68,10 +68,10 @@ internal class GuiControlCoordinator {
     fun resumeForUser(): Boolean {
         val resumed = lock.withLock {
             if (!userPauseRequested) return false
+            pausedController?.resume()
             userPauseRequested = false
             generation++
             val current = owner?.takeUnless { it.closed }
-            pausedController?.resume()
             pausedController = null
             mutableState.value = snapshotState(current?.runId)
             changed.signalAll()

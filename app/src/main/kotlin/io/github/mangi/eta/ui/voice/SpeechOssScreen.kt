@@ -12,8 +12,8 @@ import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.data.model.SpeechCredentialField
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
-import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle as SmallTitle
 
 /** 自有 OSS 配置只做保存不做整体校验，允许先存存储配置再补齐识别配置。 */
 @Composable
@@ -40,8 +40,8 @@ internal fun SpeechOssScreen(onBack: () -> Unit) {
             SmallTitle(stringResource(R.string.speech_group_storage))
             Card(
                 modifier = Modifier
-                    .padding(horizontal = 12.dp)
-                    .padding(bottom = 12.dp),
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 8.dp),
             ) {
                 SpeechFieldColumn {
                     SpeechField(
@@ -71,8 +71,8 @@ internal fun SpeechOssScreen(onBack: () -> Unit) {
             SmallTitle(stringResource(R.string.speech_group_credentials))
             Card(
                 modifier = Modifier
-                    .padding(horizontal = 12.dp)
-                    .padding(bottom = 12.dp),
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 8.dp),
             ) {
                 SpeechFieldColumn {
                     SpeechField(

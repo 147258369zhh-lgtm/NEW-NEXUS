@@ -9,11 +9,17 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import java.security.MessageDigest
 
 internal object AutoBackupPassword {
     private const val ALIAS = "eta_auto_backup_password_v1"
     private fun prefs(context: Context) = context.getSharedPreferences("eta_auto_backup_secret", Context.MODE_PRIVATE)
     fun configured(context: Context) = prefs(context).contains("ciphertext")
+    fun auditRevision(context: Context): String {
+        val data = prefs(context).getString("ciphertext", "").orEmpty()
+        return MessageDigest.getInstance("SHA-256").digest(data.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    }
     fun save(context: Context, password: String) {
         if (password.isEmpty()) { check(prefs(context).edit().clear().commit()); return }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")

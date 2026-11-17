@@ -5,6 +5,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.model.SpeechCredentials
+import io.github.mangi.eta.data.model.SpeechCredentialField
 import io.github.mangi.eta.data.model.SpeechSettings
 import java.security.KeyStore
 import java.util.Base64
@@ -15,14 +16,21 @@ import javax.crypto.spec.GCMParameterSpec
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 
 internal object SpeechSettingsRepository {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    private val credentialsMutex = Mutex()
 
     fun settingsFlow(): Flow<SpeechSettings> = SettingsDataStore.speechSettingsFlow()
     suspend fun settings(): SpeechSettings = SettingsDataStore.speechSettings()
-    suspend fun save(settings: SpeechSettings) = SettingsDataStore.setSpeechSettings(settings)
+    suspend fun save(settings: SpeechSettings) {
+        io.github.mangi.eta.agent.control.NexusSettingsControlPlane.get(SettingsDataStore.applicationContext()).applyJson(
+            "settings.speech", org.json.JSONObject().put("value", org.json.JSONObject(json.encodeToString(settings))),
+            io.github.zhh_lgtm.nexus.application.api.SettingsActorKind.LOCAL_USER)
+    }
 
     suspend fun credentials(context: Context): SpeechCredentials = withContext(Dispatchers.IO) {
         val encoded = context.getSharedPreferences("eta_speech_secrets", Context.MODE_PRIVATE)
@@ -31,7 +39,7 @@ internal object SpeechSettingsRepository {
             val bytes = Base64.getDecoder().decode(encoded)
             require(bytes.size > 12)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.DECRYPT_MODE, secretKey(), GCMParameterSpec(128, bytes, 0, 12))
+            cipher.init(Cipher.DECRYPT_MODE, secretKey(create = false), GCMParameterSpec(128, bytes, 0, 12))
             json.decodeFromString<SpeechCredentials>(
                 cipher.doFinal(bytes, 12, bytes.size - 12).toString(Charsets.UTF_8),
             )
@@ -40,9 +48,23 @@ internal object SpeechSettingsRepository {
         }
     }
 
-    suspend fun saveCredentials(context: Context, credentials: SpeechCredentials) = withContext(Dispatchers.IO) {
+    suspend fun saveCredentials(context: Context, credentials: SpeechCredentials) = credentialsMutex.withLock {
+        writeCredentials(context, credentials)
+    }
+
+    /** Merge only edited fields; unreadable stored credentials must never become an empty draft. */
+    suspend fun updateCredentials(context: Context, changes: Map<SpeechCredentialField, String>): SpeechCredentials =
+        credentialsMutex.withLock {
+            val current = credentials(context)
+            if (changes.isEmpty()) return@withLock current
+            val updated = changes.entries.fold(current) { value, (field, secret) -> value.withValue(field, secret) }
+            writeCredentials(context, updated)
+            updated
+        }
+
+    private suspend fun writeCredentials(context: Context, credentials: SpeechCredentials) = withContext(Dispatchers.IO) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, secretKey())
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey(create = true))
         val encrypted = cipher.iv + cipher.doFinal(json.encodeToString(credentials).toByteArray(Charsets.UTF_8))
         check(context.getSharedPreferences("eta_speech_secrets", Context.MODE_PRIVATE).edit()
             .putString("credentials", Base64.getEncoder().encodeToString(encrypted)).commit()) {
@@ -51,9 +73,10 @@ internal object SpeechSettingsRepository {
     }
 
     @Synchronized
-    private fun secretKey(): SecretKey {
+    private fun secretKey(create: Boolean): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (store.getKey("eta_speech_credentials_v1", null) as? SecretKey)?.let { return it }
+        check(create) { "Speech credential key unavailable" }
         return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").run {
             init(KeyGenParameterSpec.Builder("eta_speech_credentials_v1",
                 KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)

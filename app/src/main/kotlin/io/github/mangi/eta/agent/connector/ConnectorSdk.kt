@@ -27,7 +27,7 @@ import okhttp3.WebSocketListener
 import org.json.JSONObject
 
 internal enum class ConnectorKind {
-    MCP, A2A, OPENAPI, REST, JSON_RPC, GRAPHQL, SSE, WEBSOCKET,
+    MCP, A2A, OPENAPI, REST, JSON_RPC, GRAPHQL, SSE, WEBSOCKET, DSH,
     ANDROID_INTENT, CONTENT_URI, PACKAGE, BROADCAST, MEDIASTORE,
     UNIX_SOCKET, SHELL, SQLITE,
 }
@@ -65,6 +65,9 @@ internal data class ConnectorResult(
     val json: JSONObject,
     val text: String? = null,
     val events: List<JSONObject> = emptyList(),
+    val success: Boolean = true,
+    val errorCode: String? = null,
+    val errorMessage: String? = null,
 )
 
 internal data class ConnectorEvent(
@@ -102,7 +105,8 @@ internal class ConnectorSecurityManager(
         val uri = runCatching { URI(raw) }.getOrElse { throw SecurityException("连接地址无效") }
         val host = uri.host?.lowercase() ?: throw SecurityException("连接地址缺少主机名")
         val local = host in setOf("127.0.0.1", "localhost", "::1")
-        if (uri.scheme != "https" && !(local && uri.scheme == "http")) {
+        val scheme = when (uri.scheme) { "ws" -> "http"; "wss" -> "https"; else -> uri.scheme }
+        if (uri.rawUserInfo != null || uri.rawFragment != null || scheme != "https" && !(local && scheme == "http")) {
             throw SecurityException("远程连接必须使用 HTTPS")
         }
         if (allowedHosts.isNotEmpty() && host !in allowedHosts && !local) {
@@ -132,6 +136,7 @@ internal class WebSocketConnectorTransport(
         .readTimeout(0, TimeUnit.SECONDS)
         .build()
     private var socket: WebSocket? = null
+    private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
 
     override val descriptor = ConnectorDescriptor(
         id = "websocket:$endpoint",
@@ -147,6 +152,7 @@ internal class WebSocketConnectorTransport(
 
     override suspend fun probe(): ConnectorHealth = withContext(Dispatchers.IO) {
         runCatching {
+            check(!closed.get()) { "连接已关闭" }
             security.validateEndpoint(endpoint)
             val connected = CompletableDeferred<Boolean>()
             socket?.cancel()
@@ -169,12 +175,14 @@ internal class WebSocketConnectorTransport(
                     }
                 },
             )
+            if (closed.get()) { socket?.cancel(); error("连接已关闭") }
             val ok = withTimeout(10_000) { connected.await() }
             ConnectorHealth(ok, if (ok) "WebSocket 已连接" else "WebSocket 握手失败")
         }.getOrElse { ConnectorHealth(false, it.message ?: "WebSocket 连接失败") }
     }
 
     override suspend fun invoke(request: ConnectorInvocation): ConnectorResult {
+        check(!closed.get()) { "连接已关闭" }
         security.authorize(descriptor, request, confirmed = request.arguments.optBoolean("confirmed"))
         val current = socket ?: throw IOException("WebSocket 尚未连接")
         val id = request.arguments.optString("id").ifBlank { UUID.randomUUID().toString() }
@@ -193,7 +201,8 @@ internal class WebSocketConnectorTransport(
     }
 
     override fun close() {
-        socket?.close(1000, "Nexus connector closed")
+        if (!closed.compareAndSet(false, true)) return
+        socket?.cancel()
         socket = null
         eventChannel.close()
         pending.values.forEach { it.cancel() }

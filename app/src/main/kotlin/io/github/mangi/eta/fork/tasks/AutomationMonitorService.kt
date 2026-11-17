@@ -20,10 +20,15 @@ import java.util.UUID
 /** User-enabled foreground monitor, paired with WorkManager recovery when the ROM stops it. */
 internal class AutomationMonitorService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val networkTransports = mutableMapOf<Network, Set<Int>>()
-    private fun transports(capabilities: NetworkCapabilities): Set<Int> = buildSet {
-        if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) add(NetworkCapabilities.TRANSPORT_WIFI)
-        if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) add(NetworkCapabilities.TRANSPORT_CELLULAR)
+    private val networkTracker = AutomationNetworkTracker()
+    private fun transports(capabilities: NetworkCapabilities): Set<AutomationNetworkTransport> = buildSet {
+        if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) add(AutomationNetworkTransport.WIFI)
+        if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) add(AutomationNetworkTransport.MOBILE)
+    }
+    private fun signalNetwork(network: Network, capabilities: NetworkCapabilities?) {
+        val changes = networkTracker.update(network.toString(), capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true,
+            capabilities?.let(::transports).orEmpty())
+        changes.forEach { AutomationTriggers.signal(this, it, "network:$network:${UUID.randomUUID()}") }
     }
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -47,7 +52,12 @@ internal class AutomationMonitorService : Service() {
                 }
                 else -> AutomationTrigger.STATE
             }
-            AutomationTriggers.signal(context, type, UUID.randomUUID().toString())
+            val payload = if (type == AutomationTrigger.BLUETOOTH_CONNECTED || type == AutomationTrigger.BLUETOOTH_DISCONNECTED) {
+                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)?.let { device ->
+                    org.json.JSONObject().put("address", device.address).put("name", device.name ?: "")
+                } ?: org.json.JSONObject()
+            } else org.json.JSONObject()
+            AutomationTriggers.signal(context, type, UUID.randomUUID().toString(), payload)
         }
     }
     private val callback = object : ConnectivityManager.NetworkCallback() {
@@ -55,41 +65,10 @@ internal class AutomationMonitorService : Service() {
             // Capabilities arrive immediately after availability; wait so Wi-Fi/cellular can be classified.
         }
         override fun onLost(network: Network) {
-            val (lost, remaining) = synchronized(networkTransports) {
-                val lost = networkTransports.remove(network).orEmpty()
-                lost to networkTransports.values.flatten().toSet()
-            }
-            if (NetworkCapabilities.TRANSPORT_WIFI in lost && NetworkCapabilities.TRANSPORT_WIFI !in remaining) {
-                AutomationTriggers.signal(this@AutomationMonitorService, AutomationTrigger.WIFI_DISCONNECTED, "lost:$network")
-            }
-            if (NetworkCapabilities.TRANSPORT_CELLULAR in lost && NetworkCapabilities.TRANSPORT_CELLULAR !in remaining) {
-                AutomationTriggers.signal(this@AutomationMonitorService, AutomationTrigger.MOBILE_DISCONNECTED, "lost:$network")
-            }
-            if (remaining.isEmpty()) {
-                AutomationTriggers.signal(this@AutomationMonitorService, AutomationTrigger.NETWORK_DISCONNECTED, "lost:$network")
-            }
+            signalNetwork(network, null)
         }
         override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
-            if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) return
-            val transports = transports(capabilities)
-            if (transports.isEmpty()) return
-            val (added, becameAvailable) = synchronized(networkTransports) {
-                val hadNetwork = networkTransports.values.any { it.isNotEmpty() }
-                val previous = networkTransports[network].orEmpty()
-                networkTransports[network] = transports
-                (transports - previous) to !hadNetwork
-            }
-            if (becameAvailable) {
-                AutomationTriggers.signal(this@AutomationMonitorService, AutomationTrigger.NETWORK_CONNECTED, network.toString())
-            }
-            added.forEach { transport ->
-                AutomationTriggers.signal(
-                    this@AutomationMonitorService,
-                    if (transport == NetworkCapabilities.TRANSPORT_WIFI) AutomationTrigger.WIFI_CONNECTED
-                    else AutomationTrigger.MOBILE_CONNECTED,
-                    network.toString(),
-                )
-            }
+            signalNetwork(network, capabilities)
         }
     }
     override fun onCreate() {
@@ -127,7 +106,7 @@ internal class AutomationMonitorService : Service() {
         val connectivity = getSystemService(ConnectivityManager::class.java)
         connectivity.activeNetwork?.let { active ->
             connectivity.getNetworkCapabilities(active)?.let { capabilities ->
-                transports(capabilities).takeIf { it.isNotEmpty() }?.let { networkTransports[active] = it }
+                networkTracker.update(active.toString(), capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED), transports(capabilities))
             }
         }
         connectivity.registerDefaultNetworkCallback(callback)
@@ -140,7 +119,9 @@ internal class AutomationMonitorService : Service() {
                         AutomationTriggers.poll(this@AutomationMonitorService)
                         nextFullScanAt = now + 60_000L
                         val dao = AgentTaskDatabase.get(this@AutomationMonitorService).agentTaskDao()
-                        if (dao.executingCount() == 0 && dao.nextClaimableRunId(System.currentTimeMillis()) != null) {
+                        if (dao.executingCount() < AgentTaskSchedulerSettings.maxConcurrentRuns(this@AutomationMonitorService) &&
+                            dao.nextClaimableRunId(System.currentTimeMillis()) != null
+                        ) {
                             AgentTaskWorkScheduler.checkNow(this@AutomationMonitorService)
                         }
                     } else {

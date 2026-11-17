@@ -39,9 +39,14 @@ fun WidePageContent(
     content: @Composable (sidePadding: Dp) -> Unit,
 ) {
     val isWideScreen = rememberIsWideScreen()
+    val contentWidth = when (io.github.mangi.eta.ui.app.LocalNexusPresentationProfile.current.id) {
+        "omni" -> 960.dp
+        "aurora", "frost_glass", "liquid_glass" -> 920.dp
+        else -> MaxPageContentWidth
+    }
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val sidePadding = if (isWideScreen) {
-            ((maxWidth - MaxPageContentWidth) / 2).coerceAtLeast(0.dp)
+            ((maxWidth - contentWidth) / 2).coerceAtLeast(0.dp)
         } else {
             0.dp
         }

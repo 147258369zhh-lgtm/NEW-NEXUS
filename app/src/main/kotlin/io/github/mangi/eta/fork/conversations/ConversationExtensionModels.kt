@@ -21,10 +21,13 @@ internal data class ConversationExtension(
     val folderId: String? = null,
     val folderSortOrder: Long = 0L,
     val lastActiveAt: Long,
+    val lastMessageAt: Long = 0L,
     val archivedAt: Long? = null,
     val archiveReason: String? = null,
     val autoArchiveExempt: Boolean = false,
     val contextWindowOverride: Int? = null,
+    val compactionModelId: String? = null,
+    val compactionProviderId: String? = null,
     val createdAt: Long,
     val updatedAt: Long,
 )

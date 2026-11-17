@@ -11,8 +11,8 @@ internal interface LearningDao {
     @Query("SELECT * FROM learning_candidates WHERE id = :id")
     suspend fun candidate(id: String): LearningCandidateEntity?
 
-    @Query("SELECT * FROM learning_candidates WHERE content_hash = :contentHash LIMIT 1")
-    suspend fun candidateByHash(contentHash: String): LearningCandidateEntity?
+    @Query("SELECT * FROM learning_candidates WHERE content_hash = :contentHash AND scope = :scope LIMIT 1")
+    suspend fun candidateByHash(contentHash: String, scope: String = "global"): LearningCandidateEntity?
 
     @Query(
         "SELECT * FROM learning_candidates ORDER BY " +
@@ -63,8 +63,8 @@ internal interface LearningDao {
     @Query("SELECT * FROM learning_evidence WHERE candidate_id = :candidateId ORDER BY observed_at ASC")
     suspend fun evidence(candidateId: String): List<LearningEvidenceEntity>
 
-    @Query("SELECT * FROM learning_rules WHERE kind = :kind AND title = :title LIMIT 1")
-    suspend fun ruleByKey(kind: String, title: String): LearningRuleEntity?
+    @Query("SELECT * FROM learning_rules WHERE kind = :kind AND title = :title AND scope = :scope LIMIT 1")
+    suspend fun ruleByKey(kind: String, title: String, scope: String = "global"): LearningRuleEntity?
 
     @Query("SELECT * FROM learning_rules WHERE id = :id")
     suspend fun rule(id: String): LearningRuleEntity?
@@ -103,6 +103,15 @@ internal interface LearningDao {
 
     @Query("SELECT * FROM learning_rule_versions WHERE id = :id")
     suspend fun ruleVersion(id: String): LearningRuleVersionEntity?
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertRuleChange(change: LearningRuleChangeEntity)
+
+    @Query("SELECT * FROM learning_rule_changes WHERE rule_id = :ruleId ORDER BY rule_version ASC, created_at ASC")
+    suspend fun ruleChanges(ruleId: String): List<LearningRuleChangeEntity>
+
+    @Query("SELECT * FROM learning_rule_changes ORDER BY created_at DESC LIMIT :limit")
+    suspend fun recentRuleChanges(limit: Int = 20): List<LearningRuleChangeEntity>
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertFeedback(feedback: LearningFeedbackEntity): Long

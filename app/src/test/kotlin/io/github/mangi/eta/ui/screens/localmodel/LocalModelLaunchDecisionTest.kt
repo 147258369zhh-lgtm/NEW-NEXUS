@@ -71,4 +71,26 @@ class LocalModelLaunchDecisionTest {
         assertTrue(LocalModelFormat.MNN.supportsBuiltInRuntime())
         assertFalse(LocalModelFormat.TASK.supportsBuiltInRuntime())
     }
+
+    @Test
+    fun embeddingArtifactIsNeverRegisteredOrStartedAsChatModel() {
+        assertEquals(
+            LocalModelLaunchDecision.NONE,
+            localModelLaunchDecision(
+                startAfterDownload = true,
+                format = LocalModelFormat.LITERT_LM,
+                settings = LocalModelRuntimeSettings(autoConnect = true, autoStart = true),
+                supportsChat = false,
+            ),
+        )
+        assertEquals(
+            LocalModelLaunchDecision.NONE,
+            localModelLaunchDecision(
+                startAfterDownload = false,
+                format = LocalModelFormat.LITERT_LM,
+                settings = LocalModelRuntimeSettings(autoConnect = true, autoStart = true),
+                supportsChat = false,
+            ),
+        )
+    }
 }

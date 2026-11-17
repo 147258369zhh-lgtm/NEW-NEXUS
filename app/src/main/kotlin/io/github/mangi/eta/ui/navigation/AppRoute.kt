@@ -22,7 +22,13 @@ sealed interface AppRoute : NavKey {
     data object Tools : AppRoute
 
     @Serializable
+    data object ToolsAndDevices : AppRoute
+
+    @Serializable
     data object WebToolsSettings : AppRoute
+
+    @Serializable
+    data object CloudToolsSettings : AppRoute
 
     @Serializable
     data object Skills : AppRoute
@@ -76,7 +82,16 @@ sealed interface AppRoute : NavKey {
     data object Settings : AppRoute
 
     @Serializable
+    data object DigitalAssistantSettings : AppRoute
+
+    @Serializable
+    data object SearchGestureSettings : AppRoute
+
+    @Serializable
     data object AppearanceSettings : AppRoute
+
+    @Serializable
+    data object MessageTypography : AppRoute
 
     @Serializable
     data object ConversationArchiveSettings : AppRoute

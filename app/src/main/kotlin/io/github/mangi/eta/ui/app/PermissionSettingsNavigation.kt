@@ -19,7 +19,7 @@ import kotlinx.coroutines.withContext
 internal fun colorOsBackgroundSettingsCommand(context: Context): String =
     "am start --user ${DeviceToolContract.appUserId(context)} -n " +
         "com.oplus.battery/com.oplus.powermanager.fuelgaue.PowerControlActivity " +
-        "--es title Nexus --es pkgName ${DeviceToolContract.quote(context.packageName)} --es drainType APP"
+        "--es title NEXA --es pkgName ${DeviceToolContract.quote(context.packageName)} --es drainType APP"
 
 internal suspend fun openBackgroundPermissionSettings(context: Context) {
     val colorOs = Build.MANUFACTURER.lowercase(Locale.ROOT) in setOf("oppo", "realme", "oneplus")

@@ -38,6 +38,8 @@ internal data class AgentChatUiState(
     /** 未打开的会话仅保留侧栏预览，不能把占位状态写回消息和上下文。 */
     val isConversationLoaded: Boolean = true,
     val workflowMode: WorkflowMode = WorkflowMode.CHAT,
+    /** Per-conversation composer selection; each queued turn snapshots it before dispatch. */
+    val selectedSkillIds: List<String> = emptyList(),
     /** 当前展示窗口首条消息的持久化 sort_index，保存只更新这一位置之后的后缀。 */
     val messageStartIndex: Int = 0,
     val hasEarlierMessages: Boolean = false,
@@ -163,6 +165,7 @@ data class ToolActivityMessageUi(
     val command: String? = null,
     val resultSummary: String? = null,
     val imageCount: Int = 0,
+    val executionItemId: String? = null,
 ) : AgentChatMessageUi
 
 enum class ToolActivityStatusUi {
@@ -191,7 +194,11 @@ internal data class QueuedMessageUi(
     val pendingImages: List<PendingImageUi> = emptyList(),
     val pendingFileReferences: List<PendingFileReferenceUi> = emptyList(),
     val immediateInterrupt: Boolean = false,
+    val selectedSkillIds: List<String> = emptyList(),
 )
+
+@Immutable
+internal data class SkillChoiceUi(val id: String, val name: String)
 
 @Immutable
 data class MessageEditUiState(

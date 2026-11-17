@@ -33,9 +33,10 @@ class SkillCatalogParserTest {
                         .put("version", "1.2.0")
                         .put("publisher", "Example")
                         .put("archiveUrl", "https://skills.example.com/pdf-tools.zip")
+                        .put("archiveMirrors", JSONArray().put("https://mirror.example.com/pdf-tools.zip"))
                         .put("archiveSha256", checksum)
                         .put("tags", JSONArray().put("pdf").put("document"))
-                        .put("dependencies", JSONArray().put("Python 3"))
+                        .put("dependencies", JSONArray().put("skill:python"))
                         .put("permissions", JSONArray().put("文件读取")),
                 ),
             )
@@ -46,8 +47,10 @@ class SkillCatalogParserTest {
         assertEquals("PDF 工具", item.displayName)
         assertEquals("1.2.0", item.version)
         assertEquals(checksum, item.archiveSha256)
+        assertEquals(listOf("https://mirror.example.com/pdf-tools.zip"), item.archiveMirrors)
         assertTrue(item.integrityVerified)
-        assertEquals(listOf("Python 3"), item.dependencies)
+        assertEquals(listOf("skill:python"), item.dependencies)
+        assertTrue(item.dependenciesDeclared)
         assertEquals(listOf("文件读取"), item.permissions)
     }
 
@@ -69,6 +72,27 @@ class SkillCatalogParserTest {
 
         assertNull(item.archiveSha256)
         assertFalse(item.integrityVerified)
+        assertFalse(item.dependenciesDeclared)
+    }
+
+    @Test
+    fun distinguishesMissingDependenciesFromExplicitlyEmptyDependencies() {
+        fun itemWith(dependencies: JSONArray?): SkillMarketItem {
+            val value = JSONObject()
+                .put("id", "sample")
+                .put("name", "Sample")
+                .put("archiveUrl", "https://skills.example.com/sample.zip")
+            dependencies?.let { value.put("dependencies", it) }
+            return SkillCatalogParser.parse(
+                JSONObject()
+                    .put("schema", "eta-skill-catalog/v1")
+                    .put("skills", JSONArray().put(value)),
+                source,
+            ).single()
+        }
+
+        assertFalse(itemWith(null).dependenciesDeclared)
+        assertTrue(itemWith(JSONArray()).dependenciesDeclared)
     }
 
     @Test

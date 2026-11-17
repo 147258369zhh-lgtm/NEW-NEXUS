@@ -1,6 +1,21 @@
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+
 package io.github.mangi.eta.ui.markdown
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.text.BasicText
+import androidx.compose.foundation.text.InlineTextContent
+import androidx.compose.foundation.text.appendInlineContent
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.Placeholder
+import androidx.compose.ui.text.PlaceholderVerticalAlign
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -34,6 +49,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,6 +63,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
@@ -63,9 +80,14 @@ import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.components.StatusSuccess
 import io.github.mangi.eta.ui.components.StatusWarning
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import io.github.mangi.eta.ui.screens.artwork.NexaWebArtworkActivity
+import io.github.mangi.eta.ui.components.NexaCompactAction
+import io.github.mangi.eta.ui.screens.artwork.NexaWebArtworkStore
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.squircle.squircleBorder
 import top.yukonga.miuix.kmp.squircle.squircleClip
 import top.yukonga.miuix.kmp.squircle.squircleSurface
@@ -85,7 +107,10 @@ internal fun MarkdownContent(
     reveal: SmoothTextRevealCoordinator? = null,
 ) {
     val scope = remember(style, reveal) { MarkdownRenderScope(style, reveal) }
-    MarkdownBlockColumn(blocks = document.blocks, scope = scope, compact = false, modifier = modifier)
+    val navigation = remember(document) { FootnoteNavigation() }
+    CompositionLocalProvider(LocalFootnoteNavigation provides navigation) {
+        MarkdownBlockColumn(blocks = document.blocks, scope = scope, compact = false, modifier = modifier)
+    }
 }
 
 @Immutable
@@ -116,7 +141,7 @@ private fun MarkdownBlockColumn(
                 } else {
                     markdownBlockGap(previous, block, scope.style.tone)
                 }
-                if (gap.value > 0f) Spacer(Modifier.height(with(density) { gap.toDp() }))
+                if (gap.value > 0f) Spacer(Modifier.height(with(density) { (gap * scope.style.paragraphGapScale).toDp() }))
                 MarkdownBlockView(block, scope)
             }
         }
@@ -126,6 +151,8 @@ private fun MarkdownBlockColumn(
 @Composable
 private fun MarkdownBlockView(block: MarkdownBlock, scope: MarkdownRenderScope) {
     when (block) {
+        is MarkdownFlow -> MarkdownBlockColumn(block.blocks, scope, compact = true)
+        is MarkdownMergedTable -> MarkdownMergedTableBlock(block, scope.style)
         is MarkdownParagraph -> MarkdownText(block, scope.style.body, scope)
         is MarkdownHeading -> MarkdownText(
             block = block,
@@ -154,53 +181,36 @@ private fun MarkdownBlockView(block: MarkdownBlock, scope: MarkdownRenderScope) 
 
 @Composable
 private fun MarkdownMathBlock(block: MarkdownMath, scope: MarkdownRenderScope) {
-    val rendered = remember(block.latex) { LatexToUnicodeFormatter.format(block.latex) }
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .squircleSurface(scope.style.codeBackground, 12.dp)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = "LaTeX",
-                style = MiuixTheme.textStyles.footnote2,
-                color = scope.style.secondaryColor,
-                modifier = Modifier.weight(1f),
-            )
-            CopyButton(text = block.latex, tint = scope.style.secondaryColor)
+    val bitmap = rememberMathBitmap(block.latex, scope.style.body.fontSize, MiuixTheme.colorScheme.onSurface)
+    val density = LocalDensity.current
+    Column(Modifier.fillMaxWidth().squircleSurface(scope.style.codeBackground, 12.dp).padding(10.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("LaTeX", style = MiuixTheme.textStyles.footnote2, modifier = Modifier.weight(1f))
+            CopyButton(block.latex, scope.style.secondaryColor)
         }
-        Text(
-            text = rendered,
-            style = scope.style.body.copy(
-                fontWeight = FontWeight.Medium,
-                textAlign = TextAlign.Center,
-                lineHeight = scope.style.body.lineHeight * 1.2f,
-            ),
-            color = MiuixTheme.colorScheme.onSurface,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp),
-        )
+        Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+            if (bitmap != null) Image(bitmap.asImageBitmap(), block.latex,
+                Modifier.size(with(density) { bitmap.width.toDp() }, with(density) { bitmap.height.toDp() }))
+            else Text(LatexToUnicodeFormatter.format(block.latex), style = scope.style.body,
+                modifier = Modifier.padding(6.dp))
+        }
+        if (bitmap == null) Text("公式准备中或超出支持范围；原始 LaTeX 可复制", style = MiuixTheme.textStyles.footnote2, color = scope.style.secondaryColor)
     }
 }
 
 @Composable
 private fun MarkdownFootnoteBlock(block: MarkdownFootnote, scope: MarkdownRenderScope) {
-    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-        Text(
-            text = "[${block.label}]",
-            style = scope.style.body.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
-            color = scope.style.markerColor,
-            modifier = Modifier.width(42.dp),
-        )
-        Text(
-            text = block.text,
-            style = scope.style.body.copy(fontSize = scope.style.body.fontSize * .92f),
-            color = scope.style.secondaryColor,
-            modifier = Modifier.weight(1f),
-        )
+    val navigation = LocalFootnoteNavigation.current
+    val requester = remember(block.label) { BringIntoViewRequester() }
+    val actions = rememberCoroutineScope()
+    DisposableEffect(navigation, block.label, requester) {
+        navigation.definitions[block.label] = requester
+        onDispose { if (navigation.definitions[block.label] === requester) navigation.definitions.remove(block.label) }
+    }
+    Row(Modifier.fillMaxWidth().bringIntoViewRequester(requester).padding(vertical = 2.dp), verticalAlignment = Alignment.Top) {
+        Text("[${block.label}]", style = scope.style.body.copy(fontWeight = FontWeight.SemiBold), color = scope.style.markerColor, modifier = Modifier.width(42.dp))
+        MarkdownText(block, scope.style.body.copy(fontSize = scope.style.body.fontSize * .92f), scope, Modifier.weight(1f))
+        TextButton(text = "↩", onClick = { actions.launch { navigation.references[block.label]?.bringIntoView() } })
     }
 }
 
@@ -212,28 +222,66 @@ private fun MarkdownText(
     modifier: Modifier = Modifier,
     softWrap: Boolean = true,
 ) {
+    val navigation = LocalFootnoteNavigation.current
+    val requester = remember(block.offset) { BringIntoViewRequester() }
+    val actions = rememberCoroutineScope()
+    val annotated = remember(block.text, navigation, requester, scope.style.markerColor) {
+        val result = AnnotatedString.Builder(block.text)
+        block.text.getStringAnnotations("NEXA_FOOTNOTE", 0, block.text.length).forEach { reference ->
+            result.addLink(LinkAnnotation.Clickable("footnote:${reference.item}", TextLinkStyles(SpanStyle(color = scope.style.markerColor)),
+                linkInteractionListener = {
+                    navigation.references[reference.item] = requester
+                    actions.launch { navigation.definitions[reference.item]?.bringIntoView() }
+                }), reference.start, reference.end)
+        }
+        result.toAnnotatedString()
+    }
+    val targetModifier = modifier.bringIntoViewRequester(requester)
+    val formulas = annotated.getStringAnnotations("NEXA_LATEX", 0, annotated.length)
+    if (formulas.isNotEmpty()) {
+        val density = LocalDensity.current
+        val rich = AnnotatedString.Builder()
+        val contents = mutableMapOf<String, InlineTextContent>()
+        var cursor = 0
+        formulas.forEachIndexed { index, formula ->
+            val bitmap = key(formula.start, formula.item) { rememberMathBitmap(formula.item, style.fontSize, MiuixTheme.colorScheme.onSurface) }
+            rich.append(annotated.subSequence(cursor, formula.start))
+            if (bitmap == null) rich.append(annotated.subSequence(formula.start, formula.end))
+            else {
+                val id = "formula-$index"
+                val scale = minOf(1f, with(density) { 280.dp.toPx() } / bitmap.width, with(density) { 120.dp.toPx() } / bitmap.height)
+                val width = with(density) { (bitmap.width * scale).toSp() }
+                val height = with(density) { (bitmap.height * scale).toSp() }
+                rich.appendInlineContent(id, annotated.subSequence(formula.start, formula.end).text)
+                contents[id] = InlineTextContent(Placeholder(width, height, PlaceholderVerticalAlign.TextCenter)) {
+                    Image(bitmap.asImageBitmap(), formula.item, Modifier.fillMaxWidth())
+                }
+            }
+            cursor = formula.end
+        }
+        rich.append(annotated.subSequence(cursor, annotated.length))
+        BasicText(rich.toAnnotatedString(), targetModifier, style = style, softWrap = softWrap, inlineContent = contents)
+        return
+    }
     val reveal = scope.reveal
-    // 空单元格没有可显现的文字，也不占用显现协调器的 key。
-    if (reveal == null || block.text.isEmpty()) {
-        Text(text = block.text, style = style, softWrap = softWrap, modifier = modifier)
+    if (reveal == null || annotated.isEmpty()) {
+        Text(text = annotated, style = style, softWrap = softWrap, modifier = targetModifier)
         return
     }
     val revealState = rememberSmoothTextRevealState(block.revealKey, reveal)
-    // 显现裁剪按字素边界逐帧变化，关闭像素对齐可避免裁剪边缘抖动。
     val animatedStyle = remember(style) { style.copy(textMotion = TextMotion.Animated) }
-    Text(
-        text = block.text,
-        style = animatedStyle,
-        softWrap = softWrap,
-        modifier = modifier.smoothTextReveal(revealState),
-        onTextLayout = { layout -> revealState.onTextLayout(block.text.text, layout) },
-    )
+    Text(text = annotated, style = animatedStyle, softWrap = softWrap,
+        modifier = targetModifier.smoothTextReveal(revealState),
+        onTextLayout = { layout -> revealState.onTextLayout(annotated.text, layout) })
 }
 
 // ── 代码块 ──────────────────────────────────────────────────────────────
 
 @Composable
 private fun MarkdownCodeBlock(block: MarkdownCode, scope: MarkdownRenderScope) {
+    val context = LocalContext.current
+    val actions = rememberCoroutineScope()
+    var previewOpening by remember { mutableStateOf(false) }
     val style = scope.style
     val colors = MiuixTheme.colorScheme
     val palette = remember(style, colors) {
@@ -268,13 +316,23 @@ private fun MarkdownCodeBlock(block: MarkdownCode, scope: MarkdownRenderScope) {
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
+            if (NexaWebArtworkStore.accepts(block.language, block.text.text)) {
+                NexaCompactAction(text = if (previewOpening) "正在打开" else "预览", enabled = !previewOpening, onClick = {
+                    actions.launch {
+                        previewOpening = true
+                        try { NexaWebArtworkActivity.openSource(context, block.text.text, block.language) }
+                        catch (failure: Exception) { if (failure is kotlinx.coroutines.CancellationException) throw failure; android.widget.Toast.makeText(context, "作品暂不可预览", android.widget.Toast.LENGTH_SHORT).show() }
+                        finally { previewOpening = false }
+                    }
+                })
+            }
             CopyButton(text = block.text.text, tint = style.secondaryColor)
         }
         // 代码不折行，长行横向滚动，保留缩进与对齐。
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
+                .then(if (style.codeWrap) Modifier else Modifier.horizontalScroll(rememberScrollState()))
                 .padding(start = 14.dp, end = 14.dp, bottom = 12.dp),
         ) {
             HighlightedCodeText(block, highlighted, style.code, scope)
@@ -291,7 +349,7 @@ private fun HighlightedCodeText(
 ) {
     val reveal = scope.reveal
     if (reveal == null || text.isEmpty()) {
-        Text(text = text, style = style, softWrap = false)
+        Text(text = text, style = style, softWrap = scope.style.codeWrap)
         return
     }
     val revealState = rememberSmoothTextRevealState(block.revealKey, reveal)
@@ -299,7 +357,7 @@ private fun HighlightedCodeText(
     Text(
         text = text,
         style = animatedStyle,
-        softWrap = false,
+        softWrap = scope.style.codeWrap,
         modifier = Modifier.smoothTextReveal(revealState),
         onTextLayout = { layout -> revealState.onTextLayout(text.text, layout) },
     )
@@ -572,7 +630,7 @@ private fun MarkdownTableBlock(block: MarkdownTable, scope: MarkdownRenderScope)
                                 style = if (rowIndex == 0) headerStyles[column] else bodyStyles[column],
                                 scope = scope,
                                 // 单元格以固定宽度测量，不需要 fill；fill 会干扰列宽的固有尺寸查询。
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                modifier = Modifier.padding(horizontal = 12.dp * style.tableDensity, vertical = 8.dp * style.tableDensity),
                             )
                         }
                     }
@@ -641,3 +699,52 @@ private val MarkdownColumnAlign.textAlign: TextAlign
 
 private val TableMinColumnWidth = 72.dp
 private val TableMaxColumnWidth = 260.dp
+
+private class FootnoteNavigation {
+    val definitions = mutableMapOf<String, BringIntoViewRequester>()
+    val references = mutableMapOf<String, BringIntoViewRequester>()
+}
+private val LocalFootnoteNavigation = compositionLocalOf { FootnoteNavigation() }
+
+/** Safe HTML table cells are measured natively; no scripts, style sheets or browser are involved. */
+@Composable
+private fun MarkdownMergedTableBlock(block: MarkdownMergedTable, style: MarkdownStyle) {
+    val border = style.dividerColor
+    var rectangles by remember(block) { mutableStateOf<List<androidx.compose.ui.geometry.Rect>>(emptyList()) }
+    Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+        Layout(modifier = Modifier.drawBehind {
+            rectangles.forEach { rect -> drawRect(border, rect.topLeft, rect.size, style = androidx.compose.ui.graphics.drawscope.Stroke(.5.dp.toPx())) }
+        }, content = {
+            block.cells.forEach { cell -> Text(cell.text, Modifier.padding(8.dp * style.tableDensity),
+                style = style.table.copy(fontWeight = if (cell.header) FontWeight.SemiBold else FontWeight.Normal)) }
+        }) { measurables, _ ->
+            val columnWidth = 144.dp.roundToPx()
+            val heights = IntArray(block.rows) { (36.dp * style.tableDensity).roundToPx() }
+            val placeables = measurables.mapIndexed { index, measurable ->
+                measurable.measure(Constraints.fixedWidth(columnWidth * block.cells[index].columnSpan))
+            }
+            block.cells.forEachIndexed { index, cell ->
+                val allocated = (cell.row until cell.row + cell.rowSpan).sumOf { heights[it] }
+                if (placeables[index].height > allocated) heights[cell.row + cell.rowSpan - 1] += placeables[index].height - allocated
+            }
+            val boxes = block.cells.map { cell ->
+                val top = heights.take(cell.row).sum()
+                androidx.compose.ui.geometry.Rect((cell.column * columnWidth).toFloat(), top.toFloat(), ((cell.column + cell.columnSpan) * columnWidth).toFloat(), (top + heights.sliceArray(cell.row until cell.row + cell.rowSpan).sum()).toFloat())
+            }
+            if (rectangles != boxes) rectangles = boxes
+            layout(columnWidth * block.columns, heights.sum()) {
+                placeables.forEachIndexed { index, placeable -> placeable.place(boxes[index].left.toInt(), boxes[index].top.toInt()) }
+            }
+        }
+    }
+}
+
+/** Kernel CodePart shares typography without reparsing code as a Markdown fence. */
+@Composable
+internal fun NexaCodePartContent(code: String, language: String?, modifier: Modifier = Modifier) {
+    val style = rememberMarkdownStyle(MarkdownTone.Answer)
+    val block = remember(code, language) { MarkdownCode(0, language, AnnotatedString(code)) }
+    androidx.compose.foundation.text.selection.SelectionContainer(modifier) {
+        MarkdownCodeBlock(block, MarkdownRenderScope(style, null))
+    }
+}

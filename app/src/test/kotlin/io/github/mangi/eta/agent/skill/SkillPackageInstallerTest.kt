@@ -211,6 +211,29 @@ class SkillPackageInstallerTest {
     }
 
     @Test
+    fun yamlCommentsBomAndToolAliasesSurviveInstallationButDuplicateRestrictionsAreRejected() {
+        val fixture = fixture("portable-yaml")
+        val archive = zip("sample/SKILL.md" to (
+            "\uFEFF---\nname: portable-yaml # name comment\n" +
+                "description: 'Author''s #literal description' # comment\n" +
+                "allowed-tools: Read Write Bash\n---\nPortable instructions"
+            ).encodeToByteArray())
+        val result = fixture.installer.installLocalZip({ archive.inputStream() })
+        assertTrue(result.toString(), result is SkillInstallResult.Success)
+        val entry = fixture.service.listSkillsForManagement(forceRefresh = true).single { it.id == "portable-yaml" }
+        assertEquals("Author's #literal description", entry.description)
+        assertEquals(listOf("read_file", "write_file", "terminal", "skills_prepare_runtime"), entry.declaration.allowedTools)
+        assertTrue(SkillCompatibilityChecker.evaluate(entry).available)
+
+        val duplicate = zip("SKILL.md" to (
+            "---\nname: duplicate-yaml\ndescription: Reject duplicate restrictions\n" +
+                "allowed-tools: Read\nallowed-tools: Bash\n---\nInstructions"
+            ).encodeToByteArray())
+        assertFailureCode(fixture.installer.installLocalZip({ duplicate.inputStream() }), SkillInstallErrorCode.INVALID_SKILL)
+        assertFalse(File(fixture.skillsRoot, "duplicate-yaml").exists())
+    }
+
+    @Test
     fun unsafeZipPathsAndCaseInsensitiveDuplicatesAreRejected() {
         listOf("../escape.txt", "/absolute.txt", "C:/drive.txt", "folder\\file.txt").forEachIndexed {
                 index,
@@ -339,6 +362,38 @@ class SkillPackageInstallerTest {
         ) as SkillInstallResult.Conflict
         assertFalse(builtinConflict.conflicts.single().replaceAllowed)
         assertEquals(BUILTIN_SKILL_SOURCE, builtinConflict.conflicts.single().existingSource)
+    }
+
+    @Test
+    fun replacementPreservesUserDisabledState() {
+        val fixture = fixture("replacement-disabled")
+        val first = zip("SKILL.md" to skill("kept-off", "Old disabled version."))
+        assertTrue(
+            fixture.installer.installLocalZip({ first.inputStream() }) is SkillInstallResult.Success
+        )
+        assertFalse(fixture.service.setSkillEnabled("kept-off", false).enabled)
+
+        val replacement = zip("SKILL.md" to skill("kept-off", "New version stays off."))
+        val conflict = fixture.installer.installLocalZip({ replacement.inputStream() })
+            as SkillInstallResult.Conflict
+        val replaced = fixture.installer.installLocalZip(
+            openStream = { replacement.inputStream() },
+            replaceUserSkill = true,
+            expectedReplacementId = "kept-off",
+            expectedArchiveSha256 = conflict.archiveSha256,
+        )
+
+        assertTrue(replaced is SkillInstallResult.Success)
+        assertTrue(
+            File(fixture.skillsRoot, "kept-off/SKILL.md")
+                .readText()
+                .contains("New version stays off")
+        )
+        assertFalse(
+            fixture.service.listSkillsForManagement(forceRefresh = true)
+                .single { it.id == "kept-off" }
+                .enabled
+        )
     }
 
     @Test

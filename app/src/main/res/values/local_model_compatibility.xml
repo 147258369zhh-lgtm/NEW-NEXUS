@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="local_models_speech_litert_parameters">Uses the speech bundle’s audio settings. Unavailable accelerators fall back to CPU; the active backend appears in model status.</string>
+</resources>

@@ -3,6 +3,7 @@ package io.github.mangi.eta.fork.meeting
 import io.github.mangi.eta.agent.model.AgentSensitiveToolPolicy
 import io.github.mangi.eta.agent.model.AgentTraceFormatter
 import io.github.mangi.eta.agent.runtime.AgentEvent
+import io.github.mangi.eta.agent.runtime.AgentArtifactReference
 import java.security.MessageDigest
 import org.json.JSONObject
 
@@ -23,6 +24,9 @@ internal data class MeetingToolActivity(
     val command: String? = null,
     val result: String? = null,
     val imageCount: Int = 0,
+    val artifactId: String? = null,
+    val artifactName: String? = null,
+    val artifacts: List<AgentArtifactReference> = emptyList(),
 ) {
     val messageId: String = idFor(runId, round, callId, hosted)
     val eventType: String get() = "$EVENT_PREFIX$messageId"
@@ -46,6 +50,8 @@ internal data class MeetingToolActivity(
         .put("hosted", hosted).put("name", name).put("phase", phase.wireValue)
         .put("arguments", arguments).put("command", command ?: JSONObject.NULL)
         .put("result", result ?: JSONObject.NULL).put("image_count", imageCount).put("is_host", isHost)
+        .put("artifact_id", artifactId).put("artifact_name", artifactName)
+        .put("artifacts", AgentArtifactReference.encode(artifacts))
         .toString()
 
     companion object {
@@ -76,6 +82,9 @@ internal data class MeetingToolActivity(
                 command = if (json.isNull("command")) null else json.getString("command"),
                 result = if (json.isNull("result")) null else json.getString("result"),
                 imageCount = json.optInt("image_count").coerceAtLeast(0),
+                artifactId = json.optString("artifact_id").takeIf { it.matches(Regex("[A-Za-z0-9][A-Za-z0-9._:-]{0,255}")) },
+                artifactName = json.optString("artifact_name").takeIf(String::isNotBlank)?.take(255),
+                artifacts = AgentArtifactReference.decode(json.optJSONArray("artifacts")),
             )
         }.getOrNull()
 
@@ -88,7 +97,8 @@ internal data class MeetingToolActivity(
                     false -> MeetingToolPhase.FAILED
                     null -> if (event.resultSummary.contains("ok=false", ignoreCase = true)) MeetingToolPhase.FAILED else MeetingToolPhase.UNKNOWN
                 }, arguments = previous?.arguments.orEmpty(), command = event.command ?: previous?.command,
-                result = event.resultSummary, imageCount = event.imageCount)
+                result = event.resultSummary, imageCount = event.imageCount, artifactId = event.artifactId, artifactName = event.artifactName,
+                artifacts = event.artifacts)
             is AgentEvent.HostedToolStarted -> MeetingToolActivity(runId, event.round, event.toolCallId, true,
                 event.name, MeetingToolPhase.RUNNING)
             is AgentEvent.HostedToolFinished -> MeetingToolActivity(runId, event.round, event.toolCallId, true,

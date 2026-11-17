@@ -8,7 +8,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.data.model.AppearanceSkin
 
-/** Shared visual constants consumed by screens that can support both Eta skins. */
+/** Shared visual constants; business state is independent of the selected skin. */
 @Immutable
 data class EtaDesignTokens(
     val skin: AppearanceSkin,
@@ -69,10 +69,10 @@ internal fun classicDesignTokens(
     accent = accent,
     glassTint = glassTint,
     glassBorder = glassBorder,
-    cornerSmall = 12.dp,
-    cornerMedium = 16.dp,
-    cornerLarge = 24.dp,
-    floatingCorner = 28.dp,
+    cornerSmall = 16.dp,
+    cornerMedium = 24.dp,
+    cornerLarge = 30.dp,
+    floatingCorner = 34.dp,
     glassAlpha = 0.72f,
     blurRadius = 24.dp,
     densityMultiplier = 1f,
@@ -111,3 +111,79 @@ internal fun omniDesignTokens(
     titleWeight = FontWeight.Bold,
     bodyWeight = FontWeight.Medium,
 )
+
+/** Compact Material-inspired typography and surface metrics; the palette remains Miuix-owned. */
+internal fun auroraDesignTokens(
+    surface: Color,
+    surfaceElevated: Color,
+    onSurface: Color,
+    onSurfaceVariant: Color,
+    accent: Color,
+    glassTint: Color,
+    glassBorder: Color,
+): EtaDesignTokens = EtaDesignTokens(
+    skin = AppearanceSkin.AURORA,
+    surface = surface,
+    surfaceElevated = surfaceElevated,
+    onSurface = onSurface,
+    onSurfaceVariant = onSurfaceVariant,
+    accent = accent,
+    glassTint = glassTint,
+    glassBorder = glassBorder,
+    cornerSmall = 8.dp,
+    cornerMedium = 12.dp,
+    cornerLarge = 18.dp,
+    floatingCorner = 20.dp,
+    glassAlpha = 0.82f,
+    blurRadius = 16.dp,
+    densityMultiplier = 0.94f,
+    contentSpacing = 8.dp,
+    sectionSpacing = 14.dp,
+    titleWeight = FontWeight.SemiBold,
+    bodyWeight = FontWeight.Normal,
+    settingsHorizontalInset = 12.dp,
+    chatHorizontalInset = 16.dp,
+    cardContentPadding = 12.dp,
+    stateContentPadding = 20.dp,
+    stateItemSpacing = 8.dp,
+    minimumTouchTarget = 48.dp,
+    dialogActionSpacing = 8.dp,
+)
+
+/** Glass changes material and geometry without scaling text or shrinking touch targets. */
+internal fun glassDesignTokens(
+    skin: AppearanceSkin,
+    surface: Color,
+    surfaceElevated: Color,
+    onSurface: Color,
+    onSurfaceVariant: Color,
+    accent: Color,
+    glassTint: Color,
+    glassBorder: Color,
+): EtaDesignTokens {
+    require(skin.isGlass)
+    val liquid = skin == AppearanceSkin.LIQUID_GLASS
+    return EtaDesignTokens(
+        skin = skin,
+        surface = surface,
+        surfaceElevated = surfaceElevated,
+        onSurface = onSurface,
+        onSurfaceVariant = onSurfaceVariant,
+        accent = accent,
+        glassTint = glassTint,
+        glassBorder = glassBorder,
+        cornerSmall = 16.dp,
+        cornerMedium = 24.dp,
+        cornerLarge = 30.dp,
+        floatingCorner = 34.dp,
+        glassAlpha = if (liquid) 0.62f else 0.82f,
+        blurRadius = if (liquid) 10.dp else 24.dp,
+        densityMultiplier = 1f,
+        contentSpacing = 12.dp,
+        sectionSpacing = 20.dp,
+        titleWeight = FontWeight.SemiBold,
+        bodyWeight = FontWeight.Normal,
+        chatHorizontalInset = 16.dp,
+        dialogActionSpacing = 8.dp,
+    )
+}

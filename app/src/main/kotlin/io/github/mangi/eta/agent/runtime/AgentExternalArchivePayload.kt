@@ -17,6 +17,7 @@ internal data class AgentExternalArchivePayload(
     val thinkingEnabled: Boolean? = null,
     val reasoningEffort: ReasoningEffort? = null,
     val adapterPayload: JSONObject = JSONObject(),
+    val supplements: List<AgentUiHandoffPayload.Supplement> = emptyList(),
 ) {
     fun toJson(): String =
         JSONObject()
@@ -25,6 +26,8 @@ internal data class AgentExternalArchivePayload(
             .put("userText", userText)
             .put("conversationKey", conversationKey)
             .put("title", title)
+            .put("supplements", org.json.JSONArray(supplements.map { org.json.JSONObject().put("index", it.index)
+                .put("text", it.text).put("createdAt", it.createdAt) }))
             .also { json ->
                 (thinkingEnabled ?: reasoningEffort?.enablesReasoning)
                     ?.let { json.put("thinkingEnabled", it) }
@@ -59,6 +62,8 @@ internal data class AgentExternalArchivePayload(
                         null
                     },
                     adapterPayload = json.optJSONObject("adapterPayload") ?: JSONObject(),
+                    supplements = AgentUiHandoffPayload.from(org.json.JSONObject().put("type", "agent_ui_handoff")
+                        .put("conversationId", "external").put("supplements", json.optJSONArray("supplements") ?: org.json.JSONArray()).toString()).supplements,
                 )
             }.getOrNull()?.takeIf { payload ->
                 payload.userText.isNotBlank() && payload.conversationKey.isNotBlank()

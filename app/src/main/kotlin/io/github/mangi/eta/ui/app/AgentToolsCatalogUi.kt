@@ -156,6 +156,12 @@ internal fun buildToolsState(context: Context): AgentToolsUiState =
                     ToolItemUi("read_file", context.getString(R.string.tool_ui_read_file_dc995c), context.getString(R.string.tool_ui_read_the_contents_of_mobile_phone_files_bf3066)),
                     ToolItemUi("write_file", context.getString(R.string.tool_ui_write_file_e620fd), context.getString(R.string.tool_ui_write_or_overwrite_mobile_files_29fae4)),
                     ToolItemUi("list_directory", context.getString(R.string.tool_ui_list_directory_96e765), context.getString(R.string.tool_ui_list_directory_contents_feff30)),
+                    ToolItemUi("make_directory", "创建文件夹", "按需补齐父目录。"),
+                    ToolItemUi("copy_file", "复制文件", "复制文件或目录，保留原文件。"),
+                    ToolItemUi("move_file", "移动文件", "移动到明确目标，拒绝覆盖已有文件。"),
+                    ToolItemUi("delete_file", "删除文件", "本机确认后删除指定文件或目录。"),
+                    ToolItemUi("project_workspace_status", "项目工作副本", "查看项目文件变更和发布状态。"),
+                    ToolItemUi("project_workspace_publish", "发布项目文件", "确认变更后写回原项目目录。"),
                 ),
             ),
         )

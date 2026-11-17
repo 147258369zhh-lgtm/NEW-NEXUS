@@ -90,6 +90,10 @@ internal object Prefs {
 
     @Volatile
     private var localAgent: SharedPreferences? = null
+    @Volatile
+    private var cachedRemoteService: XposedService? = null
+    @Volatile
+    private var cachedRemotePreferences: SharedPreferences? = null
 
     /** App 进程调用：初始化不依赖 Xposed Service 的 Agent 配置。 */
     fun initLocal(context: Context) {
@@ -150,8 +154,24 @@ internal object Prefs {
      * [XposedService.getRemotePreferences] 的 commit 会同步等待 binder 提交到 LSPosed
      * 数据库，失败返回 false；service 未就绪时返回 null，让 UI 保持不可写。
      */
-    fun remotePreferencesForUi(service: XposedService?): SharedPreferences? =
-        runCatching { service?.getRemotePreferences(GROUP) }.getOrNull()
+    fun remotePreferencesForUi(service: XposedService?): SharedPreferences? {
+        if (service == null) return null
+        if (cachedRemoteService === service) return cachedRemotePreferences
+        return runCatching { service.getRemotePreferences(GROUP) }.getOrNull()?.also { preferences ->
+            cachedRemoteService = service
+            cachedRemotePreferences = preferences
+        }
+    }
+
+    fun cachedRemotePreferencesForUi(service: XposedService?): SharedPreferences? =
+        cachedRemotePreferences.takeIf { service != null && cachedRemoteService === service }
+
+    fun clearRemotePreferencesCache(service: XposedService) {
+        if (cachedRemoteService === service) {
+            cachedRemoteService = null
+            cachedRemotePreferences = null
+        }
+    }
 
     /** Eta 设置页与 Runtime 使用的本地 Agent 配置，不依赖 LSPosed。 */
     fun localAgentPreferences(): SharedPreferences? = localAgent
@@ -161,8 +181,13 @@ internal object Prefs {
      * 可用时回写远端，让仍在目标进程中组装请求的 Hook 入口拿到一致的初始配置。
      */
     fun reconcileAgentPreferences(service: XposedService?) {
-        val local = localAgent ?: return
         val remotePreferences = remotePreferencesForUi(service) ?: return
+        reconcileAgentPreferences(remotePreferences)
+    }
+
+    internal fun reconcileAgentPreferences(remotePreferences: SharedPreferences?) {
+        val local = localAgent ?: return
+        remotePreferences ?: return
         val localEditor = local.edit()
         val remoteEditor = remotePreferences.edit()
         var updateLocal = false
@@ -172,12 +197,18 @@ internal object Prefs {
             val default = Keys.BOOLEAN_DEFAULTS.getValue(key)
             when {
                 local.contains(key) -> {
-                    remoteEditor.putBoolean(key, local.getBoolean(key, default))
-                    updateRemote = true
+                    val value = local.getBoolean(key, default)
+                    if (!remotePreferences.contains(key) || remotePreferences.getBoolean(key, default) != value) {
+                        remoteEditor.putBoolean(key, value)
+                        updateRemote = true
+                    }
                 }
                 remotePreferences.contains(key) -> {
-                    localEditor.putBoolean(key, remotePreferences.getBoolean(key, default))
-                    updateLocal = true
+                    val value = remotePreferences.getBoolean(key, default)
+                    if (!local.contains(key) || local.getBoolean(key, default) != value) {
+                        localEditor.putBoolean(key, value)
+                        updateLocal = true
+                    }
                 }
             }
         }

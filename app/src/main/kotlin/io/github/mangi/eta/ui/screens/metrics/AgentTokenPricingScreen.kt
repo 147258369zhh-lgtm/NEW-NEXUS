@@ -17,6 +17,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.runtime.AgentTokenPrice
 import io.github.mangi.eta.agent.runtime.AgentTokenPriceStore
+import io.github.mangi.eta.agent.runtime.AgentOfficialPriceCatalog
+import io.github.mangi.eta.agent.runtime.AgentOfficialPriceRefresh
+import io.github.mangi.eta.agent.runtime.AgentDeepSeekPriceSchedule
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
@@ -27,7 +30,8 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.*
-import top.yukonga.miuix.kmp.preference.ArrowPreference
+import io.github.mangi.eta.ui.components.NexusSettingsArrowPreference as ArrowPreference
+import io.github.mangi.eta.ui.components.NexusSettingsSwitchPreference as SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
 
@@ -36,6 +40,7 @@ private data class PriceModel(val provider: String, val model: String, val name:
 @Composable
 internal fun AgentTokenPricingScreen(onBack: () -> Unit, onEdit: (String, String) -> Unit) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var failed by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(true) }
     var reload by remember { mutableIntStateOf(0) }
@@ -47,6 +52,8 @@ internal fun AgentTokenPricingScreen(onBack: () -> Unit, onEdit: (String, String
         ProviderRepository.providersFlow().onEach { providersFailed = false }.catch { providersFailed = true }
     }.collectAsState(initial = emptyList())
     var search by rememberSaveable { mutableStateOf("") }
+    var officialRefresh by remember { mutableStateOf(AgentOfficialPriceRefresh.enabled(context)) }
+    var officialRefreshStatus by remember { mutableStateOf(AgentOfficialPriceRefresh.status(context)) }
     val configured = providers.flatMap { provider -> provider.models.map { model ->
         PriceModel(provider.id, model.modelId, model.displayName.ifBlank { model.modelId }, provider.name)
     } }
@@ -57,7 +64,7 @@ internal fun AgentTokenPricingScreen(onBack: () -> Unit, onEdit: (String, String
         .filter { search.isBlank() || listOf(it.name, it.model, it.providerName).any { text -> text.contains(search.trim(), ignoreCase = true) } }
     MiuixScaffoldPage(title = stringResource(R.string.metrics_prices_title), onBack = onBack) {
         item(key = "note") {
-            Card(Modifier.padding(horizontal = 12.dp).padding(top = 12.dp, bottom = 12.dp)) {
+            Card(Modifier.padding(horizontal = 16.dp).padding(top = 12.dp, bottom = 12.dp)) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(stringResource(R.string.metrics_prices_note), style = MiuixTheme.textStyles.body2)
                     Text(stringResource(R.string.metrics_prices_history_note), style = MiuixTheme.textStyles.footnote1,
@@ -72,21 +79,47 @@ internal fun AgentTokenPricingScreen(onBack: () -> Unit, onEdit: (String, String
                 }
             }
         }
-        if (models.isEmpty() && !loading) item(key = "empty") {
+        item(key = "official-refresh") {
+            Card(Modifier.padding(horizontal = 16.dp).padding(bottom = 12.dp)) {
+                SwitchPreference(
+                    title = "每周检查官方价格",
+                    summary = officialRefreshStatus ?: "联网检查 OpenAI 与 DeepSeek 官方价格页，失败时保留现有价格",
+                    checked = officialRefresh,
+                    onCheckedChange = { enabled ->
+                        scope.launch {
+                            try {
+                                withContext(Dispatchers.IO) { AgentOfficialPriceRefresh.setEnabled(context, enabled) }
+                                officialRefresh = enabled
+                                officialRefreshStatus = if (enabled) "已安排每周检查" else "自动检查已关闭"
+                            } catch (_: Exception) {
+                                officialRefreshStatus = "设置未保存，请重试"
+                            }
+                        }
+                    },
+                )
+            }
+        }
+        if (shouldShowTokenPricingEmptyState(models.isEmpty(), loading, failed || providersFailed)) item(key = "empty") {
             Text(stringResource(R.string.metrics_prices_empty), Modifier.padding(24.dp), style = MiuixTheme.textStyles.body2)
         }
         items(models, key = { "${it.provider.length}:${it.provider}${it.model}" }) { model ->
-            val price = prices.firstOrNull { it.providerId == model.provider && it.modelId == model.model }?.price
-            Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 8.dp)) {
+            val stored = prices.firstOrNull { it.providerId == model.provider && it.modelId == model.model }?.price
+            val price = stored ?: AgentDeepSeekPriceSchedule.currentPrice(context, model.provider, model.model)
+            val officialDate = price?.let(AgentOfficialPriceCatalog::verifiedOn)
+            Card(Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp)) {
                 ArrowPreference(title = model.name,
                     summary = model.providerName + " · " + model.model + "\n" +
                         if (price == null) stringResource(R.string.metrics_prices_unset)
-                        else stringResource(R.string.metrics_prices_rates, price.currency, price.input, price.output),
+                        else stringResource(R.string.metrics_prices_rates, price.currency, price.input, price.output) +
+                            if (officialDate == null) " · 手动" else " · 官方 $officialDate",
                     enabled = !loading && !failed, onClick = { onEdit(model.provider, model.model) })
             }
         }
     }
 }
+
+internal fun shouldShowTokenPricingEmptyState(modelsEmpty: Boolean, loading: Boolean, failed: Boolean): Boolean =
+    modelsEmpty && !loading && !failed
 
 @Composable
 internal fun AgentTokenPriceEditorScreen(providerId: String, modelId: String, onBack: () -> Unit) {
@@ -131,12 +164,12 @@ internal fun AgentTokenPriceEditorScreen(providerId: String, modelId: String, on
     }
     MiuixScaffoldPage(title = stringResource(R.string.metrics_prices_edit), onBack = { if (!busy) onBack() }) {
         item(key = "model") {
-            Card(Modifier.padding(horizontal = 12.dp).padding(top = 12.dp, bottom = 12.dp)) {
+            Card(Modifier.padding(horizontal = 16.dp).padding(top = 12.dp, bottom = 12.dp)) {
                 BasicComponent(title = modelName, summary = providerName + " · " + modelId + "\n" + stringResource(R.string.metrics_prices_history_note))
             }
         }
         item(key = "form") {
-            Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+            Card(Modifier.padding(horizontal = 16.dp).padding(bottom = 12.dp)) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(stringResource(R.string.metrics_prices_unit), style = MiuixTheme.textStyles.body1)
                     Text(stringResource(R.string.metrics_prices_rules), style = MiuixTheme.textStyles.footnote1,
@@ -182,7 +215,7 @@ internal fun AgentTokenPriceEditorScreen(providerId: String, modelId: String, on
             }
         }
         if (hasPrice) item(key = "remove") {
-            Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+            Card(Modifier.padding(horizontal = 16.dp).padding(bottom = 12.dp)) {
                 ArrowPreference(title = stringResource(R.string.metrics_prices_remove), enabled = !busy && !loading && !loadFailed,
                     summary = stringResource(R.string.metrics_prices_remove_note), onClick = { confirmRemove = true })
             }

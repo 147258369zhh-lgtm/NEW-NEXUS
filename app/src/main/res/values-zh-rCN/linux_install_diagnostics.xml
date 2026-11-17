@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="linux_profile_stage_waiting">等待 Linux 软件包管理器</string>
+    <string name="linux_profile_stage_checksum">校验%1$s的完整性与签名</string>
+    <string name="linux_profile_failure_detail">%1$s失败</string>
+    <string name="linux_profile_failure_timeout">操作超时。已安装的软件包会保留，重试可继续。</string>
+    <string name="linux_profile_failure_start">无法启动 Linux 进程，请检查环境访问与权限。</string>
+    <string name="linux_profile_failure_exit_code">软件包管理器退出码：%1$d</string>
+</resources>

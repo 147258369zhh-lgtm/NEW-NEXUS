@@ -8,6 +8,7 @@ import org.json.JSONObject
 internal object AgentEventJsonCodec {
     fun encode(event: AgentEvent): String {
         require(event !is AgentEvent.SearchSuggestions) { "SEARCH_SUGGESTIONS_NOT_PERSISTABLE" }
+        require(event !is AgentEvent.PluginUiFrame) { "PLUGIN_UI_FRAMES_NOT_PERSISTABLE" }
         return bundleToJson(AgentRuntimeWire.eventToBundle(event)).toString()
     }
 

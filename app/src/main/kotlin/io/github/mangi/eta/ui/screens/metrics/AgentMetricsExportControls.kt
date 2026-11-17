@@ -19,7 +19,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.preference.ArrowPreference
+import io.github.mangi.eta.ui.components.NexusSettingsArrowPreference as ArrowPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
@@ -63,7 +63,7 @@ internal fun AgentMetricsExportControls(recordIds: List<String>, enabled: Boolea
             pendingIds = recordIds.toList()
             try {
                 val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(Date())
-                launcher.launch("Nexus-run-diagnostics-$stamp.json")
+                launcher.launch("NEXA-run-diagnostics-$stamp.json")
             } catch (_: Exception) {
                 pendingIds = null
                 status = R.string.metrics_export_failed

@@ -69,6 +69,7 @@ enum class WorkloadType {
     FOREGROUND_CHAT,
     USER_TASK,
     NIGHTLY_CONSOLIDATION,
+    MODEL_WARMUP,
     PLUGIN_WARMUP,
     LINUX_IDLE_SERVICE,
 }
@@ -88,8 +89,8 @@ object ResourcePriorityPolicy {
     fun mayContinue(workload: WorkloadType, pressure: ResourcePressure): Boolean = when (workload) {
         WorkloadType.FOREGROUND_CHAT -> true
         WorkloadType.USER_TASK -> !(pressure.lowMemory && pressure.thermalThrottled)
-        WorkloadType.NIGHTLY_CONSOLIDATION -> !pressure.lowMemory && !pressure.batterySaver
-        WorkloadType.PLUGIN_WARMUP -> !pressure.lowMemory && !pressure.batterySaver && !pressure.thermalThrottled
+        WorkloadType.NIGHTLY_CONSOLIDATION -> !pressure.lowMemory && !pressure.batterySaver && !pressure.thermalThrottled
+        WorkloadType.MODEL_WARMUP, WorkloadType.PLUGIN_WARMUP -> !pressure.lowMemory && !pressure.batterySaver && !pressure.thermalThrottled
         WorkloadType.LINUX_IDLE_SERVICE -> !pressure.lowMemory && !pressure.batterySaver
     }
 }

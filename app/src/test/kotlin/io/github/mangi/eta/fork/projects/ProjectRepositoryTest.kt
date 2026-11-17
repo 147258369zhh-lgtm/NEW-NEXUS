@@ -1,6 +1,10 @@
 package io.github.mangi.eta.fork.projects
 
 import android.content.Context
+import android.net.Uri
+import android.provider.DocumentsContract
+import io.github.mangi.eta.data.db.ConversationEntity
+import io.github.mangi.eta.data.db.EtaDatabase
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -49,6 +53,50 @@ class ProjectRepositoryTest {
             runBlocking { ProjectRepository.bindSubject(context, project, ProjectSubjectType.CONVERSATION, "chat") }
         }
         Unit
+    }
+
+    @Test fun selectorShowsProjectAndRejectsStaleOrDeletedConversation() = runBlocking {
+        val conversationId = "selector-${java.util.UUID.randomUUID()}"
+        val conversations = EtaDatabase.get(context).conversationDao()
+        conversations.insertConversations(listOf(ConversationEntity(
+            id = conversationId, title = "设计讨论", thinkingEnabled = false, createdAt = 10, updatedAt = 20,
+        )))
+        val firstProject = ProjectRepository.create(context, draft("logical:selector-first", "First"))
+        val secondProject = ProjectRepository.create(context, draft("logical:selector-second", "Second"))
+        val unbound = ProjectRepository.subjectOptions(context).single { it.id == conversationId }
+        assertNull(unbound.projectId)
+        ProjectRepository.bindSubjectIfUnchanged(context, firstProject, unbound)
+        val bound = ProjectRepository.subjectOptions(context).single { it.id == conversationId }
+        assertEquals("设计讨论", bound.title)
+        assertEquals("First", bound.projectName)
+        val stale = assertThrows(ProjectException::class.java) {
+            runBlocking { ProjectRepository.bindSubjectIfUnchanged(context, secondProject, unbound) }
+        }
+        assertEquals("BINDING_CHANGED", stale.code)
+        assertEquals(firstProject, ProjectRepository.bindingForSubject(context, ProjectSubjectType.CONVERSATION, conversationId)?.projectId)
+        ProjectRepository.bindSubjectIfUnchanged(context, secondProject, bound)
+        assertEquals(secondProject, ProjectRepository.bindingForSubject(context, ProjectSubjectType.CONVERSATION, conversationId)?.projectId)
+        val missing = bound.copy(id = "missing-$conversationId", projectId = null)
+        val deleted = assertThrows(ProjectException::class.java) {
+            runBlocking { ProjectRepository.bindSubjectIfUnchanged(context, firstProject, missing) }
+        }
+        assertEquals("SUBJECT_NOT_FOUND", deleted.code)
+    }
+
+    @Test fun safProjectCreationRequiresTreeUriAndDoesNotPersistFileDocumentIdentity() = runBlocking {
+        val document = Uri.parse("content://provider.example/document/one")
+        val failure = assertThrows(ProjectException::class.java) {
+            runBlocking { ProjectRepository.create(context, ProjectDraft("Bad", "app", document.toString(), "file", "SAF")) }
+        }
+        assertEquals("ROOT_INVALID", failure.code)
+        assertNull(ProjectRepository.projects(context).first().firstOrNull())
+
+        val tree = DocumentsContract.buildTreeDocumentUri("provider.example", "root")
+        val grantFailure = assertThrows(IllegalArgumentException::class.java) {
+            ProjectRepository.validateSafRoot(tree, hasReadWriteGrant = false)
+        }
+        assertEquals("ROOT_PERMISSION_REQUIRED", grantFailure.message)
+        ProjectRepository.validateSafRoot(tree, hasReadWriteGrant = true)
     }
 
     private fun draft(root: String, name: String) = ProjectDraft(

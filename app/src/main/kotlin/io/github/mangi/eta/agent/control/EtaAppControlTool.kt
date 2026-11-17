@@ -1,13 +1,16 @@
 package io.github.mangi.eta.agent.control
 
 import android.content.Context
+import io.github.mangi.eta.agent.runtime.RuntimeInvocationScope
+import io.github.zhh_lgtm.nexus.application.api.SettingsActorKind
+import io.github.zhh_lgtm.nexus.kernel.api.RunSource
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
 
 internal object EtaAppControlTool {
     fun execute(context: Context, args: JSONObject): String = try {
-        runBlocking { executeSuspend(context, args) }
+        runBlocking(RuntimeInvocationScope.coroutineContext()) { executeSuspend(context, args) }
     } catch (error: EtaControlException) {
         errorJson(error.code, error.message)
     } catch (error: org.json.JSONException) {
@@ -20,6 +23,10 @@ internal object EtaAppControlTool {
 
     private suspend fun executeSuspend(context: Context, args: JSONObject): String {
         val action = args.optString("action").trim().lowercase()
+        val identity = RuntimeInvocationScope.controller?.executionIdentity
+        val actor = if (identity?.source in setOf(RunSource.A2A_INBOUND, RunSource.A2A_OUTBOUND))
+            SettingsActorKind.REMOTE_AGENT else SettingsActorKind.LOCAL_AGENT
+        val settings = NexusSettingsControlPlane.get(context)
         return when (action) {
             "list" -> {
                 val category = args.optString("category")
@@ -33,12 +40,15 @@ internal object EtaAppControlTool {
             "get" -> {
                 val id = args.optString("id").trim()
                 require(id.isNotEmpty()) { "get 需要 id" }
-                EtaAppControlRegistry.get(context, id).toString()
+                if (id.startsWith("settings.")) settings.readJson(id, actor).toString()
+                else EtaAppControlRegistry.get(context, id).toString()
             }
             "execute" -> {
                 val id = args.optString("id").trim()
                 require(id.isNotEmpty()) { "execute 需要 id" }
-                EtaAppControlRegistry.execute(
+                if (id.startsWith("settings.")) settings.applyJson(id,
+                    args.optJSONObject("parameters") ?: JSONObject(), actor, "agent", identity?.runId).toString()
+                else EtaAppControlRegistry.execute(
                     context = context,
                     id = id,
                     parameters = args.optJSONObject("parameters") ?: JSONObject(),
@@ -47,6 +57,7 @@ internal object EtaAppControlTool {
             "audit" -> {
                 EtaAppControlRegistry.audit(context, args.optInt("limit", 50)).toString()
             }
+            "undo" -> settings.rollbackJson(args.getString("auditId"), actor, "agent", identity?.runId).toString()
             else -> error("不支持的 eta_control 操作：${action.ifBlank { "(empty)" }}")
         }
     }

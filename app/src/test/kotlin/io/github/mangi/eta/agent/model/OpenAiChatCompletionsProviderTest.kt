@@ -193,6 +193,49 @@ class OpenAiChatCompletionsProviderTest {
     }
 
     @Test
+    fun nonToolHttp400NeverSilentlyDropsToolsOrMasksTheConfigurationError() {
+        val requests = mutableListOf<JSONObject>()
+        val attempts = AtomicInteger()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.executor = Executors.newSingleThreadExecutor()
+        server.createContext("/chat/completions") { exchange ->
+            val request = JSONObject(exchange.requestBody.use { it.readBytes().toString(Charsets.UTF_8) })
+            synchronized(requests) { requests += request }
+            val message = if (attempts.getAndIncrement() == 0) {
+                "reasoning_effort is not supported"
+            } else {
+                "image detail is invalid"
+            }
+            val body = "{\"error\":{\"message\":\"$message\"}}"
+            exchange.responseHeaders.add("Content-Type", "application/json")
+            exchange.sendResponseHeaders(400, body.toByteArray().size.toLong())
+            exchange.responseBody.use { it.write(body.toByteArray()) }
+        }
+        server.start()
+        try {
+            val tool = JSONObject().put("type", "function").put(
+                "function",
+                JSONObject().put("name", "device_info").put("parameters", JSONObject().put("type", "object")),
+            )
+            val failure = runCatching {
+                OpenAiChatCompletionsProvider.complete(
+                    providerRequest("http://127.0.0.1:${server.address.port}").copy(
+                        tools = JSONArray().put(tool),
+                    ),
+                    AgentRunController(),
+                )
+            }.exceptionOrNull()
+
+            assertNotNull(failure)
+            assertEquals(2, requests.size)
+            assertTrue(requests.all { it.getJSONArray("tools").length() == 1 })
+            assertTrue(failure?.message.orEmpty().contains("图片输入格式不受支持"))
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun thinkingStreamsBeforeDoneAndClosesBeforeTheUsageTail() {
         val firstDelta = CountDownLatch(1)
         val textEnded = CountDownLatch(1)
@@ -623,7 +666,7 @@ class OpenAiChatCompletionsProviderTest {
     }
 
     @Test
-    fun officialDeepSeekAliasesUseStablePublicModelId() {
+    fun officialDeepSeekRequestsPreserveTheSelectedModelId() {
         val request = OpenAiChatCompletionsProvider.buildRequestJson(
             AgentModelClient.ModelConfig(
                 providerId = "builtin-deepseek",
@@ -634,9 +677,51 @@ class OpenAiChatCompletionsProviderTest {
                 systemPrompt = "",
             ),
             JSONArray().put(JSONObject().put("role", "user").put("content", "hi")),
-            JSONArray(),
+            JSONArray().put(
+                JSONObject()
+                    .put("type", "function")
+                    .put(
+                        "function",
+                        JSONObject()
+                            .put("name", "get_current_context")
+                            .put("description", "fixture")
+                            .put("parameters", JSONObject().put("type", "object").put("properties", JSONObject())),
+                    ),
+            ),
         )
-        assertEquals("deepseek-reasoner", request.getString("model"))
+        assertEquals("deepseek-flash", request.getString("model"))
+        assertEquals("get_current_context", request.getJSONArray("tools")
+            .getJSONObject(0).getJSONObject("function").getString("name"))
+    }
+
+    @Test
+    fun deepSeekUnknownModelReportsTheFailureWithoutSwitchingModels() {
+        val requests = mutableListOf<JSONObject>()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/") { exchange ->
+            requests += JSONObject(exchange.requestBody.use { it.readBytes().toString(Charsets.UTF_8) })
+            val body = """{"error":{"code":"model_not_found","message":"unknown model"}}""".toByteArray()
+            exchange.sendResponseHeaders(400, body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+        }
+        server.start()
+        try {
+            // The URL contains the official hostname to exercise the previous special case,
+            // while the server remains local and cannot send a real model request.
+            val baseUrl = "http://127.0.0.1:${server.address.port}/api.deepseek.com"
+            val failure = runCatching {
+                OpenAiChatCompletionsProvider.complete(
+                    providerRequest(baseUrl) { it.copy(providerSourceType = "deepseek", model = "missing-model") },
+                    AgentRunController(),
+                )
+            }.exceptionOrNull()
+            assertTrue(failure is AgentModelFailure)
+            assertTrue(failure?.message.orEmpty().contains("模型名称或权限无效"))
+            assertEquals(1, requests.size)
+            assertEquals("missing-model", requests.single().getString("model"))
+        } finally {
+            server.stop(0)
+        }
     }
 
     @Test

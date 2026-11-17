@@ -45,6 +45,7 @@ internal fun AgentOverlayState.applyEvent(event: AgentEvent): AgentOverlayState 
 }
 
 private fun AgentOverlayState.projectEvent(event: AgentEvent): AgentOverlayState = when (event) {
+    is AgentEvent.PluginUiFrame -> this
     is AgentEvent.AccessibilityWaiting -> copy(
         status = if (event.phase == io.github.mangi.eta.agent.accessibility.AccessibilityWaitPhase.WAITING) {
             AgentOverlayStatus.WaitingAccessibility
@@ -56,6 +57,7 @@ private fun AgentOverlayState.projectEvent(event: AgentEvent): AgentOverlayState
         GuiControlStatus.Acquired -> copy(phase = AgentOverlayPhase.RUNNING, status = AgentOverlayStatus.Continuing)
         GuiControlStatus.Waiting, GuiControlStatus.Released -> this
     }
+    is AgentEvent.ApprovalChanged -> this
     is AgentEvent.RunStarted -> copy(phase = AgentOverlayPhase.RUNNING, status = AgentOverlayStatus.Reasoning, detailText = "")
     is AgentEvent.RoundStarted -> copy(round = event.round).thinkingUnlessWorking()
     is AgentEvent.ProviderRequestStarted -> copy(round = event.round).thinkingUnlessWorking()
@@ -73,6 +75,10 @@ private fun AgentOverlayState.projectEvent(event: AgentEvent): AgentOverlayState
 
     is AgentEvent.ToolStarted -> running(AgentOverlayStatus.RunningTool(event.name), event.round)
         .copy(thought = event.argsPreview.trim())
+    is AgentEvent.SubagentQueued -> copy(
+        detailText = "等待子 Agent 并发名额 ${event.queuePosition}/${event.maxParallelAgents}",
+    ).thinkingUnlessWorking()
+    is AgentEvent.SubagentAdmitted -> copy(detailText = "已获得并发名额，开始执行…").thinkingUnlessWorking()
     is AgentEvent.HostedToolStarted -> running(AgentOverlayStatus.HostedToolRunning(event.name), event.round)
 
     // 工具结束后模型马上开始下一轮思考；直接回到思考态，由下一次工具调用切换文字。

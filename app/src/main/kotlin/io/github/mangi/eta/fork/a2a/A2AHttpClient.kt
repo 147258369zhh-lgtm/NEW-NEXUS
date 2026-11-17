@@ -3,7 +3,8 @@ package io.github.mangi.eta.fork.a2a
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -21,6 +22,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import java.io.ByteArrayOutputStream
 import java.util.UUID
+import java.util.concurrent.TimeUnit
+import io.github.mangi.eta.agent.capability.CapabilityHttpSession
 
 /** HTTP client for the A2A 1.0 JSON-RPC binding. All URLs pass through [A2APeerPolicy]. */
 internal class A2AHttpClient(
@@ -28,10 +31,18 @@ internal class A2AHttpClient(
     baseClient: OkHttpClient = OkHttpClient(),
     private val json: Json = A2A_JSON,
     private val requestIdFactory: () -> String = { UUID.randomUUID().toString() },
-) {
+) : AutoCloseable {
     private val client: OkHttpClient = baseClient.newBuilder()
         .dns(policy.secureDns(baseClient.dns))
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(120, TimeUnit.SECONDS)
         .build()
+    private val http = CapabilityHttpSession(client)
+    private val streamingHttp = CapabilityHttpSession(client.newBuilder().callTimeout(0, TimeUnit.MILLISECONDS).build())
+    override fun close() { http.close(); streamingHttp.close() }
 
     suspend fun discoverAgentCard(cardUrl: String, bearerToken: String? = null): A2AAgentCard =
         withContext(Dispatchers.IO) {
@@ -43,7 +54,7 @@ internal class A2AHttpClient(
                 .header("A2A-Version", A2A_PROTOCOL_VERSION)
                 .applyBearer(bearerToken)
                 .build()
-            client.newCall(request).execute().use { response ->
+            http.executeSuspending(request) { response ->
                 ensureSuccessful(response)
                 val body = readBoundedUtf8(response, MAX_AGENT_CARD_BYTES)
                 json.decodeFromString<A2AAgentCard>(body).also { card ->
@@ -157,7 +168,7 @@ internal class A2AHttpClient(
             .header("A2A-Version", A2A_PROTOCOL_VERSION)
             .applyBearer(bearerToken)
             .build()
-        client.newCall(request).execute().use { response ->
+        http.executeSuspending(request) { response ->
             ensureSuccessful(response)
             decodeRpcResponse(
                 readBoundedUtf8(response, MAX_RPC_RESPONSE_BYTES),
@@ -171,7 +182,7 @@ internal class A2AHttpClient(
         method: String,
         params: JsonElement,
         bearerToken: String?,
-    ): Flow<A2AStreamResponse> = flow {
+    ): Flow<A2AStreamResponse> = channelFlow {
         val url = policy.validateUrl(endpointUrl)
         val requestId = requestIdFactory()
         val rpcRequest = A2AJsonRpcRequest(id = requestId, method = method, params = params)
@@ -182,9 +193,14 @@ internal class A2AHttpClient(
             .header("A2A-Version", A2A_PROTOCOL_VERSION)
             .applyBearer(bearerToken)
             .build()
-        client.newCall(request).execute().use { response ->
+        streamingHttp.executeSuspending(request) { response ->
             ensureSuccessful(response)
             val contentType = response.header("Content-Type").orEmpty().lowercase()
+            if (contentType.startsWith("application/json")) {
+                // Non-streaming JSON-RPC errors are allowed before an SSE response starts.
+                decodeRpcResponse(readBoundedUtf8(response, MAX_RPC_RESPONSE_BYTES), requestId)
+                throw A2AProtocolException("A2A streaming response did not use text/event-stream")
+            }
             if (!contentType.startsWith("text/event-stream")) {
                 throw A2AProtocolException("A2A streaming response did not use text/event-stream")
             }
@@ -192,14 +208,17 @@ internal class A2AHttpClient(
             val data = StringBuilder()
             val source = response.body.source()
             while (!source.exhausted()) {
-                val line = source.readUtf8Line() ?: break
+                val line = try { source.readUtf8LineStrict(MAX_STREAM_LINE_BYTES) } catch (failure: java.io.EOFException) {
+                    if (source.buffer.size > MAX_STREAM_LINE_BYTES) throw A2AProtocolException("A2A stream line exceeded the size limit", failure)
+                    source.readUtf8()
+                }
                 totalBytes += line.toByteArray(Charsets.UTF_8).size + 1L
                 if (totalBytes > MAX_STREAM_BYTES) {
                     throw A2AProtocolException("A2A stream exceeded the response size limit")
                 }
                 if (line.isEmpty()) {
                     if (data.isNotEmpty()) {
-                        emit(parseStreamEvent(data.toString(), requestId))
+                        trySendBlocking(parseStreamEvent(data.toString(), requestId)).getOrThrow()
                         data.clear()
                     }
                 } else if (line.startsWith("data:")) {
@@ -207,7 +226,7 @@ internal class A2AHttpClient(
                     data.append(line.removePrefix("data:").trimStart())
                 }
             }
-            if (data.isNotEmpty()) emit(parseStreamEvent(data.toString(), requestId))
+            if (data.isNotEmpty()) trySendBlocking(parseStreamEvent(data.toString(), requestId)).getOrThrow()
         }
     }.flowOn(Dispatchers.IO)
 
@@ -224,7 +243,7 @@ internal class A2AHttpClient(
             throw A2AProtocolException("A2A response id did not match the request")
         }
         response.error?.let { error ->
-            throw A2AProtocolException("A2A ${error.code}: ${error.message}")
+            throw A2AProtocolException("A2A ${error.code}: ${error.message}", rpcErrorCode = error.code)
         }
         return response.result ?: throw A2AProtocolException("A2A response was empty")
     }
@@ -273,6 +292,7 @@ internal class A2AHttpClient(
         private const val MAX_AGENT_CARD_BYTES = 2 * 1024 * 1024
         private const val MAX_RPC_RESPONSE_BYTES = 8 * 1024 * 1024
         private const val MAX_STREAM_BYTES = 32L * 1024L * 1024L
+        private const val MAX_STREAM_LINE_BYTES = 256L * 1024L
         private val JSON_MEDIA_TYPE = A2A_JSONRPC_CONTENT_TYPE.toMediaType()
     }
 }

@@ -71,6 +71,62 @@ class AgentLocalToolsPermissionTest {
     }
 
     @Test
+    fun explicitSessionArgumentsRejectConflictsAndForeignSessionsBeforePlatformStartup() {
+        var platformStartupCalls = 0
+        val tools = tools(
+            beforeToolExecution = { ToolExecutionDecision.Allow },
+            screenObservationProvider = { platformStartupCalls++; observation("should-not-observe", false) },
+        )
+        fun call(name: String, arguments: String) = JSONObject(
+            tools.execute(AgentModelClient.ToolCall(name, name, arguments)).content,
+        )
+        tools.use {
+            val conflictingLaunch = call(
+                "launch_app",
+                """{"new_session":true,"session_id":"existing"}""",
+            )
+            assertEquals("INVALID_ARGUMENT", conflictingLaunch.getString("code"))
+            val conflictingUri = call(
+                "open_uri",
+                """{"new_session":true,"session_id":"existing","uri":"https://example.com"}""",
+            )
+            assertEquals("INVALID_ARGUMENT", conflictingUri.getString("code"))
+
+            val missing = call("observe_screen", """{"session_id":"missing-session"}""")
+            assertEquals("DISPLAY_LEASE_EXPIRED", missing.getString("code"))
+            assertTrue(missing.getString("message").contains("session_id"))
+
+            assertEquals(0, platformStartupCalls)
+        }
+    }
+
+    @Test
+    fun successfulActionWithStaleDisplayLeaseKeepsSuccessAndSkipsFollowUpObservation() {
+        var observationCalls = 0
+        val tools = tools(
+            screenObservationProvider = { observationCalls++; observation("unexpected-follow-up", false) },
+        )
+        val leaseField = AgentLocalTools::class.java.getDeclaredField("activeDisplayLease").apply { isAccessible = true }
+        val displayField = AgentLocalTools::class.java.getDeclaredField("activeDisplayId").apply { isAccessible = true }
+        val afterAction = AgentLocalTools::class.java.getDeclaredMethod("afterAction", String::class.java).apply { isAccessible = true }
+        val staleLease = io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayLease(
+            ownerRunId = "receipt-run", sessionId = "missing-session", displayId = 4,
+        )
+        tools.use {
+            leaseField.set(it, staleLease)
+            displayField.setInt(it, 4)
+            val result = afterAction.invoke(it, """{"ok":true,"tool":"tap","display_id":4}""") as AgentModelClient.ToolResult
+            val payload = JSONObject(result.content)
+
+            assertTrue(payload.getBoolean("ok"))
+            assertEquals("DISPLAY_SESSION_CHANGED", payload.getString("after_observation_error"))
+            assertEquals("missing-session", payload.getString("source_session_id"))
+            assertEquals(4, payload.getInt("source_display_id"))
+            assertEquals(0, observationCalls)
+        }
+    }
+
+    @Test
     fun revokedRootRejectsOldPrivilegedCallsBeforeAnyOperation() {
         val root = AtomicBoolean(true)
         val tools = tools(

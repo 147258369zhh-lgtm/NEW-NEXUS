@@ -1,6 +1,5 @@
 package io.github.mangi.eta.ui.screens.metrics
 
-import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.border
@@ -29,6 +28,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalLocale
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -36,10 +36,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.mangi.eta.agent.runtime.*
+import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.components.EtaIconTile
 import io.github.mangi.eta.ui.components.EtaMotion
+import io.github.mangi.eta.ui.components.NexaSegmentedTabs
 import io.github.mangi.eta.ui.components.etaGlassSurface
 import top.yukonga.miuix.kmp.basic.*
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import java.time.LocalDate
@@ -49,81 +52,125 @@ import java.util.Date
 
 @Composable
 internal fun AgentMetricsOverview(records: List<AgentRunMetricsRecord>, models: List<AgentMetricModelEntity>,
-    metrics: List<AgentRunMetrics>, costAvailable: Boolean) {
-    val costs = AgentTokenCostEstimator.summarize(models, models.size + records.count { run -> models.none { it.recordId == run.recordId } })
-    val knownCost = costs.currencies.joinToString("\n") { "${it.currency} ${metricMoney(it.amount)}" }
-    fun total(field: (AgentRunMetrics) -> Long?): Long? = metrics.mapNotNull(field).takeIf { it.isNotEmpty() }?.sum()
-    val reads = metrics.filter { it.cacheReadTokens != null && it.uncachedInputTokens != null }
-    val readTokens = reads.sumOf { it.cacheReadTokens ?: 0 }
-    val allInput = reads.sumOf { (it.uncachedInputTokens ?: 0) + (it.cacheReadTokens ?: 0) + (it.cacheWriteTokens ?: 0) }
-    val cacheRate = if (allInput > 0) "%.1f%%".format(100.0 * readTokens / allInput) else "—"
-    val totalTokens = total { it.reportedTotalTokens() } ?: 0L
+    metrics: List<AgentRunMetrics>, costAvailable: Boolean,
+    requests: List<AgentMetricRequestEntity> = emptyList()) {
+    fun total(field: (AgentRunMetrics) -> Long?) = metricKnownSum(metrics, field)
+    fun number(value: Long?) = value?.let(::compactMetric) ?: "—"
+    val readTokens = total { it.cacheReadTokens ?: it.cachedTokens }
+    val cacheRate = metricCacheHitRate(metrics)?.let { "%.1f%%".format(it) } ?: "—"
     val output = total { it.billableOutputTokens ?: it.outputTokens }
-    val input = total { (it.uncachedInputTokens ?: it.inputTokens) }
-    val cacheWrite = total { it.cacheWriteTokens }
-    val retries = metrics.sumOf { it.retries }
-    val toolSuccess = if (metrics.sumOf { it.succeededTools + it.failedTools } > 0) {
-        "${metrics.sumOf { it.succeededTools }}/${metrics.sumOf { it.succeededTools + it.failedTools }}"
-    } else "—"
-    val totalDuration = records.sumOf { it.durationMs }
-    val speed = if (output != null && totalDuration > 0) {
-        "${compactMetric((output * 1_000.0 / totalDuration).toLong())}/s"
-    } else "—"
-    val stats = listOf(
-        MetricStat("运行次数", records.size.toString(), "${models.size} 个模型作用域", Icons.Rounded.Tune),
-        MetricStat("请求次数", metricNumber(total { it.requestAttempts.toLong() }), "$retries 次重试", Icons.Rounded.Replay),
-        MetricStat("总 Token", compactMetric(totalTokens), "输入 ${compactMetric(input ?: 0)} · 输出 ${compactMetric(output ?: 0)}", Icons.Rounded.DataUsage),
-        MetricStat("预估费用", if (costAvailable) knownCost.replace('\n', ' ') else "暂不可用", "完整计价 ${costs.completeModels}/${costs.totalModels}", Icons.Rounded.Payments),
-        MetricStat("缓存命中", cacheRate, "读取 ${compactMetric(readTokens)}", Icons.Rounded.Cached),
-        MetricStat("缓存写入", compactMetric(cacheWrite ?: 0), if (cacheWrite == null) "未报告" else "已记录", Icons.Rounded.Bolt),
-        MetricStat("吞吐速度", speed, "输出 Token / 运行时长", Icons.Rounded.Speed),
-        MetricStat("平均耗时", if (records.isEmpty()) "—" else "${formatMilliseconds(totalDuration / records.size)}", "累计 ${formatMilliseconds(totalDuration)}", Icons.Rounded.Timer),
-        MetricStat("工具成功", toolSuccess, "成功 / 已结算", Icons.Rounded.Bolt),
-        MetricStat("用量完整", "${metrics.count { it.usageComplete }}/${metrics.size}", "已报告用量", Icons.Rounded.DataUsage),
-    )
-    var accentIndex = 0
-    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        stats.chunked(2).forEach { rowStats ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                rowStats.forEach { stat ->
-                    MetricTile(stat, metricAccent(accentIndex++), Modifier.weight(1f))
-                }
-                if (rowStats.size == 1) Spacer(Modifier.weight(1f))
+    val duration = records.mapNotNull { it.durationMs.takeIf { duration -> duration > 0 } }
+    val paired = requests.filter { it.totalMs != null && it.totalMs!! > 0 && it.usage.outputTokens != null }
+    val speed = if(paired.isNotEmpty()) "%.1f Token/s".format(paired.sumOf { it.usage.outputTokens ?: 0L } * 1000.0 / paired.sumOf { it.totalMs!! }) else "—"
+
+
+    val metricsByRecord = models.groupBy { it.recordId }
+    val timedUsage = records.mapNotNull { run -> if(run.durationMs <= 0) null else metricKnownSum(metricsByRecord[run.recordId]?.map { it.metrics } ?: listOf(run.metrics)) { it.billableOutputTokens ?: it.outputTokens }?.let { it to run.durationMs } }
+    val runSpeed = if(timedUsage.isEmpty()) "—" else "%.1f Token/s".format(timedUsage.sumOf { it.first } * 1000.0 / timedUsage.sumOf { it.second })
+    val money = CnyMetricCostText(models)
+    MetricStatGrid(listOf(
+        MetricStat("总 Token", number(total { it.reportedTotalTokens() }), "输入 ${number(total(::metricReportedInput))} · 输出 ${number(output)}", Icons.Rounded.DataUsage),
+        MetricStat("预估费用", if(costAvailable) money ?: "费用未知" else "暂不可用", "人民币 · 按当次单价估算", Icons.Rounded.Payments),
+        MetricStat(if(requests.isEmpty()) "运行吞吐" else "请求吞吐", if(requests.isEmpty()) runSpeed else speed, if(requests.isEmpty()) "已报告输出 / 运行耗时" else "已报告输出 / 请求耗时", Icons.Rounded.Speed),
+        MetricStat("平均运行耗时", if(duration.isEmpty()) "—" else formatMilliseconds(duration.sum()/duration.size), "${records.size} 次运行", Icons.Rounded.Timer),
+    ))
+    Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.CenterVertically) {
+                EtaIconTile(Icons.Rounded.Cached, tone = io.github.mangi.eta.ui.components.EtaIconTone.MODEL, accentColor = metricAccent(4), size = 28.dp, glyphSize = 16.dp)
+                Text("缓存命中 $cacheRate · 读取 ${number(readTokens)} · 写入 ${number(total { it.cacheWriteTokens })}", style = MiuixTheme.textStyles.footnote1, modifier = Modifier.weight(1f))
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.CenterVertically) {
+                EtaIconTile(Icons.Rounded.DataUsage, tone = io.github.mangi.eta.ui.components.EtaIconTone.MODEL, accentColor = metricAccent(0), size = 28.dp, glyphSize = 16.dp)
+                Text("${models.map { it.providerId to it.modelId }.distinct().size} 个模型 · 用量完整 ${metrics.count { it.usageComplete }}/${metrics.size} · 压缩 ${metrics.sumOf { it.completedCompactions }} 次", style = MiuixTheme.textStyles.footnote1, modifier = Modifier.weight(1f))
             }
         }
-        Text("${records.size} 次运行 · ${metrics.count { it.usageComplete }}/${metrics.size} 项用量完整",
-            style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
     }
 }
 
-private data class MetricStat(
-    val label: String,
-    val value: String,
-    val detail: String,
-    val icon: ImageVector,
-)
+@Composable
+internal fun AgentMetricsMonitoring(records: List<AgentRunMetricsRecord>, metrics: List<AgentRunMetrics>,
+    approvalMetrics: List<AgentRunMetrics>? = records.map { it.metrics }) {
+    val success = records.count { it.status == AgentMetricStatus.SUCCEEDED }
+    val failure = records.count { it.status == AgentMetricStatus.FAILED }
+    val active = records.count { it.status == AgentMetricStatus.RUNNING }
+    val approvals = approvalMetrics?.sumOf { it.approvalRequests }
+    MetricStatGrid(listOf(
+        MetricStat("运行结果", "$success 成功", "$failure 失败 · $active 运行中", Icons.Rounded.Tune),
+        MetricStat("请求与重试", metrics.sumOf { it.requestAttempts }.toString(), "${metrics.sumOf { it.retries }} 次重试", Icons.Rounded.Replay),
+        MetricStat("工具执行", metrics.sumOf { it.toolCalls }.toString(), "${metrics.sumOf { it.unresolvedTools }} 项未结算", Icons.Rounded.Bolt),
+        MetricStat("审批请求", approvals?.toString() ?: "—", if (approvals == null) "模型筛选下无法精确归属" else "整次运行计数，不重复累加模型", Icons.Rounded.Tune),
+    ))
+    MonitoringBreakdown("运行状态", listOf(
+        Triple("成功", success, Color(0xFF18C895)), Triple("失败", failure, Color(0xFFF45C76)),
+        Triple("运行中", active, Color(0xFF338BFF)),
+        Triple("取消", records.count { it.status == AgentMetricStatus.CANCELLED }, Color(0xFFFFA044)),
+        Triple("中断", records.count { it.status == AgentMetricStatus.INTERRUPTED }, Color(0xFF9A76EE)),
+    ), "执行成功与用户目标是否达成分别看待")
+    MonitoringBreakdown("工具结果", listOf(
+        Triple("成功", metrics.sumOf { it.succeededTools }, Color(0xFF18C895)),
+        Triple("失败", metrics.sumOf { it.failedTools }, Color(0xFFF45C76)),
+        Triple("未结算", metrics.sumOf { it.unresolvedTools }, Color(0xFFFFA044)),
+    ), "仅已结算结果参与工具成功率")
+    if (approvalMetrics != null) MonitoringBreakdown("审批结果", listOf(
+        Triple("通过", approvalMetrics.sumOf { it.approvalsApproved }, Color(0xFF18C895)),
+        Triple("拒绝", approvalMetrics.sumOf { it.approvalsRejected }, Color(0xFFF45C76)),
+        Triple("超时", approvalMetrics.sumOf { it.approvalsTimedOut }, Color(0xFFFFA044)),
+        Triple("取消", approvalMetrics.sumOf { it.approvalsCancelled }, Color(0xFF9A76EE)),
+        Triple("记录失败", approvalMetrics.sumOf { it.approvalsFailed }, Color(0xFFEC6E97)),
+        Triple("待处理", (approvalMetrics.sumOf { it.approvalRequests } - approvalMetrics.sumOf {
+            it.approvalsApproved + it.approvalsRejected + it.approvalsTimedOut + it.approvalsCancelled + it.approvalsFailed
+        }).coerceAtLeast(0), Color(0xFF338BFF)),
+    ), "请求、通过、拒绝与等待保留各自含义")
+}
 
 @Composable
-private fun MetricTile(stat: MetricStat, accent: Color, modifier: Modifier = Modifier) {
+private fun MonitoringBreakdown(title: String, values: List<Triple<String, Int, Color>>, note: String) {
     val colors = MiuixTheme.colorScheme
-    Card(modifier.etaGlassSurface(accent = accent, cornerRadius = 18.dp), colors = CardDefaults.defaultColors(
-        color = colors.surfaceContainer,
-        contentColor = colors.onSurface,
-    )) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-            EtaIconTile(stat.icon, tone = io.github.mangi.eta.ui.components.EtaIconTone.MODEL, accentColor = accent, size = 32.dp, glyphSize = 17.dp)
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(stat.label, style = MiuixTheme.textStyles.footnote1.copy(fontSize = 12.sp, lineHeight = 16.sp), color = colors.onSurfaceVariantSummary)
-                Crossfade(
-                    targetState = stat.value,
-                    animationSpec = tween(EtaMotion.state),
-                    label = "metric-value",
-                ) { value ->
-                    Text(value, style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                }
-                Text(stat.detail, style = MiuixTheme.textStyles.footnote1.copy(fontSize = 12.sp, lineHeight = 16.sp), color = colors.onSurfaceVariantSummary, maxLines = 2)
+    Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(title, style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Medium)
+            val nonzero = values.filter { it.second > 0 }
+            if (nonzero.isNotEmpty()) Row(Modifier.fillMaxWidth().height(8.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                nonzero.forEach { (_, count, color) -> Box(Modifier.weight(count.toFloat()).fillMaxHeight().background(color, RoundedCornerShape(5.dp))) }
             }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                values.forEach { (label, count, color) -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Box(Modifier.size(6.dp).background(color, CircleShape))
+                    Text(label, style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary)
+                    Text(count.toString(), style = MiuixTheme.textStyles.footnote1, fontWeight = FontWeight.SemiBold, color = colors.onSurface)
+                } }
+            }
+            Text(note, style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary)
+        }
+    }
+}
+
+private data class MetricStat(val label: String, val value: String, val detail: String, val icon: ImageVector)
+
+@Composable
+private fun MetricStatGrid(stats: List<MetricStat>) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        stats.chunked(2).forEachIndexed { row, cells -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            cells.forEachIndexed { index, stat -> MetricTile(stat, metricAccent(row * 2 + index), Modifier.weight(1f)) }
+            if (cells.size == 1) Spacer(Modifier.weight(1f))
+        } }
+    }
+}
+
+@Composable
+private fun MetricTile(stat: MetricStat, accent: Color, modifier: Modifier) {
+    val colors = MiuixTheme.colorScheme
+    Card(modifier) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                EtaIconTile(stat.icon, tone = io.github.mangi.eta.ui.components.EtaIconTone.MODEL,
+                    accentColor = accent, size = 28.dp, glyphSize = 16.dp)
+                Text(stat.label, style = MiuixTheme.textStyles.footnote1, color = colors.onSurfaceVariantSummary)
+            }
+            Text(stat.value, style = MiuixTheme.textStyles.body1.copy(fontSize = if (stat.value.length > 10) 18.sp else 21.sp, lineHeight = 27.sp), fontWeight = FontWeight.SemiBold,
+                maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+            Text(stat.detail, style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary, maxLines = 2)
         }
     }
 }
@@ -146,7 +193,7 @@ internal fun formatMilliseconds(ms: Long): String = when {
     else -> "%dm %02ds".format(ms / 60_000, (ms / 1_000) % 60)
 }
 
-internal data class MetricDistribution(val label: String, val value: Long, val detail: String = "")
+internal data class MetricDistribution(val label: String, val value: Long?, val detail: String = "", val incomplete: Boolean = false)
 
 @Composable
 internal fun AgentMetricDistributionCard(
@@ -156,37 +203,59 @@ internal fun AgentMetricDistributionCard(
 ) {
     val colors = MiuixTheme.colorScheme
     val palette = listOf(Color(0xFF4C7CF3), Color(0xFF2AA978), Color(0xFFF0A23A), Color(0xFF9A6BE8), Color(0xFF2AA6B8), Color(0xFFE05A67))
-    val visible = items.filter { it.value > 0 }.sortedByDescending(MetricDistribution::value)
-    val total = visible.sumOf(MetricDistribution::value).coerceAtLeast(1)
+    val visible = items.filter { (it.value ?: 0L) > 0 }.sortedByDescending { it.value }
+    val total = visible.sumOf { it.value ?: 0L }
     val reveal by animateFloatAsState(
         targetValue = if (visible.isEmpty()) 0f else 1f,
         animationSpec = tween(EtaMotion.chart),
         label = "metric-ring-reveal",
     )
-    Card(modifier.etaGlassSurface(accent = colors.primary, cornerRadius = 18.dp), colors = CardDefaults.defaultColors(colors.surfaceContainer, colors.onSurface)) {
+    Card(modifier, colors = CardDefaults.defaultColors(colors.surfaceContainer, colors.onSurface)) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(title, style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                Text("${compactMetric(total)} Token", style = MiuixTheme.textStyles.footnote1, color = colors.onSurfaceVariantSummary)
+                Text("${if(items.any { it.value != null }) compactMetric(total) else "—"} Token", style = MiuixTheme.textStyles.footnote1, fontWeight = FontWeight.Medium, color = colors.onSurface)
             }
             if (visible.isEmpty()) {
-                Text("暂无 Token 用量", style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary)
+                Text(if(items.isEmpty()) "暂无记录" else if(items.all { it.value == null }) "Token 用量未报告" else "已报告 0 Token", style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary)
             } else {
-                Row(Modifier.fillMaxWidth().height(10.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                    visible.forEachIndexed { index, item ->
-                        Box(
-                            Modifier.weight(item.value.toFloat()).fillMaxHeight().background(
-                                palette[index % palette.size].copy(alpha = .68f + .32f * reveal),
-                                RoundedCornerShape(5.dp),
-                            ),
-                        )
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+                    Box(Modifier.size(128.dp), contentAlignment = Alignment.Center) {
+                        Canvas(Modifier.fillMaxSize().semantics { contentDescription = "$title，已报告 ${compactMetric(total)} Token" }) {
+                            val stroke = 13.dp.toPx()
+                            val diameter = size.minDimension - stroke
+                            val origin = Offset((size.width - diameter) / 2, (size.height - diameter) / 2)
+                            var start = -90f
+                            drawArc(colors.surfaceContainerHigh, 0f, 360f, false, origin, Size(diameter, diameter), style = Stroke(stroke))
+                            visible.forEachIndexed { index, row ->
+                                val sweep = ((row.value ?: 0L).toDouble() / total.coerceAtLeast(1) * 360).toFloat()
+                                drawArc(palette[index % palette.size], start + .8f, (sweep - 1.6f).coerceAtLeast(.2f) * reveal,
+                                    false, origin, Size(diameter, diameter), style = Stroke(stroke, cap = StrokeCap.Round))
+                                start += sweep
+                            }
+                        }
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(compactMetric(total), style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.SemiBold)
+                            Text("Token", style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary)
+                        }
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                        visible.take(3).forEachIndexed { index, row ->
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Box(Modifier.size(7.dp).background(palette[index % palette.size], CircleShape))
+                                Text(row.label, Modifier.weight(1f), style = MiuixTheme.textStyles.footnote1, maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                                Text("${((row.value ?: 0L).toDouble() / total.coerceAtLeast(1) * 100).toInt()}%", style = MiuixTheme.textStyles.footnote2)
+                            }
+                        }
                     }
                 }
-                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     visible.take(6).forEachIndexed { index, item ->
                         Row(
-                            Modifier.fillMaxWidth().squircleSurface(colors.surfaceContainerHigh.copy(alpha = .52f), 10.dp)
-                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            Modifier.fillMaxWidth().squircleSurface(colors.surfaceContainerHigh.copy(alpha = .42f), 12.dp)
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(9.dp),
                         ) {
@@ -196,13 +265,16 @@ internal fun AgentMetricDistributionCard(
                                 if (item.detail.isNotBlank()) Text(item.detail, style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary, maxLines = 1)
                             }
                             Column(horizontalAlignment = Alignment.End) {
-                                Text("${item.value * 100 / total}%", style = MiuixTheme.textStyles.footnote1, fontWeight = FontWeight.SemiBold)
-                                Text(compactMetric(item.value), style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary)
+                                Text("${(item.value ?: 0L) * 100 / total.coerceAtLeast(1)}%", style = MiuixTheme.textStyles.footnote1, fontWeight = FontWeight.SemiBold)
+                                Text(compactMetric(item.value ?: 0L), style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary)
                             }
                         }
                     }
                 }
             }
+            if(visible.size > 6) Text("其他 ${visible.size - 6} 项 · ${compactMetric(visible.drop(6).sumOf { it.value ?: 0L })} Token", style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary)
+            items.filter { it.value == null || it.value == 0L }.forEach { item -> Text("${item.label} · ${item.value?.let(::compactMetric) ?: "未报告"}", style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary) }
+            if(items.any { it.incomplete || it.value == null }) Text("分布包含部分已报告用量", style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary)
         }
     }
 }
@@ -218,14 +290,12 @@ internal fun AgentRunMetricsCard(
     modifier: Modifier = Modifier,
 ) {
     val colors = MiuixTheme.colorScheme
+    val startedAt = AgentMetricsTime.known(record.startedAt)
     val usage = models.map { it.metrics }.ifEmpty { listOf(record.metrics) }
-    val input = usage.sumOf { it.uncachedInputTokens ?: it.inputTokens ?: 0L }
-    val output = usage.sumOf { it.billableOutputTokens ?: it.outputTokens ?: 0L }
-    val cached = usage.sumOf { it.cacheReadTokens ?: it.cachedTokens ?: 0L }
-    val cacheWrite = usage.sumOf { it.cacheWriteTokens ?: 0L }
-    val denominator = input + cached + cacheWrite
-    val cacheRate = if (denominator > 0) "%.1f%%".format(cached * 100.0 / denominator) else "—"
-    val tokensPerSecond = if (output > 0 && record.durationMs > 0) {
+    val input = metricKnownSum(usage, ::metricReportedInput)
+    val output = metricKnownSum(usage) { it.billableOutputTokens ?: it.outputTokens }
+    val cacheRate = metricCacheHitRate(usage)?.let { "%.1f%%".format(it) } ?: "—"
+    val tokensPerSecond = if (output != null && record.durationMs > 0) {
         "${compactMetric((output * 1_000.0 / record.durationMs).toLong())}/s"
     } else "—"
     val statusColor = when (record.status) {
@@ -253,7 +323,9 @@ internal fun AgentRunMetricsCard(
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(record.modelName.ifBlank { providerName.ifBlank { record.modelId } }, style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.SemiBold, maxLines = 1)
                     Text(
-                        "${metricSourceLabel(record.source)} · ${providerName.ifBlank { record.providerId }} · ${DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(record.startedAt))}",
+                        "${metricSourceLabel(record.source)} · ${providerName.ifBlank { record.providerId }} · " +
+                            (startedAt?.let { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(it)) }
+                                ?: stringResource(R.string.metrics_time_unknown)),
                         style = MiuixTheme.textStyles.footnote2,
                         color = colors.onSurfaceVariantSummary,
                         maxLines = 1,
@@ -261,23 +333,24 @@ internal fun AgentRunMetricsCard(
                 }
                 Column(horizontalAlignment = Alignment.End) {
                     Text(metricStatusLabel(record.status), style = MiuixTheme.textStyles.footnote1, color = statusColor, fontWeight = FontWeight.Medium)
-                    Text(costLabel.ifBlank { "费用未知" }, style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary)
+                    Text(CnyMetricCostText(models) ?: "费用未知", style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary)
                 }
             }
             if (projectName.isNotBlank()) Text("项目 · $projectName", style = MiuixTheme.textStyles.footnote2, color = colors.primary)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                RunMetricCell("输入", compactMetric(input), Modifier.weight(1f))
-                RunMetricCell("输出", compactMetric(output), Modifier.weight(1f))
+                RunMetricCell("输入", input?.let(::compactMetric) ?: "—", Modifier.weight(1f))
+                RunMetricCell("输出", output?.let(::compactMetric) ?: "—", Modifier.weight(1f))
                 RunMetricCell("缓存命中", cacheRate, Modifier.weight(1f))
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                RunMetricCell("速度", tokensPerSecond, Modifier.weight(1f))
-                RunMetricCell("总耗时", formatMilliseconds(record.durationMs), Modifier.weight(1f))
+                RunMetricCell("运行吞吐", tokensPerSecond, Modifier.weight(1f))
+                RunMetricCell("总耗时", record.durationMs.takeIf { it > 0 }?.let { formatMilliseconds(it) }
+                    ?: stringResource(R.string.metrics_duration_unknown), Modifier.weight(1f))
                 RunMetricCell("上下文", record.metrics.contextTokens?.toLong()?.let(::compactMetric) ?: "—", Modifier.weight(1f))
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("${record.metrics.requestAttempts} 请求 · ${record.metrics.retries} 重试", style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary)
-                Text("${record.metrics.toolCalls} 工具 · ${record.metrics.failedTools} 失败 · ${record.metrics.completedCompactions} 压缩", style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary)
+                Text("${usage.sumOf { it.requestAttempts }} 请求 · ${usage.sumOf { it.retries }} 重试", style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary)
+                Text("${usage.sumOf { it.toolCalls }} 工具 · ${record.metrics.approvalRequests} 审批", style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary)
             }
         }
     }
@@ -286,8 +359,8 @@ internal fun AgentRunMetricsCard(
 @Composable
 private fun RunMetricCell(label: String, value: String, modifier: Modifier = Modifier) {
     Column(
-        modifier.background(MiuixTheme.colorScheme.surfaceContainerHigh.copy(alpha = .62f), RoundedCornerShape(9.dp)).padding(8.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
+        modifier.background(MiuixTheme.colorScheme.surfaceContainerHigh.copy(alpha = .48f), RoundedCornerShape(12.dp)).padding(horizontal = 10.dp, vertical = 9.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Text(value, style = MiuixTheme.textStyles.footnote1, fontWeight = FontWeight.SemiBold, maxLines = 1)
         Text(label, style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary, maxLines = 1)
@@ -323,7 +396,7 @@ internal fun AgentActivityCalendar(days: List<AgentActivityDay>, selected: Local
         while (size % 7 != 0) add(null)
     }
     Card(
-        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
             .etaGlassSurface(accent = colors.primary, cornerRadius = 18.dp),
         colors = CardDefaults.defaultColors(colors.surfaceContainer, colors.onSurface),
     ) {
@@ -338,7 +411,7 @@ internal fun AgentActivityCalendar(days: List<AgentActivityDay>, selected: Local
                     Text("连续 ${AgentMetricsActivity.streak(days)} 天", style = MiuixTheme.textStyles.footnote2, color = colors.onSurfaceVariantSummary)
                 }
             }
-            TabRow(tabs = listOf("运行", "Token"), selectedTabIndex = mode, onTabSelected = { mode = it })
+            NexaSegmentedTabs(tabs = listOf("运行", "Token"), selectedTabIndex = mode, onTabSelected = { mode = it })
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 weekdayLabels.forEach { label ->
                     Text(
@@ -403,3 +476,12 @@ internal fun AgentActivityCalendar(days: List<AgentActivityDay>, selected: Local
         }
     }
 }
+
+
+
+
+
+
+
+
+

@@ -38,6 +38,7 @@ class SkillUpdateStoreTest {
             path = "skills/sheet-tools",
             tags = listOf("excel", "sheets"),
             dependencies = listOf("python"),
+            dependenciesDeclared = true,
             permissions = listOf("files.read"),
         )
         store.write(SkillUpdateState(checkedAt = 123L, updates = listOf(item), failedSourceCount = 1))
@@ -46,6 +47,27 @@ class SkillUpdateStoreTest {
         assertEquals(123L, restored.checkedAt)
         assertEquals(1, restored.failedSourceCount)
         assertEquals(item, restored.updates.single())
+    }
+
+    @Test
+    fun roundTripsExplicitEmptyDependencyDeclaration() {
+        val item = SkillMarketItem(
+            sourceId = "github-team",
+            sourceName = "Team Skills",
+            sourceType = SkillSourceType.GITHUB_REPOSITORY,
+            trust = SkillSourceTrust.CURATED,
+            skillId = "sheet-tools",
+            displayName = "Sheet Tools",
+            description = "Spreadsheet automation",
+            version = "2.1.0",
+            repository = "eta-labs/skills",
+            ref = "a".repeat(40),
+            path = "skills/sheet-tools",
+            dependenciesDeclared = true,
+        )
+        store.write(SkillUpdateState(checkedAt = 124L, updates = listOf(item)))
+
+        assertEquals(item, store.read().updates.single())
     }
 
     @Test

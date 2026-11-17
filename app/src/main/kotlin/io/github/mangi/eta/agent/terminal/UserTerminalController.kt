@@ -38,6 +38,7 @@ internal class UserTerminalController(
             val sessionId: String,
             val environment: TerminalEnvironment,
             val cwd: String,
+            val linuxRootfsPath: String? = null,
         ) : OpenResult
 
         data class Failed(val code: String, val message: String) : OpenResult
@@ -56,6 +57,7 @@ internal class UserTerminalController(
         val environment: TerminalEnvironment,
         val cwd: String,
         val alive: Boolean,
+        val linuxRootfsPath: String? = null,
     )
 
     private val sessionLock = Any()
@@ -69,6 +71,7 @@ internal class UserTerminalController(
                 environment = session.environment,
                 cwd = session.cwd,
                 alive = !session.closed && session.process.isAlive,
+                linuxRootfsPath = session.linuxRootfsPath,
             )
         }
     }
@@ -82,8 +85,9 @@ internal class UserTerminalController(
         environment: TerminalEnvironment,
         cwd: String? = null,
         identity: String? = null,
+        linuxRootfsPathOverride: String? = null,
     ): OpenResult {
-        val environmentRootfsPath = rootfsPath(environment)
+        val environmentRootfsPath = linuxRootfsPathOverride ?: rootfsPath(environment)
         val selectedIdentity = identity ?: if (environment.isLinux) {
             TerminalRuntime.defaultIdentity(environment, environmentRootfsPath)
         } else if (rootAvailable()) "root" else "user"
@@ -120,6 +124,7 @@ internal class UserTerminalController(
             val newSession = Session(
                 identity = selectedIdentity,
                 environment = environment,
+                linuxRootfsPath = environmentRootfsPath,
                 cwd = safeCwd,
                 process = process,
                 stdout = ByteArrayOutputCollector(),
@@ -162,7 +167,7 @@ internal class UserTerminalController(
             newSession.stdout.clear()
             newSession.stderr.clear()
             logger.info("User terminal action=open outcome=succeeded environment=${environment.wireName}")
-            return OpenResult.Ready(sessionId, environment, newSession.cwd)
+            return OpenResult.Ready(sessionId, environment, newSession.cwd, environmentRootfsPath)
         }
     }
 
@@ -402,6 +407,7 @@ internal class UserTerminalController(
     private class Session(
         val identity: String,
         val environment: TerminalEnvironment,
+        val linuxRootfsPath: String?,
         var cwd: String,
         val process: Process,
         val stdout: ByteArrayOutputCollector,

@@ -94,7 +94,7 @@ internal class GeminiInteractionsStream(
             "model_output", "thought" -> {
                 val field = if (type == "thought") "summary" else "content"
                 val items = step.optJSONArray(field) ?: JSONArray().also { step.put(field, it) }
-                validateTextContents(items)
+                validateTextContents(items, allowMedia = type == "model_output")
                 onEvent(ProviderEvent.BlockStart(state.kind!!, index))
                 val initial = plainText(items)
                 if (initial.isNotEmpty()) onEvent(ProviderEvent.BlockDelta(state.kind!!, index, initial))
@@ -138,6 +138,21 @@ internal class GeminiInteractionsStream(
                 for (item in 0 until incoming.length()) {
                     annotations.put(incoming.optJSONObject(item) ?: malformed())
                 }
+            }
+            "image", "audio", "video" -> {
+                requireType(state, "model_output")
+                val kind = delta.getString("type")
+                val data = string(delta, "data", allowEmpty = true)
+                val items = state.step.getJSONArray("content")
+                val last = items.optJSONObject(items.length() - 1)
+                val mime = delta.optString("mime_type").ifBlank { last?.optString("mime_type").orEmpty() }
+                if (!mime.startsWith("$kind/")) malformed("GEMINI_UNSUPPORTED_OUTPUT")
+                val part = last?.takeIf { it.optString("type") == kind } ?: JSONObject(delta.toString())
+                    .put("data", "").also(items::put)
+                val previous = part.optString("data")
+                if (previous.length.toLong() + data.length > 12L * 1024 * 1024) malformed("GEMINI_STREAM_LIMIT")
+                part.put("data", previous + data)
+                delta.optString("mime_type").takeIf(String::isNotBlank)?.let { part.put("mime_type", it) }
             }
             "thought_summary" -> {
                 requireType(state, "thought")
@@ -253,6 +268,9 @@ internal class GeminiInteractionsStream(
         }
         val result = JSONObject().put("role", "assistant").put("content", texts.joinToString("\n"))
             .put("finish_reason", reason)
+        val media = JSONArray()
+        steps.values.filter { it.type == "model_output" }.forEach { ProviderMediaOutput.collect(it.step.getJSONArray("content"), media) }
+        ProviderMediaOutput.attach(result, media)
         if (thoughts.any(String::isNotEmpty)) result.put("reasoning_content", thoughts.joinToString("\n"))
         if (calls.isNotEmpty()) {
             result.put("tool_calls", JSONArray().also { target ->
@@ -325,25 +343,34 @@ internal class GeminiInteractionsStream(
         if (value.has("signature")) string(value, "signature", allowEmpty = true)
     }
 
-    private fun validateTextContents(items: JSONArray) {
+    private fun validateTextContents(items: JSONArray, allowMedia: Boolean = false) {
         for (index in 0 until items.length()) {
             val item = items.optJSONObject(index) ?: malformed()
-            if (string(item, "type") != "text") malformed("GEMINI_UNSUPPORTED_OUTPUT")
-            string(item, "text", allowEmpty = true)
+            when (string(item, "type")) {
+                "text" -> string(item, "text", allowEmpty = true)
+                "image", "audio", "video" -> {
+                    if (!allowMedia) malformed("GEMINI_UNSUPPORTED_OUTPUT")
+                    if (item.has("data")) string(item, "data", allowEmpty = true)
+                }
+                else -> malformed("GEMINI_UNSUPPORTED_OUTPUT")
+            }
         }
     }
 
     private fun lastText(step: JSONObject, key: String): JSONObject {
         val items = step.getJSONArray(key)
-        return items.optJSONObject(items.length() - 1) ?: JSONObject().put("type", "text").put("text", "").also(items::put)
+        return items.optJSONObject(items.length() - 1)?.takeIf { it.optString("type") == "text" }
+            ?: JSONObject().put("type", "text").put("text", "").also(items::put)
     }
 
     private fun formattedText(items: JSONArray): String = (0 until items.length()).joinToString("") {
         val item = items.getJSONObject(it)
-        GeminiCitationFormatter.apply(item.getString("text"), item.optJSONArray("annotations") ?: JSONArray())
+        if (item.optString("type") == "text") GeminiCitationFormatter.apply(item.getString("text"), item.optJSONArray("annotations") ?: JSONArray()) else ""
     }
 
-    private fun plainText(items: JSONArray): String = (0 until items.length()).joinToString("") { items.getJSONObject(it).getString("text") }
+    private fun plainText(items: JSONArray): String = (0 until items.length()).joinToString("") {
+        items.getJSONObject(it).takeIf { item -> item.optString("type") == "text" }?.getString("text").orEmpty()
+    }
 
     private fun index(event: JSONObject): Int {
         val value = event.opt("index") as? Number ?: malformed()

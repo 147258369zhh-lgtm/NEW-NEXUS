@@ -20,6 +20,14 @@ import org.robolectric.annotation.GraphicsMode
 @Config(sdk = [36], application = Application::class, qualifiers = "zh-rCN-w411dp-h896dp-xhdpi")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class AutomationPresentationTest {
+    @Test fun newAutomationLogTypesHaveReadableChineseLabels() {
+        assertEquals("等待已排期", automationEventFallbackLabel("STEP_WAIT_SCHEDULED"))
+        assertEquals("循环结束", automationEventFallbackLabel("LOOP_FINISHED"))
+        assertEquals("未确认步骤已阻止重放", automationEventFallbackLabel("WORKFLOW_STEP_UNCONFIRMED"))
+        assertEquals("运行超时", automationEventFallbackLabel("RUN_TIMEOUT"))
+        assertEquals("NEW_EVENT", automationEventFallbackLabel("NEW_EVENT"))
+    }
+
     @Test fun centerAndWorkflowEditorUseExistingTheme() = runBlocking {
         val context = RuntimeEnvironment.getApplication()
         AgentTaskDatabase.closeForTests(); context.deleteDatabase("eta_task.db")

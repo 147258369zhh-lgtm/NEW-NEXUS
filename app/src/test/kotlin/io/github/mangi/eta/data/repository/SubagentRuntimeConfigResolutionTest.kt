@@ -2,6 +2,10 @@ package io.github.mangi.eta.data.repository
 
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.data.model.Model
+import io.github.mangi.eta.data.model.ModelCandidateBinding
+import io.github.mangi.eta.data.model.ModelCandidatePurpose
+import io.github.mangi.eta.data.model.ModelCandidateSettings
+import io.github.mangi.eta.data.model.ModelFallbackSettings
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
 import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import io.github.mangi.eta.data.model.ReasoningEffort
@@ -15,6 +19,19 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SubagentRuntimeConfigResolutionTest {
+    @Test
+    fun specialistBudgetsUseUserOverridesAndDoNotAlterCollidingCustomTemplates() {
+        val preset = RuntimeConfigRepository.resolveSubagentRuntimeConfig(primary(), SubagentSettings(), emptyList(), "explore")
+        assertEquals(32_000, preset.config.contextWindow)
+        assertEquals(16, preset.maxToolCalls)
+        val explicit = RuntimeConfigRepository.resolveSubagentRuntimeConfig(primary(), SubagentSettings(profiles = mapOf(
+            "explore" to SubagentProfileBinding(contextWindow = 24_000, maxToolCalls = 9))), emptyList(), "explore")
+        assertEquals(24_000, explicit.config.contextWindow)
+        assertEquals(9, explicit.maxToolCalls)
+        val custom = RuntimeConfigRepository.resolveSubagentRuntimeConfig(primary(), SubagentSettings(), emptyList(), "research", useBuiltinDefaults = false)
+        assertNull(custom.maxToolCalls)
+    }
+
     @Test
     fun explicitModelOverridesProfileGlobalAndPrimary() {
         val providers = listOf(
@@ -136,7 +153,7 @@ class SubagentRuntimeConfigResolutionTest {
     fun profileToolAndBudgetBindingsAreReturnedAndContextIsCappedByModel() {
         val provider = provider("profile-provider", "profile-model").let { setting ->
             setting.copy(
-                models = setting.models.map { it.copy(contextWindow = 128_000) },
+                models = setting.models.map { it.copy(contextWindowOverride = 128_000) },
             )
         }
         val resolved = RuntimeConfigRepository.resolveSubagentRuntimeConfig(
@@ -167,7 +184,7 @@ class SubagentRuntimeConfigResolutionTest {
     fun profileContextCannotRaiseProviderWindow() {
         val provider = provider("profile-provider", "profile-model").let { setting ->
             setting.copy(
-                models = setting.models.map { it.copy(contextWindow = 32_000) },
+                models = setting.models.map { it.copy(contextWindowOverride = 32_000) },
             )
         }
         val resolved = RuntimeConfigRepository.resolveSubagentRuntimeConfig(
@@ -186,6 +203,117 @@ class SubagentRuntimeConfigResolutionTest {
         )
 
         assertEquals(32_000, resolved.config.contextWindow)
+    }
+
+    @Test
+    fun candidateRoutingUsesOnlySubagentPurposeAndFailsClosed() {
+        val primaryProvider = provider("primary-provider", "primary-model")
+        val candidateProvider = provider("candidate-provider", "candidate-model", supportsTools = true)
+        val settings = SubagentSettings(candidateRoutingEnabled = true)
+        val candidate = ModelCandidateBinding(
+            providerId = "candidate-provider",
+            modelId = "candidate-model",
+            purpose = ModelCandidatePurpose.SUBAGENT,
+        )
+        val routed = RuntimeConfigRepository.resolveSubagentRuntimeConfig(
+            primaryConfig = primary(),
+            settings = settings,
+            providers = listOf(primaryProvider, candidateProvider),
+            profileName = "explore",
+            allowCandidateRouting = true,
+            candidateSettings = ModelCandidateSettings(enabled = true, candidates = listOf(candidate)),
+            fallbackSettings = ModelFallbackSettings(),
+        )
+        assertEquals(SubagentConfigSource.CANDIDATE, routed.modelSource)
+        assertEquals("candidate-model", routed.config.model)
+
+        val denied = runCatching {
+            RuntimeConfigRepository.resolveSubagentRuntimeConfig(
+                primaryConfig = primary(),
+                settings = settings,
+                providers = listOf(primaryProvider, candidateProvider),
+                profileName = "explore",
+                allowCandidateRouting = true,
+                candidateSettings = ModelCandidateSettings(
+                    enabled = true,
+                    candidates = listOf(candidate.copy(purpose = ModelCandidatePurpose.CHAT)),
+                ),
+                fallbackSettings = ModelFallbackSettings(),
+            )
+        }.exceptionOrNull()
+        assertTrue(denied is IllegalStateException)
+    }
+
+    @Test
+    fun estimatedInputTokensAreHonouredByCandidateRouting() {
+        val primaryProvider = provider("primary-provider", "primary-model")
+        val candidateProvider = provider(
+            "candidate-provider",
+            "candidate-model",
+            supportsTools = true,
+            contextWindow = 8_000,
+        )
+        val candidate = ModelCandidateBinding(
+            providerId = "candidate-provider",
+            modelId = "candidate-model",
+            purpose = ModelCandidatePurpose.SUBAGENT,
+        )
+        fun resolve(estimatedInputTokens: Int) = RuntimeConfigRepository.resolveSubagentRuntimeConfig(
+            primaryConfig = primary(),
+            settings = SubagentSettings(candidateRoutingEnabled = true),
+            providers = listOf(primaryProvider, candidateProvider),
+            profileName = "explore",
+            allowCandidateRouting = true,
+            candidateSettings = ModelCandidateSettings(enabled = true, candidates = listOf(candidate)),
+            estimatedInputTokens = estimatedInputTokens,
+        )
+
+        assertEquals(SubagentConfigSource.CANDIDATE, resolve(5_000).modelSource)
+
+        val denied = runCatching { resolve(6_000) }.exceptionOrNull()
+        assertTrue(denied is IllegalStateException)
+        assertTrue(denied?.message.orEmpty().contains("输入超出上下文"))
+    }
+
+    @Test
+    fun meetingCandidateRoutingUsesMeetingPurposeAndFailsClosed() {
+        val primaryProvider = provider("primary-provider", "primary-model")
+        val candidateProvider = provider("meeting-provider", "meeting-model", supportsTools = true)
+        val candidate = ModelCandidateBinding(
+            providerId = "meeting-provider",
+            modelId = "meeting-model",
+            purpose = ModelCandidatePurpose.MEETING,
+        )
+        val routed = RuntimeConfigRepository.resolveSubagentRuntimeConfig(
+            primaryConfig = primary(),
+            settings = SubagentSettings(),
+            providers = listOf(primaryProvider, candidateProvider),
+            profileName = "general",
+            allowCandidateRouting = true,
+            candidatePurpose = ModelCandidatePurpose.MEETING,
+            requiresTools = true,
+            candidateSettings = ModelCandidateSettings(enabled = true, candidates = listOf(candidate)),
+        )
+        assertEquals(SubagentConfigSource.CANDIDATE, routed.modelSource)
+        assertEquals("meeting-model", routed.config.model)
+
+        val denied = runCatching {
+            RuntimeConfigRepository.resolveSubagentRuntimeConfig(
+                primaryConfig = primary(),
+                settings = SubagentSettings(),
+                providers = listOf(primaryProvider, candidateProvider),
+                profileName = "general",
+                allowCandidateRouting = true,
+                candidatePurpose = ModelCandidatePurpose.MEETING,
+                requiresTools = true,
+                candidateSettings = ModelCandidateSettings(
+                    enabled = true,
+                    candidates = listOf(candidate.copy(purpose = ModelCandidatePurpose.SUBAGENT)),
+                ),
+            )
+        }.exceptionOrNull()
+        assertTrue(denied is IllegalStateException)
+        assertTrue(denied?.message.orEmpty().contains("会议参与者"))
     }
 
     @Test
@@ -210,6 +338,8 @@ class SubagentRuntimeConfigResolutionTest {
         id: String,
         remoteModelId: String,
         reasoningCapabilities: ModelReasoningCapabilities? = null,
+        supportsTools: Boolean = false,
+        contextWindow: Int? = null,
     ) = OpenAiCompatibleProviderSetting(
         id = id,
         name = id,
@@ -220,6 +350,8 @@ class SubagentRuntimeConfigResolutionTest {
                 id = remoteModelId,
                 modelId = remoteModelId,
                 displayName = remoteModelId,
+                contextWindowOverride = contextWindow,
+                toolCall = supportsTools,
                 reasoning = reasoningCapabilities != null,
                 reasoningOverride = reasoningCapabilities != null,
                 reasoningCapabilitiesOverride = reasoningCapabilities,
@@ -241,5 +373,6 @@ class SubagentRuntimeConfigResolutionTest {
         ),
         reasoningEffort = ReasoningEffort.MEDIUM,
         thinkingEnabled = true,
+        supportsTools = false,
     )
 }

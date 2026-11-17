@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="about_reward_title">贊賞支持</string>
+    <string name="about_reward_wechat">微信贊賞</string>
+    <string name="about_reward_alipay">支付寶贊賞</string>
+    <string name="about_reward_save">儲存目前贊賞碼</string>
+    <string name="about_reward_flip">翻轉卡片</string>
+    <string name="about_reward_thanks">感謝支持 NEXA 持續開發</string>
+    <string name="about_reward_gesture">左右拖動翻轉 · 長按儲存目前贊賞碼</string>
+    <string name="about_reward_saved">原圖已儲存到相簿 Pictures/NEXA</string>
+    <string name="about_reward_save_failed">儲存失敗，請檢查剩餘空間後重試</string>
+    <string name="about_reward_saving">儲存中…</string>
+</resources>

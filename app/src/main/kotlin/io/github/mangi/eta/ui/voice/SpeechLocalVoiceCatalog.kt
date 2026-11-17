@@ -5,6 +5,8 @@ import io.github.mangi.eta.R
 import io.github.mangi.eta.data.model.SpeechSettings
 import io.github.mangi.eta.data.model.TtsProvider
 import io.github.mangi.eta.data.repository.LocalModelRecord
+import io.github.mangi.eta.data.repository.LocalModelPreset
+import io.github.mangi.eta.data.repository.LocalModelRepository
 
 internal enum class SpeechLocalVoiceGender { FEMALE, MALE }
 
@@ -82,7 +84,8 @@ internal object SpeechLocalVoiceCatalog {
     )
 
     fun family(record: LocalModelRecord?): SpeechLocalModelFamily =
-        if (record?.id?.contains("kokoro", ignoreCase = true) == true) {
+        if (record?.format == io.github.mangi.eta.data.repository.LocalModelFormat.LITERT_LM &&
+            LocalModelRepository.presetForRecord(record)?.id in setOf(LocalModelPreset.Kokoro82M.id, LocalModelPreset.KokoroCpu.id)) {
             SpeechLocalModelFamily.KOKORO
         } else {
             SpeechLocalModelFamily.MODEL_DEFAULT

@@ -74,6 +74,7 @@ internal object AgentMessageQueueReducer {
             input = mergedInput,
             pendingImages = mergedImages,
             pendingFileReferences = mergedFiles,
+            selectedSkillIds = target.selectedSkillIds,
             queuedMessages = rest,
             inputSyncVersion = state.inputSyncVersion + 1,
             focusInputOnSync = true,

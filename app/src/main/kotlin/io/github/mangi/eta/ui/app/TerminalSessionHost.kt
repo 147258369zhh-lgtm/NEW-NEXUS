@@ -36,6 +36,8 @@ internal class TerminalSessionLease private constructor(
         return !stopped.get()
     }
 
+    fun isStopped(): Boolean = stopped.get()
+
     fun release() { AgentExecutionService.release(id) }
 
     companion object {

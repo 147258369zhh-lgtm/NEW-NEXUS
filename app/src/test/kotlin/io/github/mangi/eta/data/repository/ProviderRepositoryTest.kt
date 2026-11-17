@@ -14,12 +14,15 @@ import io.github.mangi.eta.data.model.ModelSource
 import io.github.mangi.eta.data.model.ProviderSetting
 import io.github.mangi.eta.data.model.ProviderAuthModes
 import io.github.mangi.eta.data.model.ReasoningEffort
+import io.github.mangi.eta.data.model.selectedOrFirstModel
+import io.github.mangi.eta.data.model.enabledModel
 import io.github.mangi.eta.data.provider.BuiltinProviders
 import io.github.mangi.eta.data.provider.OfficialModelCatalog
 import io.github.mangi.eta.ui.model.AgentModelPickerProjector
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.first
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
 import org.junit.Before
@@ -32,6 +35,15 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
 class ProviderRepositoryTest {
+    @Test fun imageOnlyModelsAreNeverSelectedAsChatFallback() {
+        val image = Model("image", "gpt-image-1", "Image", outputModalities = listOf("image"))
+        val text = Model("text", "chat", "Chat", outputModalities = listOf("text"), sortOrder = 1)
+        val provider = OpenAiCompatibleProviderSetting(id = "test", name = "Test", baseUrl = "https://example.invalid/v1",
+            apiKey = "fixture", models = listOf(image, text))
+        assertEquals(text, provider.selectedOrFirstModel(image.id))
+        assertNull(listOf(provider).enabledModel(image.id))
+        assertEquals(text, listOf(provider).enabledModel(text.id)?.model)
+    }
     private lateinit var context: Context
 
     @Before
@@ -118,6 +130,11 @@ class ProviderRepositoryTest {
 
         SettingsDataStore.setSelection(unconfigured.id, unconfigured.models.single().id)
         assertEquals(unconfigured.id, ProviderRepository.repairSelection().selectedProviderId)
+        assertEquals(ready.id, RuntimeConfigRepository.runtimeConfigFor(unconfigured.models.single().id)?.providerId)
+        assertNull(RuntimeConfigRepository.runtimeConfigForSelection(unconfigured.models.single().id))
+        assertEquals(ready.id, RuntimeConfigRepository.runtimeConfigForSelection(ready.models.single().id)?.providerId)
+        assertEquals(unconfigured.id, SettingsDataStore.settings().selectedProviderId)
+        assertEquals(unconfigured.models.single().id, SettingsDataStore.settings().selectedModelId)
     }
 
     @Test
@@ -179,6 +196,10 @@ class ProviderRepositoryTest {
     fun onlyUserConfiguredWindowReachesRuntimeAndChat() = runBlocking {
         ProviderRepository.ensureBuiltInsMerged()
         val id = BuiltinProviders.DEEPSEEK_ID
+        ProviderRepository.updateProvider(
+            (ProviderRepository.providerById(id) as OpenAiCompatibleProviderSetting)
+                .copy(apiKey = "fixture-deepseek-key"),
+        )
         val model = Model(id = "manual-flash", modelId = "deepseek-flash", displayName = "我的模型")
         val cases = listOf(
             model to null,
@@ -196,10 +217,27 @@ class ProviderRepositoryTest {
     }
 
     @Test
+    fun providerRepairKeepsAnExistingSelectionAcrossAppearanceOnlyUpdates() = runBlocking {
+        ProviderRepository.ensureBuiltInsMerged()
+        val provider = ProviderRepository.allProviders().first { it.isEnabled && it.models.isNotEmpty() }
+        val model = provider.models.first { it.isEnabled }
+        SettingsDataStore.setSelection(provider.id, model.id)
+        AppearanceSettingsRepository.update { it.copy(themeMode = io.github.mangi.eta.data.model.AppearanceThemeMode.DARK) }
+        assertEquals(provider.id, SettingsDataStore.settings().selectedProviderId)
+        assertEquals(model.id, SettingsDataStore.settings().selectedModelId)
+        assertEquals(provider.id, ProviderRepository.repairSelection().selectedProviderId)
+        assertEquals(model.id, ProviderRepository.repairSelection().selectedModelId)
+    }
+
+    @Test
     fun localAutoCompactionSettingReachesCurrentRuntimeConfig() = runBlocking {
         Prefs.initLocal(context)
         val preferences = requireNotNull(Prefs.localAgentPreferences())
         ProviderRepository.ensureBuiltInsMerged()
+        val provider = (ProviderRepository.providerById(BuiltinProviders.OPENAI_ID) as OpenAiCompatibleProviderSetting)
+            .copy(apiKey = "fixture-openai-key")
+        ProviderRepository.updateProvider(provider)
+        RuntimeConfigRepository.setSelectedProviderId(provider.id)
         try {
             for (enabled in listOf(false, true)) {
                 assertTrue(preferences.edit().putBoolean(Prefs.Keys.AGENT_AUTO_COMPACTION_ENABLED, enabled).commit())
@@ -305,8 +343,12 @@ class ProviderRepositoryTest {
     @Test
     fun switchingProvidersRestoresEachProvidersSelectedModel() = runBlocking {
         ProviderRepository.ensureBuiltInsMerged()
-        val openAi = ProviderRepository.providerById(BuiltinProviders.OPENAI_ID)!!
-        val anthropic = ProviderRepository.providerById(BuiltinProviders.ANTHROPIC_ID)!!
+        val openAi = (ProviderRepository.providerById(BuiltinProviders.OPENAI_ID) as OpenAiCompatibleProviderSetting)
+            .copy(apiKey = "fixture-openai-key")
+        val anthropic = (ProviderRepository.providerById(BuiltinProviders.ANTHROPIC_ID) as AnthropicProviderSetting)
+            .copy(apiKey = "fixture-anthropic-key")
+        ProviderRepository.updateProvider(openAi)
+        ProviderRepository.updateProvider(anthropic)
         val openAiModel = openAi.models[1]
         val anthropicModel = anthropic.models[1]
         SettingsDataStore.clearSelectedModelIdForProvider(openAi.id)
@@ -342,7 +384,9 @@ class ProviderRepositoryTest {
     @Test
     fun windowUpgradeFillsExistingPresetsAndReachesPickerAndRuntimeWithoutAddingModels() = runBlocking {
         ProviderRepository.ensureBuiltInsMerged()
-        val provider = ProviderRepository.providerById(BuiltinProviders.OPENAI_ID)!!
+        val provider = (ProviderRepository.providerById(BuiltinProviders.OPENAI_ID) as OpenAiCompatibleProviderSetting)
+            .copy(apiKey = "fixture-openai-key")
+        ProviderRepository.updateProvider(provider)
         val sol = provider.models.first { it.modelId == "gpt-6.1-sol" }.copy(contextWindow = null, contextWindowOverride = null)
         val custom = provider.models.first { it.modelId == "gpt-6-luna" }.copy(contextWindowOverride = 64_000)
         ProviderRepository.replaceModels(provider.id, listOf(sol, custom))
@@ -359,6 +403,56 @@ class ProviderRepositoryTest {
         ProviderRepository.replaceModels(provider.id, restored.models.map { it.copy(contextWindowOverride = null) })
         ProviderRepository.ensureBuiltInsMerged()
         assertTrue(ProviderRepository.providerById(provider.id)!!.models.all { it.contextWindowOverride == null })
+    }
+
+    @Test
+    fun catalogMigrationFillsOldOfficialCapabilitiesButLeavesManualModelsOpen() = runBlocking {
+        ProviderRepository.ensureBuiltInsMerged()
+        val provider = ProviderRepository.providerById(BuiltinProviders.DEEPSEEK_ID)!!
+        val catalog = provider.models.first().copy(
+            contextWindow = null,
+            contextWindowOverride = null,
+            inputModalities = listOf(Model.TEXT_MODALITY),
+            attachment = null,
+            toolCall = null,
+            reasoning = null,
+            reasoningCapabilities = null,
+            structuredOutput = null,
+        )
+        val explicitlyDisabled = provider.models[1].copy(
+            contextWindow = null,
+            contextWindowOverride = null,
+            inputModalities = listOf(Model.TEXT_MODALITY),
+            attachment = false,
+            toolCall = false,
+            reasoning = false,
+            reasoningCapabilities = null,
+        )
+        val manual = Model(
+            id = "manual-without-window",
+            modelId = "manual-without-window",
+            displayName = "Manual without window",
+            source = ModelSource.MANUAL,
+        )
+        ProviderRepository.replaceModels(provider.id, listOf(catalog, explicitlyDisabled, manual))
+        SettingsDataStore.setOfficialModelCatalogRevision(4)
+
+        ProviderRepository.ensureBuiltInsMerged()
+
+        val restored = ProviderRepository.providerById(provider.id)!!.models.associateBy { it.id }
+        val official = OfficialModelCatalog.modelsForProvider(provider)
+            .first { it.modelId == catalog.modelId }
+        val migrated = restored.getValue(catalog.id)
+        assertEquals(official.contextWindow, migrated.contextWindowOverride)
+        assertEquals(official.inputModalities, migrated.inputModalities)
+        assertEquals(official.toolCall, migrated.toolCall)
+        assertEquals(official.reasoning, migrated.reasoning)
+        assertEquals(official.structuredOutput, migrated.structuredOutput)
+        assertFalse(restored.getValue(explicitlyDisabled.id).toolCall!!)
+        assertFalse(restored.getValue(explicitlyDisabled.id).attachment!!)
+        assertFalse(restored.getValue(explicitlyDisabled.id).reasoning!!)
+        assertNull(restored.getValue(manual.id).contextWindowOverride)
+        assertNull(restored.getValue(manual.id).toolCall)
     }
 
     @Test

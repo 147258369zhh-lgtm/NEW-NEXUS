@@ -40,6 +40,8 @@
     <string name="metrics_detail_title">Run details</string>
     <string name="metrics_record_missing">This record was cleared or is no longer retained.</string>
     <string name="metrics_detail_duration">Recorded duration: %1$s s</string>
+    <string name="metrics_time_unknown">Time unknown</string>
+    <string name="metrics_duration_unknown">Duration unknown</string>
     <string name="metrics_detail_rounds">Model rounds: %1$d</string>
     <string name="metrics_detail_coverage">Rounds with usage: input %1$d / %3$d · output %2$d / %3$d</string>
     <string name="metrics_detail_images">Attached image bytes: %1$s</string>

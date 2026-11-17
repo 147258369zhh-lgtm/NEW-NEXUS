@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import java.util.UUID
+import org.json.JSONArray
 
 internal data class LearningProposalInput(
     val kind: LearningKind,
@@ -13,6 +14,7 @@ internal data class LearningProposalInput(
     val content: String,
     val evidence: String = "",
     val sourceRef: String = "manual",
+    val scope: String = "global",
 )
 
 internal data class LearningEvidenceView(
@@ -36,6 +38,7 @@ internal data class LearningCandidateView(
     val evidence: List<LearningEvidenceView>,
     val conflicts: List<LearningConflictView> = emptyList(),
     val reviewSummary: String = "",
+    val scope: String = "global",
 )
 
 internal data class LearningConflictView(val id: String, val title: String, val content: String, val version: Int)
@@ -46,6 +49,7 @@ internal data class LearningRuleVersionView(
     val content: String,
     val reason: String,
     val createdAt: Long,
+    val sourceRef: String = "",
 )
 
 internal data class LearningRuleView(
@@ -57,6 +61,7 @@ internal data class LearningRuleView(
     val active: Boolean,
     val pinned: Boolean,
     val versions: List<LearningRuleVersionView>,
+    val scope: String = "global",
 )
 
 internal data class LearningSnapshot(
@@ -80,12 +85,14 @@ internal class LearningRepository(
     private val database: LearningDatabase,
     private val clock: () -> Long = System::currentTimeMillis,
     private val ids: () -> String = { UUID.randomUUID().toString() },
+    private val notice: (String) -> Unit = {},
 ) {
     private val dao = database.learningDao()
 
     suspend fun propose(input: LearningProposalInput): LearningProposalResult = database.withTransaction {
         val now = clock()
-        val activeRules = dao.activeRules()
+        require(LearningScope.valid(input.scope)) { "经验作用域无效" }
+        val activeRules = dao.activeRules().filter { it.scope == input.scope }
         val policy = when (
             val result = LearningPolicy.evaluate(
                 kind = input.kind,
@@ -110,8 +117,8 @@ internal class LearningRepository(
             excerpt = policy.evidence,
             observedAt = now,
         )
-        (dao.candidateByHash(hash) ?: dao.candidates(1000).firstOrNull {
-            it.kind == input.kind.wireValue && io.github.mangi.eta.agent.memory.MemoryAutomationPolicy.equivalent(it.content, policy.content)
+        (dao.candidateByHash(hash, input.scope) ?: dao.candidates(1000).firstOrNull {
+            it.scope == input.scope && it.kind == input.kind.wireValue && io.github.mangi.eta.agent.memory.MemoryAutomationPolicy.equivalent(it.content, policy.content)
         })?.let { existing ->
             dao.insertEvidence(evidence.copy(id = "${existing.id}:$evidenceHash", candidateId = existing.id))
             dao.touchCandidate(existing.id, now)
@@ -121,6 +128,7 @@ internal class LearningRepository(
         val candidateId = ids()
         val candidate = LearningCandidateEntity(
             id = candidateId,
+            scope = input.scope,
             kind = input.kind.wireValue,
             title = policy.title,
             content = policy.content,
@@ -243,6 +251,9 @@ internal class LearningRepository(
 
     suspend fun promote(candidateId: String): LearningMutationResult {
         val now = clock()
+        var promotedTitle = ""
+        var promotedVersionValue = 0
+        var promotedSource = ""
         val outcome = database.withTransaction {
             val candidate = dao.candidate(candidateId)
                 ?: return@withTransaction Rejected("学习候选不存在")
@@ -259,12 +270,18 @@ internal class LearningRepository(
                     return@withTransaction Rejected("现有规则已变化，请重新审阅冲突后确认")
                 }
             }
-            val existing = dao.ruleByKey(kind.wireValue, candidate.title) ?: currentConflicts.firstOrNull()
+            val existing = dao.ruleByKey(kind.wireValue, candidate.title, candidate.scope) ?: currentConflicts.firstOrNull()
             val ruleId: String
+            val previousContent: String
             if (existing == null) {
                 ruleId = ids()
+                previousContent = ""
+                promotedVersionValue = 1
+                promotedTitle = candidate.title
+                promotedSource = candidate.sourceRef
                 dao.insertRule(LearningRuleEntity(
                     id = ruleId,
+                    scope = candidate.scope,
                     kind = kind.wireValue,
                     title = candidate.title,
                     content = candidate.content,
@@ -276,10 +293,15 @@ internal class LearningRepository(
                 dao.insertRuleVersion(LearningRuleVersionEntity(
                     id = ids(), ruleId = ruleId, version = 1, content = candidate.content,
                     candidateId = candidateId, reason = "confirmed-promotion", createdAt = now,
+                    sourceRef = candidate.sourceRef,
                 ))
             } else {
                 ruleId = existing.id
+                previousContent = existing.content
                 val version = existing.currentVersion + 1
+                promotedVersionValue = version
+                promotedTitle = candidate.title
+                promotedSource = candidate.sourceRef
                 val updated = dao.transitionRuleVersion(
                     id = existing.id,
                     expectedVersion = existing.currentVersion,
@@ -294,8 +316,10 @@ internal class LearningRepository(
                 dao.insertRuleVersion(LearningRuleVersionEntity(
                     id = ids(), ruleId = ruleId, version = version, content = candidate.content,
                     candidateId = candidateId, reason = "confirmed-promotion", createdAt = now,
+                    sourceRef = candidate.sourceRef,
                 ))
             }
+            val archivedByThisChange = currentConflicts.filter { it.id != ruleId }
             val transitioned = dao.transitionCandidateState(
                 id = candidateId,
                 expectedStatus = LearningStatus.CONFIRMED.wireValue,
@@ -307,42 +331,83 @@ internal class LearningRepository(
             if (transitioned == 0) {
                 return@withTransaction Rejected("候选已被其他操作晋升，请刷新后重试")
             }
-            currentConflicts.filter { it.id != ruleId }.forEach {
+            archivedByThisChange.forEach {
                 dao.updateRule(it.copy(status = LearningRuleStatus.ARCHIVED.wireValue, updatedAt = now))
             }
+            dao.insertRuleChange(LearningRuleChangeEntity(
+                id = ids(),
+                ruleId = ruleId,
+                ruleVersion = promotedVersionValue,
+                changeType = "promote",
+                sourceRef = candidate.sourceRef.take(240),
+                previousContent = previousContent.take(4_000),
+                archivedRules = JSONArray(archivedByThisChange.map { "${it.id}@${it.currentVersion}" }).toString(),
+                createdAt = now,
+            ))
             dao.insertFeedback(LearningFeedbackEntity(
                 id = ids(), candidateId = candidateId, action = "promote", note = ruleId, createdAt = now,
             ))
             Accepted
         }
         if (outcome is Rejected) return rejected(outcome.reason)
+        notice("已启用《$promotedTitle》v$promotedVersionValue · 来源 ${promotedSource.ifBlank { "未知" }} · 可在经验库回滚")
         return success()
     }
 
     suspend fun rollback(ruleId: String, versionId: String): LearningMutationResult {
-        val rule = dao.rule(ruleId) ?: return rejected("学习规则不存在")
-        val target = dao.ruleVersion(versionId)
-            ?.takeIf { it.ruleId == ruleId }
+        val targetVersion = dao.ruleVersion(versionId)?.takeIf { it.ruleId == ruleId }
             ?: return rejected("目标版本不属于该学习规则")
         val now = clock()
-        val nextVersion = rule.currentVersion + 1
+        var rolledBackTitle = ""
+        var restoredCount = 0
         val outcome = database.withTransaction {
+            val rule = dao.rule(ruleId) ?: return@withTransaction Rejected("学习规则不存在")
+            if (targetVersion.version >= rule.currentVersion) {
+                return@withTransaction Rejected("请选择更早的历史版本进行回滚")
+            }
+            rolledBackTitle = rule.title
+            // Only changes newer than the target are undone; every version row stays readable.
+            val undone = dao.ruleChanges(ruleId).filter { it.ruleVersion > targetVersion.version }
+            val archivedIds = undone.flatMap { change ->
+                runCatching { JSONArray(change.archivedRules) }.getOrNull()?.let { values ->
+                    (0 until values.length()).mapNotNull { index -> values.optString(index).takeIf(String::isNotBlank) }
+                }.orEmpty()
+            }.mapNotNull { it.substringBefore('@').takeIf(String::isNotBlank) }.distinct()
+            val nextVersion = rule.currentVersion + 1
             val updated = dao.transitionRuleVersion(
                 id = rule.id,
                 expectedVersion = rule.currentVersion,
                 newVersion = nextVersion,
-                content = target.content,
+                content = targetVersion.content,
                 status = LearningRuleStatus.ACTIVE.wireValue,
                 updatedAt = now,
             )
             if (updated == 0) return@withTransaction Rejected("学习规则已被其他操作更新，请刷新后重试")
             dao.insertRuleVersion(LearningRuleVersionEntity(
-                id = ids(), ruleId = rule.id, version = nextVersion, content = target.content,
-                candidateId = target.candidateId, reason = "rollback-to-v${target.version}", createdAt = now,
+                id = ids(), ruleId = rule.id, version = nextVersion, content = targetVersion.content,
+                candidateId = targetVersion.candidateId, reason = "rollback-to-v${targetVersion.version}",
+                createdAt = now, sourceRef = targetVersion.sourceRef.ifBlank { "rollback:v${targetVersion.version}" },
+            ))
+            val restored = mutableListOf<String>()
+            archivedIds.forEach { archivedId ->
+                val archivedRule = dao.rule(archivedId) ?: return@forEach
+                if (archivedRule.status == LearningRuleStatus.ARCHIVED.wireValue) {
+                    // Restore the user's older rule instead of deleting the learned one outright.
+                    dao.updateRule(archivedRule.copy(status = LearningRuleStatus.ACTIVE.wireValue, updatedAt = now))
+                    restored += archivedId
+                }
+            }
+            restoredCount = restored.size
+            dao.insertRuleChange(LearningRuleChangeEntity(
+                id = ids(), ruleId = rule.id, ruleVersion = nextVersion, changeType = "rollback",
+                sourceRef = "rollback:v${targetVersion.version}", previousContent = rule.content.take(4_000),
+                archivedRules = JSONArray(restored).toString(), createdAt = now,
             ))
             Accepted
         }
         if (outcome is Rejected) return rejected(outcome.reason)
+        notice("已回滚《$rolledBackTitle》到 v${targetVersion.version}" +
+            if (restoredCount > 0) "，恢复 $restoredCount 条被归档经验；原版本全部保留" else "；原版本全部保留")
         return success()
     }
 
@@ -364,10 +429,10 @@ internal class LearningRepository(
             return@withTransaction rejected("只有待人工批准的候选可以修改")
         }
         val kind = LearningKind.fromWire(candidate.kind) ?: return@withTransaction rejected("类型无效")
-        val policy = LearningPolicy.evaluate(kind, candidate.title, content, candidateView(candidate).evidence.firstOrNull()?.excerpt.orEmpty(), dao.activeRules())
+        val policy = LearningPolicy.evaluate(kind, candidate.title, content, candidateView(candidate).evidence.firstOrNull()?.excerpt.orEmpty(), dao.activeRules().filter { it.scope == candidate.scope })
         if (policy !is LearningPolicyResult.Accepted) return@withTransaction rejected("内容无效或用户禁止保存")
         val hash = LearningPolicy.fingerprint(kind, policy.title, policy.content)
-        if (dao.candidateByHash(hash)?.id?.let { it != id } == true) return@withTransaction rejected("已存在相同候选")
+        if (dao.candidateByHash(hash, candidate.scope)?.id?.let { it != id } == true) return@withTransaction rejected("已存在相同候选")
         val edited = candidate.copy(
             content = policy.content,
             contentHash = hash,
@@ -428,7 +493,7 @@ internal class LearningRepository(
 
     private suspend fun conflictsFor(candidate: LearningCandidateEntity): List<LearningRuleEntity> {
         val kind = LearningKind.fromWire(candidate.kind) ?: LearningKind.FACT
-        return dao.activeRules().filter { rule ->
+        return dao.activeRules().filter { it.scope == candidate.scope }.filter { rule ->
             (LearningPolicy.evaluate(kind, candidate.title, candidate.content, "", listOf(rule)) as? LearningPolicyResult.Accepted)?.conflict != null
         }
     }
@@ -436,12 +501,21 @@ internal class LearningRepository(
     private fun conflictSignature(rules: List<LearningRuleEntity>): String = rules.sortedBy { it.id }
         .joinToString(",") { "${it.id}:${it.currentVersion}" }
 
-    suspend fun context(maxChars: Int = 2400): String = dao.activeRules()
-        .sortedByDescending { it.pinned }
-        .joinToString("\n") { "${it.title}: ${it.content}" }.take(maxChars.coerceAtLeast(0))
+    suspend fun activeRules(scopes: Set<String> = setOf("global")): List<LearningRuleEntity> =
+        dao.activeRules().filter { it.scope in scopes && LearningScope.valid(it.scope) }
+
+    suspend fun context(maxChars: Int = 2400, scopes: Set<String> = setOf("global"), query: String = ""): String {
+        val selected = search(query, 50, scopes)
+        var remaining = maxChars.coerceAtLeast(0)
+        return selected.mapNotNull { rule ->
+            val entry = "[${rule.scope}] ${rule.title} v${rule.currentVersion}: ${rule.content}"
+            if (entry.length + 1 > remaining) null else entry.also { remaining -= it.length + 1 }
+        }.joinToString("\n")
+    }
 
     fun observe() = database.invalidationTracker.createFlow(
         "learning_candidates", "learning_rules", "learning_evidence", "learning_rule_versions",
+        "learning_rule_changes",
     ).map { snapshot() }.flowOn(Dispatchers.IO)
 
     suspend fun snapshot(): LearningSnapshot = database.withTransaction {
@@ -459,6 +533,7 @@ internal class LearningRepository(
         val rules = dao.allRules().map { rule ->
             LearningRuleView(
                 id = rule.id,
+                scope = rule.scope,
                 kind = LearningKind.fromWire(rule.kind) ?: LearningKind.FACT,
                 title = rule.title,
                 content = rule.content,
@@ -466,43 +541,27 @@ internal class LearningRepository(
                 active = rule.status == LearningRuleStatus.ACTIVE.wireValue,
                 pinned = rule.pinned,
                 versions = dao.ruleVersions(rule.id).map { version ->
-                    LearningRuleVersionView(version.id, version.version, version.content, version.reason, version.createdAt)
+                    LearningRuleVersionView(version.id, version.version, version.content, version.reason,
+                        version.createdAt, version.sourceRef)
                 },
             )
         }
         LearningSnapshot(candidates, rules)
     }
 
-    suspend fun search(query: String, limit: Int = 12): List<LearningRuleView> {
-        val normalized = query.trim().lowercase()
-        if (normalized.isBlank()) return emptyList()
-        return dao.activeRules().asSequence()
-            .filter { rule ->
-                (rule.title + '\n' + rule.content).lowercase().contains(normalized) ||
-                    normalized.split(Regex("\\s+")).all { token ->
-                        token.length < 2 || (rule.title + '\n' + rule.content).lowercase().contains(token)
-                    }
-            }
+    suspend fun search(query: String, limit: Int = 12, scopes: Set<String> = setOf("global")): List<LearningRuleView> =
+        activeRules(scopes).map { rule -> rule to io.github.mangi.eta.agent.memory.TaskMemorySelector.relevance(query, rule.title + "\n" + rule.content) }
+            .filter { it.second > 0 }
+            .sortedWith(compareByDescending<Pair<LearningRuleEntity, Int>> { it.second }.thenByDescending { it.first.pinned })
             .take(limit.coerceIn(1, 50))
-            .map { rule ->
-                LearningRuleView(
-                    id = rule.id,
-                    kind = LearningKind.fromWire(rule.kind) ?: LearningKind.FACT,
-                    title = rule.title,
-                    content = rule.content,
-                    currentVersion = rule.currentVersion,
-                    active = true,
-                    pinned = rule.pinned,
-                    versions = emptyList(),
-                )
-            }
-            .toList()
-    }
+            .map { (rule, _) -> LearningRuleView(rule.id, LearningKind.fromWire(rule.kind) ?: LearningKind.FACT,
+                rule.title, rule.content, rule.currentVersion, true, rule.pinned, emptyList(), rule.scope) }
 
     suspend fun recordFailure(
         errorCode: String,
         message: String,
         sourceRef: String,
+        scope: String = "global",
     ): LearningProposalResult = propose(LearningProposalInput(
         kind = LearningKind.FAILURE_FIX,
         title = LearningPolicy.sanitizeForStorage("运行时失败：$errorCode", 120),
@@ -512,6 +571,7 @@ internal class LearningRepository(
         ),
         evidence = LearningPolicy.sanitizeForStorage(message, 1_000),
         sourceRef = sourceRef,
+        scope = scope,
     ))
 
     private suspend fun candidateView(
@@ -523,6 +583,7 @@ internal class LearningRepository(
         }
         return LearningCandidateView(
         id = candidate.id,
+        scope = candidate.scope,
         kind = LearningKind.fromWire(candidate.kind) ?: LearningKind.FACT,
         title = candidate.title,
         content = candidate.content,
@@ -554,7 +615,11 @@ internal class LearningRepository(
 
         fun get(context: Context): LearningRepository =
             instance ?: synchronized(this) {
-                instance ?: LearningRepository(LearningDatabase.get(context)).also { instance = it }
+                val appContext = context.applicationContext
+                instance ?: LearningRepository(
+                    LearningDatabase.get(appContext),
+                    notice = { io.github.mangi.eta.agent.memory.MemoryAutomationSettingsStore.status(appContext, it) },
+                ).also { instance = it }
             }
     }
 }
@@ -568,6 +633,10 @@ internal object LearningSettingsStore {
     fun isEnabled(context: Context): Boolean = preferences(context).getBoolean(ENABLED, true)
 
     fun setEnabled(context: Context, enabled: Boolean) {
+        if (LearningSettingLock.state(context).locked) {
+            LearningSettingLock.request(context, "enabled", enabled)
+            return
+        }
         preferences(context).edit().putBoolean(ENABLED, enabled).apply()
     }
 
@@ -575,6 +644,10 @@ internal object LearningSettingsStore {
         isEnabled(context) && preferences(context).getBoolean(AUTO_CAPTURE, true)
 
     fun setAutomaticCaptureEnabled(context: Context, enabled: Boolean) {
+        if (LearningSettingLock.state(context).locked) {
+            LearningSettingLock.request(context, "automaticCaptureEnabled", enabled)
+            return
+        }
         preferences(context).edit().putBoolean(AUTO_CAPTURE, enabled).apply()
     }
 
@@ -583,6 +656,10 @@ internal object LearningSettingsStore {
         isEnabled(context) && preferences(context).getBoolean(AUTO_PROMOTE, false)
 
     fun setAutomaticPromotionEnabled(context: Context, enabled: Boolean) {
+        if (LearningSettingLock.state(context).locked) {
+            LearningSettingLock.request(context, "automaticPromotionEnabled", enabled)
+            return
+        }
         preferences(context).edit().putBoolean(AUTO_PROMOTE, enabled).apply()
     }
 

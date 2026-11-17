@@ -32,7 +32,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -44,12 +43,14 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
@@ -72,9 +73,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.ui.components.NexaShapes
 import kotlinx.coroutines.flow.first
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
 internal fun AssistantComposer(
@@ -156,11 +159,11 @@ private fun AssistantInputBar(
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val canSubmit = input.isNotBlank() && state.phase != EtaVoicePhase.PROCESSING
+    val canSubmit = input.isNotBlank() && !speech.active
     val focusRequester = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
     val windowInfo = LocalWindowInfo.current
-    val inputEnabled = state.phase != EtaVoicePhase.PROCESSING && !speech.active
+    val inputEnabled = !speech.active
     LaunchedEffect(inputFocusRequestKey, inputEnabled) {
         if (inputFocusRequestKey < 0 || !inputEnabled) return@LaunchedEffect
         // 输入栏挂载且浮窗取得焦点后再连接 IME，避免动画切换时请求落在尚不存在的输入框上。
@@ -188,15 +191,25 @@ private fun AssistantInputBar(
     )
     val contentColor = colors.inputPrimary
     val hintColor = colors.inputTertiary
-    val inputShape = RoundedCornerShape(25.dp)
+    val inputShape = NexaShapes.input
+    val inputBrush = Brush.linearGradient(
+        colors = listOf(
+            inputBackground.copy(alpha = (inputBackground.alpha * 0.92f).coerceAtMost(1f)),
+            inputBackground,
+            inputBackground.copy(alpha = (inputBackground.alpha * 0.82f).coerceAtMost(1f)),
+        ),
+    )
     val trailingIcon = when {
-        speech.active || state.phase == EtaVoicePhase.PROCESSING -> R.drawable.ic_assistant_stop
+        speech.active -> R.drawable.ic_assistant_stop
+        canSubmit -> R.drawable.ic_assistant_send
+        state.phase == EtaVoicePhase.PROCESSING -> R.drawable.ic_assistant_stop
         speech.speaking -> R.drawable.ic_assistant_voice
         canSubmit || !recognitionEnabled -> R.drawable.ic_assistant_send
         else -> R.drawable.ic_assistant_voice
     }
     val trailingDescription = when {
         speech.active -> R.string.voice_finish_speech
+        canSubmit -> R.string.voice_send
         state.phase == EtaVoicePhase.PROCESSING -> R.string.action_stop
         speech.speaking -> R.string.voice_interrupt_speak
         canSubmit || !recognitionEnabled -> R.string.voice_send
@@ -204,6 +217,7 @@ private fun AssistantInputBar(
     }
     val trailingAction = when {
         speech.active -> onFinishSpeech
+        canSubmit -> onSubmit
         state.phase == EtaVoicePhase.PROCESSING -> onStop
         speech.speaking -> ({ onMicrophone(false) })
         canSubmit || !recognitionEnabled -> onSubmit
@@ -211,9 +225,9 @@ private fun AssistantInputBar(
     }
     Row(
         modifier = modifier
-            .heightIn(min = 50.dp)
+            .heightIn(min = 54.dp)
             .clip(inputShape)
-            .background(inputBackground)
+            .background(inputBrush)
             .border(
                 if (inputHighlighted) 1.dp else 0.75.dp,
                 inputBorder,
@@ -304,11 +318,18 @@ private fun AssistantInputBar(
                 (recognitionEnabled || canSubmit || state.phase == EtaVoicePhase.PROCESSING),
             holdToTalkAvailable = recognitionEnabled && !speech.active && !canSubmit && state.phase != EtaVoicePhase.PROCESSING,
             halo = speech.speaking && speech.bargeInArmed,
+            prominent = canSubmit,
             onClick = trailingAction,
             onHoldStart = { onMicrophone(true) },
             onHoldEnd = onFinishSpeech,
             onHoldCancel = onCancelSpeech,
         )
+        if (state.phase == EtaVoicePhase.PROCESSING && recognitionEnabled && !speech.active) {
+            AssistantTrailingButton(iconRes = R.drawable.ic_assistant_voice, contentDescription = "语音补充",
+                tint = contentColor, enabled = true, holdToTalkAvailable = true, halo = false,
+                prominent = false,
+                onClick = { onMicrophone(false) }, onHoldStart = { onMicrophone(true) }, onHoldEnd = onFinishSpeech, onHoldCancel = onCancelSpeech)
+        }
     }
 }
 
@@ -324,6 +345,7 @@ private fun AssistantTrailingButton(
     enabled: Boolean,
     holdToTalkAvailable: Boolean,
     halo: Boolean,
+    prominent: Boolean = false,
     onClick: () -> Unit,
     onHoldStart: () -> Unit,
     onHoldEnd: () -> Unit,
@@ -336,6 +358,21 @@ private fun AssistantTrailingButton(
     val currentHoldEnd by rememberUpdatedState(onHoldEnd)
     val currentHoldCancel by rememberUpdatedState(onHoldCancel)
     var pressed by remember { mutableStateOf(false) }
+    val interactionShape = NexaShapes.button
+    val primary = MiuixTheme.colorScheme.primary
+    val buttonBrush = if (prominent) {
+        Brush.linearGradient(
+            listOf(
+                primary.copy(alpha = 0.96f),
+                Color(0xFF5AA7FF),
+                primary.copy(alpha = 0.90f),
+            ),
+        )
+    } else {
+        Brush.linearGradient(listOf(Color.White.copy(alpha = 0.07f), Color.White.copy(alpha = 0.015f)))
+    }
+    val buttonStroke = if (prominent) Color.White.copy(alpha = 0.34f) else tint.copy(alpha = 0.12f)
+    val iconTint = if (!enabled) tint.copy(alpha = 0.34f) else if (prominent) Color.White else tint
     // 朗读中话筒确实在听：用一圈缓慢呼吸的描边表示“说句话就能打断”。
     val haloTransition = rememberInfiniteTransition(label = "assistant_mic_halo")
     val haloAlpha by haloTransition.animateFloat(
@@ -349,13 +386,21 @@ private fun AssistantTrailingButton(
     )
     Box(
         modifier = Modifier
-            .size(40.dp)
+            .size(44.dp)
+            .shadow(
+                elevation = if (prominent) 7.dp else 0.dp,
+                shape = interactionShape,
+                ambientColor = primary.copy(alpha = 0.20f),
+                spotColor = primary.copy(alpha = 0.30f),
+            )
             .graphicsLayer {
                 val scale = if (pressed) 0.9f else 1f
                 scaleX = scale
                 scaleY = scale
             }
-            .clip(CircleShape)
+            .clip(interactionShape)
+            .background(buttonBrush)
+            .border(0.8.dp, buttonStroke, interactionShape)
             .then(
                 if (halo) {
                     Modifier.border(1.2.dp, tint.copy(alpha = haloAlpha), CircleShape)
@@ -394,11 +439,24 @@ private fun AssistantTrailingButton(
             },
         contentAlignment = Alignment.Center,
     ) {
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            Color.White.copy(alpha = if (prominent) 0.26f else 0.05f),
+                            Color.Transparent,
+                            Color.Black.copy(alpha = if (prominent) 0.06f else 0f),
+                        ),
+                    ),
+                ),
+        )
         Icon(
             painter = painterResource(iconRes),
             contentDescription = contentDescription,
             modifier = Modifier.size(24.dp),
-            tint = if (enabled) tint else tint.copy(alpha = 0.4f),
+            tint = iconTint,
         )
     }
 }

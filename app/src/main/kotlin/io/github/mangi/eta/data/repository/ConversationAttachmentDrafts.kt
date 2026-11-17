@@ -19,8 +19,9 @@ import org.json.JSONObject
 internal data class ConversationAttachments(
     val images: List<PendingImageDraft> = emptyList(),
     val files: List<PendingFileReferenceDraft> = emptyList(),
+    val selectedSkillIds: List<String> = emptyList(),
 ) {
-    val isEmpty get() = images.isEmpty() && files.isEmpty()
+    val isEmpty get() = images.isEmpty() && files.isEmpty() && selectedSkillIds.isEmpty()
 }
 
 /** Serialized IO, atomic metadata and owned image bytes. No picker permission is needed after save. */
@@ -155,13 +156,18 @@ internal class ConversationAttachmentDrafts(
             .put("id", image.id).put("uri", portable(image.uri)).put("preview", portable(image.dataUrl)).put("mime", image.mimeType)) } })
         .put("files", JSONArray().apply { value.files.forEach { file -> put(JSONObject()
             .put("id", file.id).put("name", file.reference.displayName).put("path", portable(file.reference.absolutePath))
-            .put("kind", file.reference.kind.name)) } }).toString()
+            .put("kind", file.reference.kind.name)) } })
+        .put("selectedSkillIds", JSONArray().apply { value.selectedSkillIds.forEach { put(it) } }).toString()
 
     internal fun decode(encoded: String): ConversationAttachments {
         val root = JSONObject(encoded)
         require(root.getInt("version") == 1) { "Unsupported attachment draft version" }
         val images = root.getJSONArray("images")
         val files = root.getJSONArray("files")
+        val selectedSkillIds = root.optJSONArray("selectedSkillIds")?.let { array ->
+            require(array.length() <= 3) { "Too many selected Skills" }
+            (0 until array.length()).mapNotNull { index -> array.optString(index).takeIf(String::isNotBlank) }
+        }.orEmpty()
         require(images.length() <= 24 && files.length() <= 64)
         return ConversationAttachments(
             List(images.length()) { index -> images.getJSONObject(index).let {
@@ -171,6 +177,7 @@ internal class ConversationAttachmentDrafts(
                 PendingFileReferenceDraft(it.getString("id"), AgentFileReference(it.getString("name"), local(it.getString("path")),
                     FileReferenceKind.valueOf(it.getString("kind"))))
             } },
+            selectedSkillIds.distinct(),
         )
     }
 

@@ -27,6 +27,25 @@ class PromptInjectionRuntimeTest {
     }
 
     @Test
+    fun requestAuditStoresOnlyMetadataAndNeverPromptBodyOrCredentials() {
+        val template = template("private", "private-body-never-store")
+        val scope = PromptRunScope(conversationId = "audit-conversation")
+        val resolved = PromptInjectionResolver.resolve(PromptInjectionConfig(listOf(template),
+            listOf(PromptScopeBinding(template.id, PromptTarget.GLOBAL))), modelConfig(), scope)
+        val request = io.github.mangi.eta.agent.model.ProviderRequest(modelConfig().copy(apiKey = "credential-never-store"),
+            JSONArray().put(org.json.JSONObject().put("role", "system").put("content", resolved.prefixText))
+                .put(org.json.JSONObject().put("role", "user").put("content", "input-never-store")), JSONArray())
+        PromptAssemblyAuditStore.record("audit-run", scope, request, resolved)
+        val record = PromptAssemblyAuditStore.recent().single()
+        assertTrue(record.optString("operation_id") == "audit-run")
+        assertTrue(record.optJSONArray("fragments")!!.getJSONObject(0).optString("status") == "已注入")
+        val stored = record.toString()
+        assertFalse(stored.contains("private-body-never-store"))
+        assertFalse(stored.contains("credential-never-store"))
+        assertFalse(stored.contains("input-never-store"))
+    }
+
+    @Test
     fun runtimeInjectionUsesMigratedTemplateInsteadOfRereadingLegacyBehavior() {
         assertTrue(AgentBoundaryStore.saveBehavior("旧版表达习惯"))
         val model = modelConfig()
@@ -114,7 +133,7 @@ class PromptInjectionRuntimeTest {
         val currentIndex = (0 until messages.length()).last { index ->
             messages.getJSONObject(index).messageText().contains("当前问题")
         }
-        assertTrue(postIndex < currentIndex)
+        assertTrue(currentIndex < postIndex)
         assertTrue(messages.getJSONObject(postIndex).getString("role") == "user")
         assertTrue(messages.getJSONObject(postIndex).getBoolean(PROMPT_INJECTION_MARKER))
         assertTrue(messages.getJSONObject(currentIndex).getString("role") == "user")

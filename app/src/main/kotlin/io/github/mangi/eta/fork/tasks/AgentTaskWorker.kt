@@ -17,14 +17,23 @@ internal class AgentTaskWorker(
 ) : CoroutineWorker(appContext, workerParams) {
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
-            AutomationTriggers.poll(applicationContext, inputData.getString("eventType"), inputData.getString("eventKey").orEmpty())
+            val eventPayload = inputData.getString("eventPayload")
+                ?.let { raw -> runCatching { org.json.JSONObject(raw) }.getOrNull() }
+                ?: org.json.JSONObject()
+            AutomationTriggers.poll(applicationContext, inputData.getString("eventType"), inputData.getString("eventKey").orEmpty(), eventPayload)
             val runtimeClient = AgentRuntimeClient(applicationContext, AndroidAgentLogger)
+            val maxConcurrentRuns = AgentTaskSchedulerSettings.maxConcurrentRuns(applicationContext)
             val coordinator = AgentTaskCoordinator(
                 dao = AgentTaskDatabase.get(applicationContext).agentTaskDao(),
                 runner = DefaultAgentTaskRunner(applicationContext),
                 runtimeCanceller = AgentTaskRuntimeCanceller(runtimeClient::cancelRun),
+                remoteCanceller = AgentTaskRemoteCanceller { agentId, remoteTaskId ->
+                    cancelRemoteA2ATask(applicationContext, agentId, remoteTaskId)
+                },
+                maxConcurrentRuns = maxConcurrentRuns,
+                resultStore = AgentTaskResultStore(applicationContext),
             )
-            val summary = coordinator.tick(maxRuns = 1)
+            val summary = coordinator.tick(maxRuns = maxConcurrentRuns)
             AutomationTriggers.poll(applicationContext)
             AgentTaskWorkScheduler.refreshNextDeadline(applicationContext)
             if (summary.executedRuns > 0) {

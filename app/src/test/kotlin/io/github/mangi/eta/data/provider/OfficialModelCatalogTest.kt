@@ -5,15 +5,14 @@ import io.github.mangi.eta.data.model.Model
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Assert.assertNull
 import org.junit.Test
 
 class OfficialModelCatalogTest {
     @Test
-    fun otherCatalogWindowsRemainMetadataUntilTheUserConfiguresAWindow() {
+    fun everyOfficialProviderPresetHasAUsableContextWindow() {
         val model = OfficialModelCatalog.modelsForProvider(BuiltinProviders.providerById(BuiltinProviders.DEEPSEEK_ID)!!).first()
         assertTrue(model.contextWindow!! > 0)
-        assertNull(model.effectiveContextWindow)
+        assertEquals(model.contextWindow, model.effectiveContextWindow)
         assertEquals(64_000, model.copy(contextWindowOverride = 64_000).effectiveContextWindow)
     }
 
@@ -60,5 +59,28 @@ class OfficialModelCatalogTest {
         assertTrue("audio" in models(BuiltinProviders.MIMO_ID).getValue("mimo-v2.6-pro").inputModalities)
         assertTrue("video" in models(BuiltinProviders.MINIMAX_ID).getValue("MiniMax-M3").inputModalities)
         assertEquals(1_000_000, models(BuiltinProviders.STEPFUN_ID).getValue("step-5-preview").contextWindow)
+    }
+
+    @Test
+    fun everyBuiltInModelDeclaresTheCapabilitiesRequiredForSafeRouting() {
+        BuiltinProviders.PROVIDERS.forEach { provider ->
+            OfficialModelCatalog.modelsForProvider(provider).forEach { model ->
+                assertTrue(
+                    "${provider.id}/${model.modelId} must declare a positive context window",
+                    model.contextWindow != null && model.contextWindow > 0,
+                )
+                assertEquals(
+                    "${provider.id}/${model.modelId} must expose its catalog window to Runtime",
+                    model.contextWindow,
+                    model.effectiveContextWindow,
+                )
+                assertEquals(model.toolCall, true)
+                assertTrue(Model.TEXT_MODALITY in model.inputModalities)
+                assertTrue(Model.TEXT_MODALITY in model.outputModalities)
+                if (Model.IMAGE_MODALITY in model.inputModalities) {
+                    assertTrue(model.supportsVision)
+                }
+            }
+        }
     }
 }

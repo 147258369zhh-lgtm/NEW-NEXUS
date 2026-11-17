@@ -14,6 +14,8 @@ internal data class AgentMemoryContext(
     val scopedContent: String = "",
     val reviewedContent: String = "",
     val learnedContent: String = "",
+    val selectedEntries: List<String> = emptyList(),
+    val sourceRevisions: Map<String, String> = emptyMap(),
 ) {
     companion object {
         val DISABLED = AgentMemoryContext(

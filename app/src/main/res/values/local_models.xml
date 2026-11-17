@@ -162,7 +162,7 @@
     <string name="local_models_runtime_auto_connect">Attach automatically</string>
     <string name="local_models_runtime_auto_connect_summary">Add a new model to the picker without an address or API key.</string>
     <string name="local_models_runtime_auto_start">Start after attach</string>
-    <string name="local_models_runtime_auto_start_summary">Load after a download and restore the selected model when Nexus starts.</string>
+    <string name="local_models_runtime_auto_start_summary">Load after a download and restore the selected model when NEXA starts.</string>
     <string name="local_models_runtime_parameters">Runtime parameters</string>
     <string name="local_models_runtime_compute_group">Compute and memory</string>
     <string name="local_models_runtime_sampling_group">Sampling</string>
@@ -275,5 +275,5 @@
     <string name="local_models_warning_power_saving">Battery saver can reduce inference scheduling.</string>
     <string name="local_models_notification_channel">Local model downloads</string>
     <string name="local_models_download_running">Downloading %1$s</string>
-    <string name="local_models_download_foreground">Model downloads continue while Nexus is in the background</string>
+    <string name="local_models_download_foreground">Model downloads continue while NEXA is in the background</string>
 </resources>

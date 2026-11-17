@@ -264,4 +264,5 @@ internal data class A2AJsonRpcError(
 internal class A2AProtocolException(
     message: String,
     cause: Throwable? = null,
+    val rpcErrorCode: Int? = null,
 ) : Exception(message, cause)

@@ -268,6 +268,102 @@ class SkillRecoveryJournalTest {
         assertFalse(operation.exists())
     }
 
+    @Test
+    fun committedParentKeepsRootAndCommittedDependencyWhenChildJournalsRemain() {
+        val skillsRoot = temporaryFolder.newFolder("committed-parent-skills")
+        val base = writeSkill(skillsRoot, "base", "Committed dependency.")
+        val root = writeSkill(skillsRoot, "atomic-root", "Committed root.")
+        val parent = SkillDependencyTransactionJournal.begin(
+            skillsRoot = skillsRoot,
+            ownerSnapshots = emptyList(),
+            installedDependencies = listOf(
+                SkillDependencyTransactionJournal.InstalledDependency(
+                    skillId = "base",
+                    registrySnapshot = SkillRegistryRecoverySnapshot("base", entryExisted = false),
+                ),
+            ),
+            rootId = "atomic-root",
+        )
+        parent.markDependencyCommitted("base")
+        parent.markRootCommitted()
+        val dependencyOperation = newOperation(skillsRoot)
+        PendingSkillRecoveryJournal.begin(
+            skillsRoot,
+            dependencyOperation,
+            listOf(SkillRecoveryRecord("base", originalTargetExisted = false)),
+        ).markNewTargetCommitted("base")
+        val rootOperation = newOperation(skillsRoot)
+        PendingSkillRecoveryJournal.begin(
+            skillsRoot,
+            rootOperation,
+            listOf(SkillRecoveryRecord("atomic-root", originalTargetExisted = false)),
+        ).markNewTargetCommitted("atomic-root")
+
+        val index = service(skillsRoot)
+        val recovered = recoverPendingSkillOperations(skillsRoot)
+        index.restoreRecoveredRegistry(recovered)
+        completeRecoveredSkillOperations(skillsRoot, recovered)
+
+        assertTrue(base.isDirectory)
+        assertTrue(root.isDirectory)
+        assertFalse(dependencyOperation.exists())
+        assertFalse(rootOperation.exists())
+        assertFalse(parent.operationDirectory.exists())
+    }
+
+    @Test
+    fun incompleteParentRollsBackCommittedDependencyEdgesAndMetadataOnce() {
+        val skillsRoot = temporaryFolder.newFolder("rollback-parent-skills")
+        val base = writeSkill(skillsRoot, "base", "Must roll back.")
+        val index = service(skillsRoot)
+        index.registerInstalledUserSkills(listOf("base"))
+        index.recordInstalledSkillDependencies("atomic-root", setOf("old-dependency"))
+        index.recordInstalledSkillDependencies("new-owner", setOf("base"))
+        SkillRuntime.createProvenanceStore(RuntimeEnvironment.getApplication()).record(
+            SkillProvenance(
+                skillId = "base",
+                sourceId = "test",
+                sourceName = "Test",
+                sourceType = "HTTP_CATALOG",
+            ),
+        )
+        val parent = SkillDependencyTransactionJournal.begin(
+            skillsRoot = skillsRoot,
+            ownerSnapshots = listOf(
+                SkillDependencyRecoverySnapshot("atomic-root", true, setOf("old-dependency")),
+                SkillDependencyRecoverySnapshot("new-owner", false, emptySet()),
+            ),
+            installedDependencies = listOf(
+                SkillDependencyTransactionJournal.InstalledDependency(
+                    skillId = "base",
+                    registrySnapshot = SkillRegistryRecoverySnapshot("base", entryExisted = false),
+                ),
+            ),
+            rootId = "atomic-root",
+        )
+        parent.markDependencyCommitted("base")
+        val dependencyOperation = newOperation(skillsRoot)
+        PendingSkillRecoveryJournal.begin(
+            skillsRoot,
+            dependencyOperation,
+            listOf(SkillRecoveryRecord("base", originalTargetExisted = false)),
+        ).markNewTargetCommitted("base")
+
+        val recovered = recoverPendingSkillOperations(skillsRoot)
+        index.restoreRecoveredRegistry(recovered)
+        completeRecoveredSkillOperations(skillsRoot, recovered)
+
+        assertFalse(base.exists())
+        assertEquals(null, registryEntry("base"))
+        assertEquals(setOf("old-dependency"), index.snapshotInstalledSkillDependencies()["atomic-root"])
+        assertFalse("new-owner" in index.snapshotInstalledSkillDependencies())
+        assertFalse(
+            "base" in SkillRuntime.createProvenanceStore(RuntimeEnvironment.getApplication()).readAll(),
+        )
+        assertFalse(dependencyOperation.exists())
+        assertFalse(parent.operationDirectory.exists())
+    }
+
     private fun service(skillsRoot: File): SkillIndexService = SkillIndexService(
         context = RuntimeEnvironment.getApplication(),
         skillsRoot = skillsRoot,

@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.model.AsrProvider
+import io.github.mangi.eta.data.model.SpeechCredentialField
 import io.github.mangi.eta.data.model.SpeechSettings
 import io.github.mangi.eta.data.model.TtsProvider
 import kotlinx.coroutines.runBlocking
@@ -40,6 +41,12 @@ class SpeechSettingsRepositoryTest {
             fail("Invalid ciphertext must not become empty credentials")
         } catch (expected: SpeechCredentialsUnavailable) {
             assertFalse(expected.toString().contains("invalid ciphertext"))
+        }
+        try {
+            SpeechSettingsRepository.updateCredentials(context, mapOf(SpeechCredentialField.DEEPSEEK_ASR to "replacement"))
+            fail("Editing one field must not replace unreadable credentials")
+        } catch (_: SpeechCredentialsUnavailable) {
+            assertEquals("invalid ciphertext", prefs.getString("credentials", null))
         }
     }
 }

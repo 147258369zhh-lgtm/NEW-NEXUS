@@ -8,6 +8,8 @@ import io.github.mangi.eta.data.repository.LocalModelRepository
 internal object ProviderClientFactory {
 
     fun getClient(config: AgentModelClient.ModelConfig): AgentProviderClient {
+        if (io.github.mangi.eta.agent.packages.PackageAiRegistry.isPackageProvider(config.providerId))
+            return PackageAiAgentProvider(io.github.mangi.eta.data.datastore.SettingsDataStore.applicationContext())
         if (config.providerId == LocalModelRepository.BUILTIN_PROVIDER_ID) {
             return LiteRtLmAgentProvider
         }

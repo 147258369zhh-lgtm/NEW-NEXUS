@@ -46,7 +46,19 @@ internal object EtaBackupFileTree {
         }
         for (root in roots) {
             val path = File(dataDir, root).toPath()
+            requireSafeParents(dataDir, path)
             if (Files.exists(path, NOFOLLOW_LINKS)) visitPath(path, 0)
+        }
+    }
+
+    fun requireSafeParents(dataDir: File, path: Path) {
+        val base = dataDir.toPath().toAbsolutePath().normalize()
+        val target = path.toAbsolutePath().normalize()
+        require(target.startsWith(base) && target != base) { "备份路径无效" }
+        var parent = target.parent
+        while (parent != base) {
+            if (Files.isSymbolicLink(parent)) throw EtaBackupException("备份路径的父目录不能是符号链接")
+            parent = parent.parent
         }
     }
 

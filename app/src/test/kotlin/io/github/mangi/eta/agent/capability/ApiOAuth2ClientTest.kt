@@ -24,11 +24,12 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36, 37], application = Application::class)
+@Config(sdk = [36], application = Application::class)
 class ApiOAuth2ClientTest {
     private val context: Context = RuntimeEnvironment.getApplication()
     private lateinit var server: HttpServer
     private val tokenRequests = CopyOnWriteArrayList<Map<String, String>>()
+    private var beforeReply: (Map<String, String>) -> Unit = { }
     private var key: SecretKey? = null
     private val secrets get() = McpSecretStore(context) { create ->
         key ?: if (create) KeyGenerator.getInstance("AES").run {
@@ -52,6 +53,7 @@ class ApiOAuth2ClientTest {
                             URLDecoder.decode(parts.getOrElse(1) { "" }, Charsets.UTF_8.name())
                     }
                 tokenRequests += fields
+                beforeReply(fields)
                 val rejected = fields["code"] == "leak-code"
                 val response = (if (rejected) {
                     """{"error":"invalid_grant","error_description":"client-secret-leak"}"""
@@ -87,15 +89,17 @@ class ApiOAuth2ClientTest {
         assertEquals("S256", authorizationUri.getQueryParameter("code_challenge_method"))
         assertEquals(43, authorizationUri.getQueryParameter("code_challenge")?.length)
         val state = requireNotNull(authorizationUri.getQueryParameter("state"))
+        assertEquals(ApiOAuth2Configuration.REDIRECT_URI, authorizationUri.getQueryParameter("redirect_uri"))
+        assertTrue(client.completeAuthorization(Uri.parse("eta://capability-oauth/callback?state=$state&code=wrong-app")) is ApiOAuthCallbackResult.Failure)
 
         val rejected = client.completeAuthorization(
-            Uri.parse("eta://capability-oauth/callback?state=wrong&code=one"),
+            Uri.parse("${ApiOAuth2Configuration.REDIRECT_URI}?state=wrong&code=one"),
         )
         assertTrue(rejected is ApiOAuthCallbackResult.Failure)
         assertTrue(tokenRequests.isEmpty())
 
         val completed = client.completeAuthorization(
-            Uri.parse("eta://capability-oauth/callback?state=$state&code=authorization-code"),
+            Uri.parse("${ApiOAuth2Configuration.REDIRECT_URI}?state=$state&code=authorization-code"),
         )
         assertTrue(completed is ApiOAuthCallbackResult.Success)
         assertEquals("authorization_code", tokenRequests.single()["grant_type"])
@@ -138,12 +142,59 @@ class ApiOAuth2ClientTest {
                 .getQueryParameter("state"),
         )
         val result = client.completeAuthorization(
-            Uri.parse("eta://capability-oauth/callback?state=$state&code=leak-code"),
+            Uri.parse("${ApiOAuth2Configuration.REDIRECT_URI}?state=$state&code=leak-code"),
         ) as ApiOAuthCallbackResult.Failure
 
         assertTrue(result.message.contains("失效"))
         assertFalse(result.message.contains("client-secret-leak"))
         assertFalse(result.message.contains("leak-code"))
+    }
+
+    @Test fun disconnectWhileRefreshingDoesNotRestoreRevokedCredentials() {
+        val connector = connector()
+        secrets.setBearerToken(apiConnectorSecretKey(connector.id), JSONObject()
+            .put("accessToken", "expired").put("expiresAt", 1L).put("refreshToken", "refresh").toString())
+        ApiOAuth2Client(context, secretStore = secrets, connectorProvider = { connector }).use { client ->
+            beforeReply = { client.clear(connector.id) }
+            val failure = assertThrows(ApiConnectorException::class.java) { client.accessToken(connector) }
+            assertEquals("OAUTH_AUTHORIZATION_CHANGED", failure.code)
+            assertFalse(client.credentialAvailable(connector.id))
+            assertEquals(null, secrets.bearerToken(apiConnectorSecretKey(connector.id)))
+        }
+    }
+
+    @Test fun olderCallbackCannotOverwriteOrClearNewAuthorization() {
+        val connector = connector()
+        ApiOAuth2Client(context, secretStore = secrets, connectorProvider = { connector }).use { client ->
+            val oldState = Uri.parse(client.beginAuthorization(connector.id).authorizationUrl).getQueryParameter("state")
+            var newState: String? = null
+            beforeReply = { newState = Uri.parse(client.beginAuthorization(connector.id).authorizationUrl).getQueryParameter("state") }
+            assertTrue(client.completeAuthorization(Uri.parse("${ApiOAuth2Configuration.REDIRECT_URI}?state=$oldState&code=old")) is ApiOAuthCallbackResult.Failure)
+            assertFalse(client.credentialAvailable(connector.id))
+            beforeReply = { }
+            assertTrue(client.completeAuthorization(Uri.parse("${ApiOAuth2Configuration.REDIRECT_URI}?state=$newState&code=new")) is ApiOAuthCallbackResult.Success)
+            assertEquals(2, tokenRequests.size)
+        }
+    }
+
+    @Test fun concurrentClientsShareOneTokenRefreshAndNullRefreshIsMissing() {
+        val connector = connector()
+        secrets.setBearerToken(apiConnectorSecretKey(connector.id), JSONObject()
+            .put("accessToken", "expired").put("expiresAt", 1L).put("refreshToken", "refresh").toString())
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(2)
+        val first = ApiOAuth2Client(context, secretStore = secrets, connectorProvider = { connector })
+        val second = ApiOAuth2Client(context, secretStore = secrets, connectorProvider = { connector })
+        try {
+            val start = java.util.concurrent.CountDownLatch(1)
+            val futures = listOf(first, second).map { client -> pool.submit<String> { start.await(); client.accessToken(connector) } }
+            start.countDown()
+            futures.forEach { assertEquals("fresh-token", it.get(5, java.util.concurrent.TimeUnit.SECONDS)) }
+            assertEquals(1, tokenRequests.size)
+            secrets.setBearerToken(apiConnectorSecretKey(connector.id), JSONObject()
+                .put("accessToken", "expired").put("expiresAt", 1L).put("refreshToken", JSONObject.NULL).toString())
+            assertEquals("OAUTH_REFRESH_MISSING", assertThrows(ApiConnectorException::class.java) { first.accessToken(connector) }.code)
+            assertEquals(1, tokenRequests.size)
+        } finally { first.close(); second.close(); pool.shutdownNow() }
     }
 
     private fun connector() = ApiConnectorDefinition(

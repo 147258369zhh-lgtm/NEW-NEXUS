@@ -5,12 +5,25 @@ import io.github.mangi.eta.agent.memory.AgentMemoryContext
 import io.github.mangi.eta.agent.capability.NexusCapabilityDirectory
 import io.github.mangi.eta.agent.capability.NexusLazyToolCatalog
 import io.github.mangi.eta.agent.capability.NexusToolDiscoveryCatalog
+import io.github.mangi.eta.agent.capability.NexusCapabilityPolicyAdapter
 import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.agent.model.AgentRunBudgets
+import io.github.mangi.eta.agent.model.AgentRunExtensions
+import io.github.mangi.eta.agent.model.AgentContextSnapshot
+import io.github.mangi.eta.agent.model.ContextBudgetPolicy
+import io.github.mangi.eta.agent.model.AgentProviderClient
+import io.github.mangi.eta.agent.model.ProviderClientFactory
 import io.github.mangi.eta.agent.model.AgentModelExecutionException
 import io.github.mangi.eta.agent.prompt.PromptRunScope
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentRunCancelledException
 import io.github.mangi.eta.agent.runtime.AgentRunController
+import io.github.mangi.eta.agent.runtime.RuntimeInvocationScope
+import io.github.mangi.eta.agent.runtime.AgentRuntimeWire
+import io.github.mangi.eta.agent.runtime.NexusExecutionRecorder
+import io.github.mangi.eta.agent.runtime.NexusRunMapper
+import io.github.zhh_lgtm.nexus.kernel.api.RunBudget
+import io.github.zhh_lgtm.nexus.kernel.api.intersect
 import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.agent.terminal.TerminalExecutionContext
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
@@ -33,11 +46,13 @@ internal class SubagentExecutor(
         explicitProviderId: String?,
         explicitModelId: String?,
         explicitReasoningEffort: ReasoningEffort?,
+        estimatedInputTokens: Int,
     ) -> ResolvedSubagentConfig,
     private val capabilitiesProvider: () -> AgentToolCapabilities,
     private val baseToolExecutor: AgentModelClient.ToolExecutor,
     private val skillContext: SkillContext,
     private val memoryContext: AgentMemoryContext,
+    private val memoryContextForTask: (String, Int?) -> AgentMemoryContext = { _, _ -> memoryContext },
     private val mcpTools: JSONArray,
     private val executionContext: TerminalExecutionContext?,
     private val onProgress: (AgentEvent.SubagentProgress) -> Unit,
@@ -45,7 +60,13 @@ internal class SubagentExecutor(
     private val metricsScope: io.github.mangi.eta.agent.runtime.AgentMetricScope? = null,
     private val inheritedToolPolicy: io.github.mangi.eta.agent.runtime.AgentToolPolicy = io.github.mangi.eta.agent.runtime.AgentToolPolicy.UNRESTRICTED,
     private val currentToolPolicy: () -> io.github.mangi.eta.agent.runtime.AgentToolPolicy = { inheritedToolPolicy },
-    private val capabilityDirectory: NexusCapabilityDirectory? = null,
+    private val capabilityDirectory: io.github.zhh_lgtm.nexus.application.api.CapabilityDirectory? = null,
+    private val toolAvailable: (String) -> Boolean = { true },
+    private val authorizeChildTool: (AgentModelClient.ToolCall, AgentRunController) -> AgentModelClient.ToolResult? = { _, _ -> null },
+    private val childExecutionFactory: (String,String,RunBudget,AgentRunController) -> NexusExecutionRecorder? = { _,_,_,_ -> null },
+    private val allowHighRiskTools: Boolean = true,
+    private val providerFactory: (AgentModelClient.ModelConfig) -> AgentProviderClient = ProviderClientFactory::getClient,
+    private val extensionsFactory: (AgentRunController, AgentModelClient.ToolExecutor, String) -> AgentRunExtensions = { _, _, _ -> AgentRunExtensions.NONE },
 ) {
     private val latestSnapshots = ConcurrentHashMap<String, String>()
 
@@ -138,15 +159,24 @@ internal class SubagentExecutor(
         val baseProfile = entry.profile
         val subagentId = entry.subagentId
         val childController = AgentRunController()
-        val controllerBinding = parentController.register(childController::cancel)
+        val controllerBinding = parentController.register {
+            val failure=parentController.abortFailure
+            if(failure == null) childController.cancel() else childController.abort(failure)
+        }
 
         val resolved = runCatching {
+            // 子 Agent 的请求由 prompt、续接历史与 Profile 系统提示组成；在选出模型前
+            // 已可完整估算，因此与主聊天使用同一份输入预算。
+            val estimatedInputTokens = ContextBudgetPolicy.estimateTextTokens(prompt) +
+                ContextBudgetPolicy.estimateMessages(priorHistory) +
+                ContextBudgetPolicy.estimateTextTokens(baseProfile.buildSystemPrompt())
             configProvider(
                 baseProfile.name,
                 // The raw Profile name is stable across resume and setting changes.
                 explicitProviderId,
                 explicitModelId,
                 explicitReasoningEffort,
+                estimatedInputTokens,
             )
         }.getOrElse { throwable ->
             SubagentSessionStore.releaseRunning(conversationKey, subagentId)
@@ -196,9 +226,13 @@ internal class SubagentExecutor(
         publishSnapshot(force = true)
 
         val usedToolCalls = AtomicInteger(0)
-        val childToolExecutor = AgentModelClient.ToolExecutor { subCall ->
+        var extensions: AgentRunExtensions = AgentRunExtensions.NONE
+        lateinit var childToolExecutor: AgentModelClient.ToolExecutor
+        childToolExecutor = AgentModelClient.ToolExecutor { subCall -> RuntimeInvocationScope.withController(childController) {
+            RuntimeInvocationScope.withNestedTools(childToolExecutor) {
             childController.throwIfCancelled()
             if (!profile.isToolAllowed(subCall.name) || !currentToolPolicy().isAllowed(subCall.name)) {
+                extensions.permissionChecked(subCall, false)
                 AgentModelClient.ToolResult(
                     content = JSONObject()
                         .put("ok", false)
@@ -213,6 +247,7 @@ internal class SubagentExecutor(
                 resolved.maxToolCalls != null &&
                 usedToolCalls.incrementAndGet() > resolved.maxToolCalls
             ) {
+                extensions.permissionChecked(subCall, false)
                 AgentModelClient.ToolResult(
                     content = JSONObject()
                         .put("ok", false)
@@ -224,9 +259,14 @@ internal class SubagentExecutor(
                         .toString(),
                 )
             } else {
-                baseToolExecutor.execute(subCall)
+                val denied = authorizeChildTool(subCall, childController)
+                extensions.permissionChecked(subCall, denied == null)
+                if (denied != null) denied else {
+                    extensions.toolStarting(subCall)
+                    baseToolExecutor.execute(subCall)
+                }
             }
-        }
+        } } }
 
         val subagentConfig = resolvedConfig.copy(
             systemPrompt = profile.buildSystemPrompt(),
@@ -235,47 +275,97 @@ internal class SubagentExecutor(
         )
 
         val metric = metricsScope?.child("subagent", subagentConfig, parentRound, toolCall.id)
+        val operationId="${toolCall.id}-$subagentId"
+        var childExecution: NexusExecutionRecorder? = null
+        var childTranscript=emptyList<AgentModelClient.ConversationMessage>()
+        var childContext: AgentContextSnapshot? = null
+        var childBudgetBinding: AutoCloseable? = null
+        var childBudgetLimitBinding: AutoCloseable? = null
         return try {
+            childExecution=childExecutionFactory(operationId,subagentId,AgentRunBudgets.forSubagent(resolved.maxToolCalls),childController)
+            childExecution?.start()
+            childExecution?.prepareInput(priorHistory,prompt,0)
+            val childBudget = childExecution?.request?.budget ?: AgentRunBudgets.forSubagent(resolved.maxToolCalls)
+            val childEffectiveBudget = java.util.concurrent.atomic.AtomicReference(childBudget)
+            childBudgetBinding = childController.observeApprovedBudgetIncreases(childEffectiveBudget::set)
+            childBudgetLimitBinding = childController.observeBudgetLimits { limit ->
+                childEffectiveBudget.updateAndGet { current -> current.intersect(limit) }
+            }
+            val childStartedAt = System.currentTimeMillis()
+            fun childGrantExpiresAt(): Long {
+                val duration = childEffectiveBudget.get().hardDurationMs ?: 30L * 60_000L
+                return if (duration >= Long.MAX_VALUE - childStartedAt) Long.MAX_VALUE else childStartedAt + duration
+            }
             val additional = profile.filterTools(mcpTools)
             val lazyToolCatalog = capabilityDirectory?.takeIf {
                 subagentConfig.supportsTools && !subagentConfig.isEmbeddedLocalTextModel()
             }?.let { directory ->
                 NexusLazyToolCatalog(
                     directory = directory,
-                    toolAllowed = { name -> currentToolPolicy().isAllowed(name) && profile.isToolAllowed(name) },
+                    toolAllowed = { name -> currentToolPolicy().isAllowed(name) && profile.isToolAllowed(name) && toolAvailable(name) },
                     discoveryAllowed = { currentToolPolicy().allowsToolDiscovery(NexusToolDiscoveryCatalog.NAMES) },
                     additionalSchemas = additional,
+                    validUntil = childGrantExpiresAt(),
+                    validUntilProvider = ::childGrantExpiresAt,
+                    authorize = { descriptor -> NexusCapabilityPolicyAdapter.authorize(
+                        descriptor, capabilitiesProvider(), childExecution?.request?.runId?.value
+                            ?: NexusRunMapper.canonicalRunId(operationId).value,
+                        highRiskApproved = allowHighRiskTools, validUntil = childGrantExpiresAt(),
+                    ) },
                 )
             }
+            extensions = extensionsFactory(childController, AgentModelClient.ToolExecutor { call ->
+                io.github.mangi.eta.agent.packages.PackageHookToolReceipts.execute(call, childToolExecutor) { event ->
+                    childExecution?.record(event)
+                    metric?.accept(event)
+                    publishSnapshot(force = tracker.onChildEvent(event))
+                }
+            }, subagentConfig.model)
             val response = AgentModelClient.complete(
                 config = subagentConfig,
+                provider = providerFactory(subagentConfig),
                 prompt = prompt,
-                toolExecutor = childToolExecutor,
+                toolExecutor = AgentModelClient.ToolExecutor { call ->
+                    extensions.executeTool(call) { childToolExecutor.execute(call) }
+                },
+                extensions = extensions,
                 history = priorHistory,
                 runController = childController,
                 skillContext = skillContext,
-                memoryContext = memoryContext,
+                memoryContext = if (promptScope.characterId.isNotBlank()) AgentMemoryContext.DISABLED
+                    else memoryContextForTask(prompt, resolvedConfig.contextWindow),
                 additionalTools = additional,
                 executionContext = executionContext,
                 capabilitiesProvider = capabilitiesProvider,
                 lazyToolCatalog = lazyToolCatalog,
                 sessionId = "$conversationKey-$subagentId",
-                operationId = "${toolCall.id}-$subagentId",
+                operationId = operationId,
                 toolFilter = { currentToolPolicy().filterSchemas(profile.filterTools(it)) },
                 metricsScope = metric,
                 // 子 Agent 继承父作用域对象，再叠加自己的 Profile 名；模型维度由本次 complete 的配置决定。
                 promptScope = promptScope.forSubagent(profile.name),
+                runBudget = childExecution?.request?.budget ?: AgentRunBudgets.forSubagent(resolved.maxToolCalls),
+                onTranscript = { transcript ->
+                    childExecution?.saveCheckpoint(transcript,childContext)
+                    childTranscript=transcript
+                },
+                onContextSnapshot = { snapshot ->
+                    childExecution?.saveCheckpoint(childTranscript,snapshot)
+                    childContext=snapshot
+                },
                 onEvent = { childEvent ->
+                    childExecution?.record(childEvent)
                     metric?.accept(childEvent)
                     val force = tracker.onChildEvent(childEvent)
                     publishSnapshot(force = force)
                 },
             )
-            metric?.finish(true)
             val updatedHistory = priorHistory +
                 AgentModelClient.buildUserHistoryMessage(prompt, emptyList()) +
                 response.transcript
             SubagentSessionStore.complete(conversationKey, subagentId, updatedHistory)
+            childExecution?.finish(AgentRuntimeWire.RunResult(operationId,true,response.content),cancelled=false)
+            metric?.finish(true)
             tracker.markCompleted(response.content)
             publishSnapshot(force = true)
 
@@ -317,14 +407,17 @@ internal class SubagentExecutor(
                 tracker.partialOutput()
             }
 
-            val cancelled = parentController.isCancelled ||
-                childController.isCancelled ||
-                throwable is AgentRunCancelledException
+            val cancelled = parentController.abortFailure == null && childController.abortFailure == null && (
+                parentController.isCancelled || childController.isCancelled || throwable is AgentRunCancelledException)
             val errorMessage = if (cancelled) {
                 "已停止"
             } else {
                 throwable.message ?: throwable.javaClass.simpleName
             }
+            runCatching { childExecution?.finish(AgentRuntimeWire.RunResult(operationId,false,"",errorMessage),cancelled) }
+                .onFailure {
+                    io.github.mangi.eta.core.AndroidAgentLogger.error("Subagent execution terminal was not committed")
+                }
             if (cancelled) {
                 tracker.markCancelled(partial)
             } else {
@@ -333,7 +426,7 @@ internal class SubagentExecutor(
             publishSnapshot(force = true)
 
             if (parentController.isCancelled) {
-                throw AgentRunCancelledException()
+                parentController.throwIfCancelled()
             }
 
             AgentModelClient.ToolResult(
@@ -375,7 +468,10 @@ internal class SubagentExecutor(
                 command = latestSnapshots[toolCall.id],
             )
         } finally {
-            metric?.finish(false, parentController.isCancelled || childController.isCancelled)
+            childBudgetBinding?.close()
+            childBudgetLimitBinding?.close()
+            runCatching { extensions.close() }
+            metric?.finish(false, parentController.isUserCancelled || childController.isUserCancelled)
             controllerBinding.close()
         }
     }
@@ -395,6 +491,9 @@ internal class SubagentExecutor(
                                 .put("builtin", profile.builtin)
                                 .put("description", profile.summary)
                                 .put("when_to_use", profile.whenToUse)
+                                .put("display_name", profile.displayName)
+                                .put("default_context_window", profile.defaultContextWindow ?: JSONObject.NULL)
+                                .put("default_max_tool_calls", profile.defaultMaxToolCalls ?: JSONObject.NULL)
                                 .put("tools", JSONArray(profile.toolHighlights)),
                         )
                     }
@@ -422,6 +521,13 @@ internal class SubagentExecutor(
                         .put("builtin", profile.builtin)
                         .put("description", profile.summary)
                         .put("when_to_use", profile.whenToUse)
+                        .put("display_name", profile.displayName)
+                        .put("default_context_window", profile.defaultContextWindow ?: JSONObject.NULL)
+                        .put("default_max_tool_calls", profile.defaultMaxToolCalls ?: JSONObject.NULL)
+                        .put("model_preferences", JSONObject()
+                            .put("reasoning", profile.modelRequirements.prefersReasoning)
+                            .put("structured_output", profile.modelRequirements.prefersStructuredOutput)
+                            .put("vision", profile.modelRequirements.prefersVision))
                         .put("tools", JSONArray(profile.toolHighlights))
                         .put("disallowed_tools", JSONArray(profile.disallowedTools.toList()))
                         .put("prompt", profile.roleInstruction)

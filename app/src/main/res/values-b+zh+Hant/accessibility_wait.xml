@@ -8,5 +8,5 @@
     <string name="accessibility_wait_permissions">權限健康</string>
     <string name="accessibility_wait_settings">無障礙設定</string>
     <string name="accessibility_wait_stop">停止任務</string>
-    <string name="accessibility_wait_settings_failed">暫時無法開啟設定，請從系統設定中進入無障礙並恢復 Nexus 服務。</string>
+    <string name="accessibility_wait_settings_failed">暫時無法開啟設定，請從系統設定中進入無障礙並恢復 NEXA 服務。</string>
 </resources>

@@ -9,9 +9,15 @@ import java.util.Locale
 internal object MemoryAutomationPolicy {
     private val optOut = Regex("(不要|别|禁止|不许).{0,10}(记住|记忆|保存|学习)|do\\s+not\\s+(remember|save|learn)|don't\\s+(remember|save|learn)", RegexOption.IGNORE_CASE)
     private val secrets = Regex("验证码|口令|密码|私钥|api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|Bearer\\s|BEGIN.*PRIVATE KEY|\\bsk-[A-Za-z0-9]", RegexOption.IGNORE_CASE)
+    // 只有用户原话带有明确的更正语气时，才允许纠正直接替换旧事实；普通冲突仍要人工确认。
+    private val correctionMarkers = Regex(
+        "(更正|纠正|改一下|改成|改为|我说错|说错了|记错了|不是.{0,24}(而是|是)|不对[，,。 ]|其实(是|不是)|准确地说|准确来说是|实际上(是|不是)|correction|i\\s+meant|not\\s+.{1,40}\\s+but\\s+)",
+        RegexOption.IGNORE_CASE,
+    )
     fun allowed(text: String): Boolean = !optOut.containsMatchIn(text)
     fun safe(text: String, max: Int): String = LearningPolicy.sanitizeForStorage(text, max)
     fun sensitive(text: String): Boolean = secrets.containsMatchIn(text)
+    fun looksLikeCorrection(evidence: String): Boolean = correctionMarkers.containsMatchIn(evidence)
     // Similar wording can still change a number, a negation, or a path. Only formatting is deduplicated automatically.
     fun dedupKey(text: String): String = Normalizer.normalize(text, Normalizer.Form.NFKC)
         .trim().replace(Regex("\\s+"), " ")

@@ -35,6 +35,10 @@ import io.github.mangi.eta.agent.device.ScrollEvidence
 import io.github.mangi.eta.agent.device.ScrollEvidenceContract
 import io.github.mangi.eta.agent.device.ScrollMovementSource
 import io.github.mangi.eta.agent.device.RootScrollMotionContract
+import io.github.mangi.eta.agent.virtualdisplay.CanvasRoutingPolicy
+import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayController
+import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayFocusObservation
+import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayLease
 import io.github.mangi.eta.core.AndroidAgentLogger
 import java.util.ArrayDeque
 import java.util.concurrent.ArrayBlockingQueue
@@ -96,7 +100,7 @@ class AgentAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         instance = this
-        AgentAccessibilityHealth.onConnected()
+        AgentAccessibilityHealth.onConnected(this)
         RootAccessibilityRecovery.clearPendingAfterUserConnection(this)
     }
 
@@ -114,7 +118,7 @@ class AgentAccessibilityService : AccessibilityService() {
     private fun clearCurrentInstance(reason: AccessibilityDisconnectReason) {
         if (instance === this) {
             instance = null
-            AgentAccessibilityHealth.onDisconnected(reason)
+            AgentAccessibilityHealth.onDisconnected(this, reason)
         }
         scrollEventObservationGate.clear()
         signalWindowChanged()
@@ -196,6 +200,41 @@ class AgentAccessibilityService : AccessibilityService() {
         } else {
             runOnMainSync { activeRootOnDisplay(displayId)?.packageName?.toString() }
         }
+
+    /**
+     * Read the platform's focused application window for exactly one display. This is evidence
+     * about window focus only; it does not prove that injected input will be accepted.
+     */
+    internal fun observeApplicationWindowFocus(
+        displayId: Int,
+    ): VirtualDisplayFocusObservation {
+        return runCatching {
+        runOnMainSync {
+            val displayWindows = if (displayId == android.view.Display.DEFAULT_DISPLAY) {
+                windows
+            } else {
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                    return@runOnMainSync VirtualDisplayFocusObservation.UNAVAILABLE
+                }
+                val perDisplay = runCatching { windowsOnAllDisplays }.getOrNull()
+                    ?: return@runOnMainSync VirtualDisplayFocusObservation.UNAVAILABLE
+                if (perDisplay.indexOfKey(displayId) < 0) {
+                    return@runOnMainSync VirtualDisplayFocusObservation.UNAVAILABLE
+                }
+                perDisplay.get(displayId)
+            } ?: return@runOnMainSync VirtualDisplayFocusObservation.UNAVAILABLE
+
+            val applicationWindows = displayWindows.filter {
+                it.type == AccessibilityWindowInfo.TYPE_APPLICATION
+            }
+            if (applicationWindows.any { it.isFocused }) {
+                VirtualDisplayFocusObservation.FOCUSED_APPLICATION_WINDOW
+            } else {
+                VirtualDisplayFocusObservation.NO_FOCUSED_APPLICATION_WINDOW
+            }
+        }
+        }.getOrNull() ?: VirtualDisplayFocusObservation.UNAVAILABLE
+    }
 
     fun displaySize(displayId: Int = android.view.Display.DEFAULT_DISPLAY): Pair<Int, Int>? = runCatching {
         if (displayId != android.view.Display.DEFAULT_DISPLAY) {
@@ -459,7 +498,11 @@ class AgentAccessibilityService : AccessibilityService() {
         }
     }
 
-    fun clickNode(snapshot: NodeSnapshot, index: Int): NodeActionResult =
+    internal fun clickNode(
+        snapshot: NodeSnapshot,
+        index: Int,
+        expectedLease: VirtualDisplayLease? = null,
+    ): NodeActionResult =
         withValidatedIndexedNode(snapshot, index) { indexed ->
             val node = indexed.node
             val actionable = indexed.clickTarget?.resolveFor(node)
@@ -469,24 +512,32 @@ class AgentAccessibilityService : AccessibilityService() {
                     "节点的可点击目标已经变化，请重新观察屏幕",
                 )
             } else if (actionable != null) {
-                when (performNodeAction(actionable, AccessibilityNodeInfo.ACTION_CLICK)) {
+                when (performNodeAction(
+                    actionable, AccessibilityNodeInfo.ACTION_CLICK, expectedLease = expectedLease,
+                    displayId = snapshot.displayId,
+                )) {
                     ActionDispatch.ACCEPTED -> NodeActionResult.success(method = "ACTION_CLICK")
                     ActionDispatch.REJECTED ->
                         NodeActionResult.failure("ACTION_FAILED", "目标节点拒绝点击动作")
+                    ActionDispatch.LEASE_EXPIRED -> displayLeaseExpiredAction()
                     ActionDispatch.OUTCOME_UNKNOWN -> NodeActionResult.outcomeUnknown()
                 }
             } else {
                 val bounds = clippedNodeBounds(node, snapshot.displayId)
                 if (bounds.isEmpty) {
                     NodeActionResult.failure("INVALID_NODE_BOUNDS", "目标节点没有可点击区域")
-                } else gestureTap(bounds.centerX().toFloat(), bounds.centerY().toFloat(), displayId = snapshot.displayId)
+                } else gestureTap(
+                    bounds.centerX().toFloat(), bounds.centerY().toFloat(),
+                    displayId = snapshot.displayId, expectedLease = expectedLease,
+                )
             }
         }
 
-    fun longClickNode(
+    internal fun longClickNode(
         snapshot: NodeSnapshot,
         index: Int,
         durationMs: Long,
+        expectedLease: VirtualDisplayLease? = null,
     ): NodeActionResult = withValidatedIndexedNode(snapshot, index) { indexed ->
         val node = indexed.node
         val actionable = indexed.longClickTarget?.resolveFor(node)
@@ -496,10 +547,14 @@ class AgentAccessibilityService : AccessibilityService() {
                 "节点的可长按目标已经变化，请重新观察屏幕",
             )
         } else if (actionable != null) {
-            when (performNodeAction(actionable, AccessibilityNodeInfo.ACTION_LONG_CLICK)) {
+            when (performNodeAction(
+                actionable, AccessibilityNodeInfo.ACTION_LONG_CLICK, expectedLease = expectedLease,
+                displayId = snapshot.displayId,
+            )) {
                 ActionDispatch.ACCEPTED -> NodeActionResult.success(method = "ACTION_LONG_CLICK")
                 ActionDispatch.REJECTED ->
                     NodeActionResult.failure("ACTION_FAILED", "目标节点拒绝长按动作")
+                ActionDispatch.LEASE_EXPIRED -> displayLeaseExpiredAction()
                 ActionDispatch.OUTCOME_UNKNOWN -> NodeActionResult.outcomeUnknown()
             }
         } else {
@@ -512,6 +567,7 @@ class AgentAccessibilityService : AccessibilityService() {
                     bounds.centerY().toFloat(),
                     durationMs = durationMs.coerceIn(300L, 3_000L),
                     displayId = snapshot.displayId,
+                    expectedLease = expectedLease,
                 ).let { result ->
                     if (result.ok) result.copy(method = "GESTURE_LONG_PRESS") else result
                 }
@@ -524,6 +580,7 @@ class AgentAccessibilityService : AccessibilityService() {
         index: Int,
         direction: ScrollDirection,
         amount: ScrollAmount = ScrollAmount.PAGE,
+        expectedLease: VirtualDisplayLease? = null,
     ): ScrollActionResult {
         val validation = runOnMainSync { validateNode(snapshot, index) }
             ?: return ScrollActionResult.failure(
@@ -556,13 +613,17 @@ class AgentAccessibilityService : AccessibilityService() {
             message = "指定节点及其父节点不可滚动",
             targetIndex = index,
         )
-        return executeScroll(scrollable, direction, targetIndex = index, amount = amount, displayId = snapshot.displayId)
+        return executeScroll(
+            scrollable, direction, targetIndex = index, amount = amount,
+            displayId = snapshot.displayId, expectedLease = expectedLease,
+        )
     }
 
     internal fun scrollCurrent(
         direction: ScrollDirection,
         amount: ScrollAmount = ScrollAmount.PAGE,
         displayId: Int = android.view.Display.DEFAULT_DISPLAY,
+        expectedLease: VirtualDisplayLease? = null,
     ): ScrollActionResult {
         val target = runOnMainSync {
             activeRootOnDisplay(displayId)?.let { root -> findBestScrollableNode(root, direction, displayId) }
@@ -571,7 +632,10 @@ class AgentAccessibilityService : AccessibilityService() {
             code = "NO_ACTIVE_WINDOW",
             message = "当前活动窗口不可访问",
         )
-        return executeScroll(target, direction, targetIndex = null, amount = amount, displayId = displayId)
+        return executeScroll(
+            target, direction, targetIndex = null, amount = amount,
+            displayId = displayId, expectedLease = expectedLease,
+        )
     }
 
     private fun executeScroll(
@@ -580,6 +644,7 @@ class AgentAccessibilityService : AccessibilityService() {
         targetIndex: Int?,
         amount: ScrollAmount,
         displayId: Int = android.view.Display.DEFAULT_DISPLAY,
+        expectedLease: VirtualDisplayLease? = null,
     ): ScrollActionResult = scrollActionLock.withLock {
         val startedAt = SystemClock.elapsedRealtime()
         val refreshed = runOnMainSync { target.refresh() } == true
@@ -610,7 +675,16 @@ class AgentAccessibilityService : AccessibilityService() {
         var methodName = method?.name.orEmpty()
         return withScrollEventObservation(packageName, windowId) {
             val nodeDispatch = method?.let { selected ->
-                performNodeAction(target, selected.actionId, selected.args)
+                performNodeAction(target, selected.actionId, selected.args, expectedLease, displayId)
+            }
+            if (nodeDispatch == ActionDispatch.LEASE_EXPIRED) {
+                return ScrollActionResult.failure(
+                    direction = direction,
+                    code = "DISPLAY_LEASE_EXPIRED",
+                    message = "虚拟屏操作所属会话已变化；本次滚动未发送，请重新观察后再操作。",
+                    targetIndex = targetIndex,
+                    elapsedMs = SystemClock.elapsedRealtime() - startedAt,
+                )
             }
             if (nodeDispatch == ActionDispatch.OUTCOME_UNKNOWN) {
                 return ScrollActionResult.failure(
@@ -652,6 +726,7 @@ class AgentAccessibilityService : AccessibilityService() {
                     gesture.end.y.toFloat(),
                     SCROLL_GESTURE_DURATION_MS,
                     displayId = displayId,
+                    expectedLease = expectedLease,
                 )
                 if (!gestureResult.ok) {
                     return ScrollActionResult.failure(
@@ -945,11 +1020,12 @@ class AgentAccessibilityService : AccessibilityService() {
         }
     }
 
-    fun gestureTap(
+    internal fun gestureTap(
         x: Float,
         y: Float,
         durationMs: Long = 50,
         displayId: Int = android.view.Display.DEFAULT_DISPLAY,
+        expectedLease: VirtualDisplayLease? = null,
     ): NodeActionResult =
         dispatchGestureResult(
             Path().apply {
@@ -959,15 +1035,17 @@ class AgentAccessibilityService : AccessibilityService() {
             durationMs.coerceIn(1, 3_000),
             successMethod = "GESTURE_TAP",
             displayId = displayId,
+            expectedLease = expectedLease,
         )
 
-    fun gestureSwipe(
+    internal fun gestureSwipe(
         x1: Float,
         y1: Float,
         x2: Float,
         y2: Float,
         durationMs: Long,
         displayId: Int = android.view.Display.DEFAULT_DISPLAY,
+        expectedLease: VirtualDisplayLease? = null,
     ): NodeActionResult =
         dispatchGestureResult(
             Path().apply {
@@ -977,6 +1055,7 @@ class AgentAccessibilityService : AccessibilityService() {
             durationMs.coerceIn(100, 3_000),
             successMethod = "GESTURE_SWIPE",
             displayId = displayId,
+            expectedLease = expectedLease,
         )
 
     fun globalActionResult(name: String): NodeActionResult {
@@ -1908,23 +1987,43 @@ class AgentAccessibilityService : AccessibilityService() {
     private fun performNodeAction(
         node: AccessibilityNodeInfo,
         action: Int,
-        args: Bundle? = null
-    ): ActionDispatch =
-        when (val result = callOnMainSync {
-            if (args == null) node.performAction(action) else node.performAction(action, args)
-        }) {
+        args: Bundle? = null,
+        expectedLease: VirtualDisplayLease? = null,
+        displayId: Int = android.view.Display.DEFAULT_DISPLAY,
+    ): ActionDispatch {
+        var accepted = false
+        val invoke = { accepted = if (args == null) node.performAction(action) else node.performAction(action, args) }
+        val result = callOnMainSync {
+            if (CanvasRoutingPolicy.isVirtualDisplay(displayId)) {
+                if (!VirtualDisplayController.dispatchIfLeaseCurrent(expectedLease, invoke)) {
+                    return@callOnMainSync ActionDispatch.LEASE_EXPIRED
+                }
+                ActionDispatch.fromAccepted(accepted)
+            } else {
+                invoke()
+                ActionDispatch.fromAccepted(accepted)
+            }
+        }
+        return when (result) {
             is MainThreadCallResult.Completed -> {
-                if (result.value == true) ActionDispatch.ACCEPTED else ActionDispatch.REJECTED
+                result.value ?: ActionDispatch.REJECTED
             }
             MainThreadCallResult.NOT_STARTED -> ActionDispatch.REJECTED
             MainThreadCallResult.OUTCOME_UNKNOWN -> ActionDispatch.OUTCOME_UNKNOWN
         }
+    }
+
+    private fun displayLeaseExpiredAction() = NodeActionResult.failure(
+        "DISPLAY_LEASE_EXPIRED",
+        "虚拟屏操作所属会话已变化；本次操作未发送，请重新观察后再操作。",
+    )
 
     private fun dispatchGestureResult(
         path: Path,
         durationMs: Long,
         successMethod: String,
         displayId: Int = android.view.Display.DEFAULT_DISPLAY,
+        expectedLease: VirtualDisplayLease? = null,
     ): NodeActionResult {
         if (Looper.myLooper() == Looper.getMainLooper()) {
             return NodeActionResult.failure(
@@ -1953,8 +2052,11 @@ class AgentAccessibilityService : AccessibilityService() {
                 latch.countDown()
                 return@post
             }
-            val dispatched = try {
-                dispatchGesture(
+            var dispatched = false
+            var dispatchThrew = false
+            val invokeDispatch = {
+                try {
+                    dispatched = dispatchGesture(
                     gesture,
                     object : GestureResultCallback() {
                         override fun onCompleted(gestureDescription: GestureDescription?) {
@@ -1970,8 +2072,24 @@ class AgentAccessibilityService : AccessibilityService() {
                         }
                     },
                     GESTURE_CALLBACK_HANDLER,
-                )
-            } catch (_: Throwable) {
+                    )
+                } catch (_: Throwable) {
+                    dispatchThrew = true
+                }
+            }
+            val leaseCurrent = if (CanvasRoutingPolicy.isVirtualDisplay(displayId)) {
+                VirtualDisplayController.dispatchIfLeaseCurrent(expectedLease, invokeDispatch)
+            } else {
+                invokeDispatch()
+                true
+            }
+            if (!leaseCurrent) {
+                outcome.set(GestureDispatch.STALE_LEASE)
+                gate.finish()
+                latch.countDown()
+                return@post
+            }
+            if (dispatchThrew) {
                 // Binder 事务可能已经送达；异常不能证明手势未执行，禁止 Root 重放。
                 outcome.set(GestureDispatch.OUTCOME_UNKNOWN)
                 gate.finish()
@@ -2006,6 +2124,10 @@ class AgentAccessibilityService : AccessibilityService() {
             GestureDispatch.COMPLETED -> NodeActionResult.success(successMethod)
             GestureDispatch.CANCELLED -> NodeActionResult.outcomeUnknown()
             GestureDispatch.OUTCOME_UNKNOWN -> NodeActionResult.outcomeUnknown()
+            GestureDispatch.STALE_LEASE -> NodeActionResult.failure(
+                "DISPLAY_LEASE_EXPIRED",
+                "虚拟屏操作所属会话已变化；本次手势未发送，请重新观察后再操作。",
+            )
             GestureDispatch.NOT_DISPATCHED,
             null -> NodeActionResult.failure("GESTURE_NOT_DISPATCHED", "系统拒绝手势任务")
         }
@@ -2093,13 +2215,19 @@ class AgentAccessibilityService : AccessibilityService() {
     private enum class ActionDispatch {
         ACCEPTED,
         REJECTED,
-        OUTCOME_UNKNOWN,
+        LEASE_EXPIRED,
+        OUTCOME_UNKNOWN;
+
+        companion object {
+            fun fromAccepted(accepted: Boolean) = if (accepted) ACCEPTED else REJECTED
+        }
     }
 
     private enum class GestureDispatch {
         COMPLETED,
         CANCELLED,
         NOT_DISPATCHED,
+        STALE_LEASE,
         OUTCOME_UNKNOWN,
     }
 

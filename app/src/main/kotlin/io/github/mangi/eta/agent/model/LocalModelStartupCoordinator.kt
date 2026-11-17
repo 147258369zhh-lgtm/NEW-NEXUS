@@ -29,23 +29,7 @@ internal object LocalModelStartupCoordinator {
                 modelId = selection.selectedModelId,
                 models = LocalModelRepository.models.value,
             ) ?: return@withContext
-            LocalModelRepository.activateBuiltInRuntime(record.id)
-            when (record.format) {
-                LocalModelFormat.LITERT_LM -> LiteRtLmRuntimeManager.warmUp(
-                    record.id,
-                    NativeLaunchKind.AUTOMATIC,
-                )
-                LocalModelFormat.GGUF -> LlamaCppRuntimeManager.warmUp(
-                    record.id,
-                    NativeLaunchKind.AUTOMATIC,
-                )
-                LocalModelFormat.MNN -> MnnRuntimeManager.warmUp(
-                    record.id,
-                    NativeLaunchKind.AUTOMATIC,
-                )
-                else -> return@withContext
-            }
-            LocalModelRepository.selectBuiltInRuntime(record.id)
+            LocalModelApplicationService().startText(record, automatic = true)
         }
     }
 

@@ -44,6 +44,8 @@ internal interface SkillEvolutionDao {
     suspend fun moveEvidence(source: String, target: String)
     @Query("SELECT * FROM skill_experiences WHERE state = 'queued' ORDER BY createdAt LIMIT 1")
     suspend fun next(): SkillExperience?
+    @Query("SELECT * FROM skill_experiences WHERE runId = :runId")
+    suspend fun experience(runId: String): SkillExperience?
     @Query("SELECT * FROM skill_experiences WHERE recipeId = :id ORDER BY createdAt DESC")
     suspend fun evidence(id: String): List<SkillExperience>
     @Query("SELECT COUNT(*) FROM skill_experiences WHERE state = 'queued'")

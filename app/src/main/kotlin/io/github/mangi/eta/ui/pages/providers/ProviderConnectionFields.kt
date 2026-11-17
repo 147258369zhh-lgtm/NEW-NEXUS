@@ -32,7 +32,7 @@ import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.preference.SwitchPreference
+import io.github.mangi.eta.ui.components.NexusSettingsSwitchPreference as SwitchPreference
 import top.yukonga.miuix.kmp.preference.WindowSpinnerPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 

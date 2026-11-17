@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -24,7 +25,9 @@ internal object AgentRunMetricsStore {
     internal const val LEGACY_PREFS = "eta_run_metrics"
     internal const val LEGACY_KEY = "records_v1"
     private const val IMPORTED = "legacy_imported"
+    private const val LEGACY_OWNER = "legacy"
     private const val MAX_COMPLETED = 200
+    private const val MAX_RELIABILITY_SAMPLES = 20_000
     private val ownerSession = UUID.randomUUID().toString()
     private val writer = Executors.newSingleThreadExecutor { Thread(it, "eta-metrics-io") }
     private data class Pending(val context: Context, var snapshot: AgentRunTelemetrySnapshot?)
@@ -88,10 +91,45 @@ internal object AgentRunMetricsStore {
         emitAll(AgentMetricsDatabase.get(context).dao().modelsFlow())
     }.flowOn(Dispatchers.IO)
 
+    /** Read-only 30-day reliability aggregate keyed by exact provider/model. Never writes telemetry. */
+    fun candidateReliability(
+        context: Context,
+        now: Long = System.currentTimeMillis(),
+        days: Int = AgentCandidateReliability.WINDOW_DAYS,
+    ): Flow<Map<AgentCandidateReliabilityKey, AgentCandidateReliabilityStats>> {
+        val since = AgentCandidateReliability.windowStart(now, days)
+        return flow {
+            val db = AgentMetricsDatabase.get(context)
+            migrateLegacy(context, db)
+            emitAll(db.dao().terminalRequestsFlow(since, MAX_RELIABILITY_SAMPLES).map { rows ->
+                AgentCandidateReliability.aggregate(rows.map(AgentCandidateRequestSample::from), since)
+            })
+        }.flowOn(Dispatchers.IO)
+    }
+
+    fun requestTimingSummaries(context: Context): Flow<List<AgentRequestTimingSummary>> = flow {
+        init(context)
+        emitAll(AgentMetricsDatabase.get(context).dao().requestTimingSummariesFlow())
+    }.flowOn(Dispatchers.IO)
+
     fun overview(context: Context): Flow<List<AgentMetricOverview>> = flow {
         val db = AgentMetricsDatabase.get(context)
         migrateLegacy(context, db)
         emitAll(db.dao().overviewFlow())
+    }.flowOn(Dispatchers.IO)
+
+    fun subjectOverview(context: Context, type: String, id: String): Flow<List<AgentMetricOverview>> = flow {
+        require(type in setOf("conversation", "meeting") && id.isNotBlank())
+        val db = AgentMetricsDatabase.get(context)
+        migrateLegacy(context, db)
+        emitAll(db.dao().subjectOverviewFlow(type, id))
+    }.flowOn(Dispatchers.IO)
+
+    fun subjectRequestTimingSummaries(context: Context, type: String, id: String): Flow<List<AgentRequestTimingSummary>> = flow {
+        require(type in setOf("conversation", "meeting") && id.isNotBlank())
+        val db = AgentMetricsDatabase.get(context)
+        migrateLegacy(context, db)
+        emitAll(db.dao().subjectRequestTimingSummariesFlow(type, id))
     }.flowOn(Dispatchers.IO)
 
     suspend fun clear(context: Context) = withContext(Dispatchers.IO) {
@@ -99,6 +137,7 @@ internal object AgentRunMetricsStore {
             val db = AgentMetricsDatabase.get(context)
             migrateLegacy(context, db)
             db.runInTransaction { db.dao().clearCompleted() }
+            runCatching { AgentCnyExchangeStore.retain(context, db.dao().records().map { it.recordId }) }
         }.get(10, TimeUnit.SECONDS)
         Unit
     }
@@ -117,7 +156,7 @@ internal object AgentRunMetricsStore {
         val dao = database.dao()
         // Resolve project once on the first capture; later project moves do not rewrite history.
         val prior = dao.record(id)
-        val project = if (prior != null) prior.projectId else runCatching {
+        val project = if (prior != null) prior.projectId else snapshot.projectId ?: runCatching {
             runBlocking {
                 when {
                     snapshot.roomId.isNotBlank() -> ProjectRepository.bindingForSubject(context, ProjectSubjectType.MEETING, snapshot.roomId)
@@ -127,6 +166,9 @@ internal object AgentRunMetricsStore {
             }
         }.getOrDefault("")
         val localSamples = snapshot.requests.filter { it.localRuntime != null }
+        // Optional display conversion is independent from native-currency execution budgets.
+        runCatching { AgentCnyExchangeStore.capture(context, id,
+            (snapshot.models.mapNotNull { it.price?.currency } + snapshot.children.mapNotNull { it.price?.currency })) }
         database.runInTransaction {
             val current = dao.record(id)
             if (current != null && current.status != AgentMetricStatus.RUNNING && current.status != AgentMetricStatus.LEGACY) return@runInTransaction
@@ -164,6 +206,9 @@ internal object AgentRunMetricsStore {
             })
             dao.prune(MAX_COMPLETED)
         }
+        if (snapshot.status != AgentMetricStatus.RUNNING) runCatching {
+            AgentCnyExchangeStore.retain(context, dao.records().map { it.recordId })
+        }
         // Local inference metrics use an independent database so adding hardware/cache counters
         // never changes the run-metrics schema or backup compatibility. Upserts are idempotent
         // across telemetry checkpoints and remain queryable after the run record is pruned.
@@ -176,34 +221,53 @@ internal object AgentRunMetricsStore {
         val prefs = context.applicationContext.getSharedPreferences(LEGACY_PREFS, Context.MODE_PRIVATE)
         db.runInTransaction {
             val dao = db.dao()
-            if (dao.meta(IMPORTED) != null) return@runInTransaction
-            val raw = prefs.getString(LEGACY_KEY, null)?.takeIf { it.length <= 1_048_576 }
-            val records = raw?.let { runCatching { JSONArray(it) }.getOrNull() }
-            for (index in 0 until minOf(records?.length() ?: 0, MAX_COMPLETED)) {
-                val item = records?.optJSONObject(index) ?: continue
-                val id = item.optString("run_id").takeIf { it.isNotBlank() && it.length <= 256 } ?: continue
-                if (dao.record(id) != null) continue
-                val time = item.optLong("completed_at").coerceAtLeast(0L)
-                // Legacy zeros and coverage were ambiguous; do not invent reported-zero usage.
-                val calls = item.optInt("tool_calls").coerceAtLeast(0)
-                val failures = item.optInt("failed_tools").coerceIn(0, calls)
-                val metrics = AgentRunMetrics(
-                    rounds = item.optInt("rounds").coerceAtLeast(0),
-                    toolCalls = calls,
-                    failedTools = failures,
-                    unresolvedTools = calls - failures,
-                    inputTokens = item.optLong("input_tokens").takeIf { it > 0 },
-                    outputTokens = item.optLong("output_tokens").takeIf { it > 0 },
-                    contextTokens = item.optInt("context_tokens").takeIf { it > 0 },
-                    imageBytes = item.optLong("image_bytes").coerceAtLeast(0L),
-                )
-                dao.putRun(AgentRunMetricsRecord(id, id, "legacy", "legacy", "chat", "", "", "", "",
-                    time, time, time, 0, AgentMetricStatus.LEGACY, 0, 0, metrics))
+            if (dao.meta(IMPORTED) == null) {
+                val raw = prefs.getString(LEGACY_KEY, null)?.takeIf { it.length <= 1_048_576 }
+                val records = raw?.let { runCatching { JSONArray(it) }.getOrNull() }
+                for (index in 0 until minOf(records?.length() ?: 0, MAX_COMPLETED)) {
+                    val item = records?.optJSONObject(index) ?: continue
+                    val id = item.optString("run_id").takeIf { it.isNotBlank() && it.length <= 256 } ?: continue
+                    if (dao.record(id) != null) continue
+                    // The legacy package only carried one ambiguous completion value. It is kept as
+                    // completedAt when it proves to be epoch milliseconds, and it is never copied into
+                    // startedAt/updatedAt, which the legacy data never recorded. Duration stays unknown.
+                    val completedAt = AgentMetricsTime.fromLegacyJson(item.opt("completed_at"))
+                    // Legacy zeros and coverage were ambiguous; do not invent reported-zero usage.
+                    val calls = item.optInt("tool_calls").coerceAtLeast(0)
+                    val failures = item.optInt("failed_tools").coerceIn(0, calls)
+                    val metrics = AgentRunMetrics(
+                        rounds = item.optInt("rounds").coerceAtLeast(0),
+                        toolCalls = calls,
+                        failedTools = failures,
+                        unresolvedTools = calls - failures,
+                        inputTokens = item.optLong("input_tokens").takeIf { it > 0 },
+                        outputTokens = item.optLong("output_tokens").takeIf { it > 0 },
+                        contextTokens = item.optInt("context_tokens").takeIf { it > 0 },
+                        imageBytes = item.optLong("image_bytes").coerceAtLeast(0L),
+                    )
+                    dao.putRun(AgentRunMetricsRecord(id, id, LEGACY_OWNER, "legacy", "chat", "", "", "", "",
+                        AgentMetricsTime.UNKNOWN, AgentMetricsTime.UNKNOWN, completedAt, 0, AgentMetricStatus.LEGACY, 0, 0, metrics))
+                }
+                dao.putMeta(AgentMetricMetaEntity(IMPORTED, "1"))
+                dao.prune(MAX_COMPLETED)
             }
-            dao.putMeta(AgentMetricMetaEntity(IMPORTED, "1"))
-            dao.prune(MAX_COMPLETED)
+            // Earlier builds copied that one value into startedAt/updatedAt/completedAt. Repair already
+            // imported rows in place: the pass only runs for rows this importer owns, leaves usage
+            // untouched and writes nothing once a row is clean, so repeated runs are no-ops.
+            repairImportedTimes(dao)
         }
         // Kept as migration evidence; the durable marker prevents reimport after clearing history.
+    }
+
+    private fun repairImportedTimes(dao: AgentMetricsDao) {
+        dao.runsOwnedBy(LEGACY_OWNER).forEach { run ->
+            val repaired = run.copy(
+                startedAt = AgentMetricsTime.UNKNOWN,
+                updatedAt = AgentMetricsTime.UNKNOWN,
+                completedAt = AgentMetricsTime.known(run.completedAt),
+            )
+            if (repaired != run) dao.putRun(repaired)
+        }
     }
 
     private inline fun safely(block: () -> Unit) {

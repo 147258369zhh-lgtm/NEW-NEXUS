@@ -12,10 +12,12 @@ internal object SkillMatcher {
         task: String,
         limit: Int = 60,
     ): List<SkillIndexEntry> {
-        if (skills.size <= limit) return skills
+        require(limit >= 0)
+        if (limit == 0) return emptyList()
+        val available = skills.filter { it.enabled && it.installed }
         val taskProfile = profile(task)
-        if (taskProfile.terms.isEmpty()) return skills.take(limit)
-        return skills
+        if (taskProfile.terms.isEmpty()) return available.take(limit)
+        return available
             .mapIndexed { index, skill ->
                 RankedSkill(skill, score(taskProfile, skill), index)
             }
@@ -42,7 +44,8 @@ internal object SkillMatcher {
             if (term in description) score += weight * 3
             if (term in metadata) score += weight * 2
         }
-        if (name.isNotBlank() && normalize(skill.name) in task.normalized) score += 40
+        val normalizedName = normalize(skill.name)
+        if (normalizedName.isNotBlank() && normalizedName in task.normalized) score += 40
         return score
     }
 

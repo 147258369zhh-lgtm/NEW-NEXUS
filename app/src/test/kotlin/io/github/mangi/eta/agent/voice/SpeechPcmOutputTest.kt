@@ -21,6 +21,8 @@ class SpeechPcmOutputTest {
         BufferedAudioTrack.thresholds.clear()
         BufferedAudioTrack.writtenBytes = 0
         BufferedAudioTrack.capacityBytes = 24_000
+        BufferedAudioTrack.throwOnPause = false
+        BufferedAudioTrack.releases = 0
     }
 
     @Test fun waitsForBufferAcrossChunksBeforeStarting() {
@@ -96,6 +98,15 @@ class SpeechPcmOutputTest {
         assertThrows(CancellationException::class.java) { output.finish() }
     }
 
+    @Test fun closeReleasesTrackEvenWhenPauseFailsAndRemainsIdempotent() {
+        val output = SpeechPcmOutput()
+        BufferedAudioTrack.throwOnPause = true
+        assertThrows(IllegalStateException::class.java) { output.close() }
+        output.close()
+        assertEquals(1, BufferedAudioTrack.releases)
+        assertTrue(output.drained())
+    }
+
     /** 默认 Shadow 无容量限制；这里模拟停止状态下写满缓冲区的短写，验证启动前不会死锁。 */
     @Implements(AudioTrack::class)
     class BufferedAudioTrack : ShadowAudioTrack() {
@@ -118,6 +129,14 @@ class SpeechPcmOutputTest {
             super.play()
         }
 
+        @Implementation fun pause() {
+            if (throwOnPause) throw IllegalStateException("pause failed")
+        }
+
+        @Implementation fun release() {
+            releases++
+        }
+
         @Implementation fun setStartThresholdInFrames(frames: Int): Int {
             thresholds.add(frames)
             return frames
@@ -128,6 +147,8 @@ class SpeechPcmOutputTest {
             val thresholds = mutableListOf<Int>()
             var writtenBytes = 0
             var capacityBytes = 24_000
+            var throwOnPause = false
+            var releases = 0
         }
     }
 }

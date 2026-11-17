@@ -113,6 +113,19 @@ class ApiConnectorStoreTest {
         }
     }
 
+    @Test
+    fun corruptConfigurationFailsClosedAndIsNeverOverwrittenByAnEmptyFallback() {
+        val file = File(RuntimeEnvironment.getApplication().filesDir, "capability-center/api-connectors.json")
+        file.parentFile!!.mkdirs()
+        val corrupt = "{\"version\":\"broken\""
+        file.writeText(corrupt)
+
+        val loadFailure = assertThrows(ApiConnectorException::class.java) { store.load() }
+        assertEquals("CONNECTOR_CONFIG_CORRUPT", loadFailure.code)
+        assertThrows(ApiConnectorException::class.java) { store.upsert(connector()) }
+        assertEquals(corrupt, file.readText())
+    }
+
     private fun connector() = ApiConnectorDefinition(
         id = "api-test",
         name = "Projects",

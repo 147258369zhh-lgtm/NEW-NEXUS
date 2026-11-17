@@ -18,6 +18,12 @@ internal data class AgentRunMetrics(
     val requestAttempts: Int = 0,
     val retries: Int = 0,
     val completedCompactions: Int = 0,
+    @androidx.room.ColumnInfo(defaultValue = "0") val approvalRequests: Int = 0,
+    @androidx.room.ColumnInfo(defaultValue = "0") val approvalsApproved: Int = 0,
+    @androidx.room.ColumnInfo(defaultValue = "0") val approvalsRejected: Int = 0,
+    @androidx.room.ColumnInfo(defaultValue = "0") val approvalsTimedOut: Int = 0,
+    @androidx.room.ColumnInfo(defaultValue = "0") val approvalsCancelled: Int = 0,
+    @androidx.room.ColumnInfo(defaultValue = "0") val approvalsFailed: Int = 0,
     val uncachedInputTokens: Long? = null,
     val cacheReadTokens: Long? = null,
     val cacheWriteTokens: Long? = null,
@@ -47,6 +53,7 @@ internal class AgentRunMetricsCollector {
     private val requests = mutableMapOf<Int, Int>()
     private val retries = mutableMapOf<Int, Int>()
     private val compactions = mutableMapOf<Int, MutableSet<String>>()
+    private val approvalPhases = linkedMapOf<String, RunApprovalPhase>()
     private val initialImages = mutableMapOf<Int, Long>()
     private var currentModel = 0
 
@@ -75,6 +82,7 @@ internal class AgentRunMetricsCollector {
             is AgentEvent.ContextCompaction -> if (event.phase == AgentEvent.ContextCompaction.PHASE_COMPLETED) {
                 compactions.getOrPut(currentModel) { mutableSetOf() } += event.operationId
             }
+            is AgentEvent.ApprovalChanged -> approvalPhases[event.approvalId] = event.phase
             is AgentEvent.UsageReceived -> {
                 ensureRound(event.round)
                 val prior = usage[event.round] ?: AgentTokenUsage()
@@ -131,6 +139,12 @@ internal class AgentRunMetricsCollector {
             requestAttempts = selectedRounds.sumOf { requests[it] ?: 0 },
             retries = retries.filterKeys { modelIndex == null || it == modelIndex }.values.sum(),
             completedCompactions = compactions.filterKeys { modelIndex == null || it == modelIndex }.values.sumOf { it.size },
+            approvalRequests = approvalPhases.size,
+            approvalsApproved = approvalPhases.values.count { it == RunApprovalPhase.APPROVED },
+            approvalsRejected = approvalPhases.values.count { it == RunApprovalPhase.REJECTED },
+            approvalsTimedOut = approvalPhases.values.count { it == RunApprovalPhase.TIMED_OUT },
+            approvalsCancelled = approvalPhases.values.count { it == RunApprovalPhase.CANCELLED },
+            approvalsFailed = approvalPhases.values.count { it == RunApprovalPhase.FAILED },
             uncachedInputTokens = billingSum { it.uncachedInput }, cacheReadTokens = billingSum { it.cacheRead },
             cacheWriteTokens = billingSum { it.cacheWrite }, billableOutputTokens = billingSum { it.output },
             billingReportedRounds = billing.count { it.complete },

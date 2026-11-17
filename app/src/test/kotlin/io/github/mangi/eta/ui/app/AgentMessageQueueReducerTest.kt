@@ -39,6 +39,19 @@ class AgentMessageQueueReducerTest {
     }
 
     @Test
+    fun queuedTurnKeepsItsSkillSnapshotAfterComposerSelectionChanges() {
+        val initial = baseState(isStreaming = true).copy(selectedSkillIds = listOf("skill-a"))
+        val enqueued = AgentMessageQueueReducer.enqueue(
+            initial,
+            QueuedMessageUi(id = "q-skill", content = "queued", selectedSkillIds = initial.selectedSkillIds),
+        ).copy(selectedSkillIds = listOf("skill-b"))
+        val (afterPromotion, promoted) = AgentMessageQueueReducer.promoteToInterrupt(enqueued, "q-skill")
+        assertNotNull(promoted)
+        assertEquals(listOf("skill-b"), afterPromotion.selectedSkillIds)
+        assertEquals(listOf("skill-a"), promoted!!.selectedSkillIds)
+    }
+
+    @Test
     fun immediateInterruptPreemptsQueueHeadAndDemotesPreviousInterrupt() {
         val state = baseState(isStreaming = true).let {
             val s1 = AgentMessageQueueReducer.enqueue(it, QueuedMessageUi(id = "q-1", content = "普通排队"))
@@ -98,6 +111,7 @@ class AgentMessageQueueReducerTest {
                     content = "撤回的内容",
                     pendingImages = listOf(existingImage, queuedImage),
                     pendingFileReferences = listOf(queuedFile),
+                    selectedSkillIds = listOf("selected-skill"),
                 ),
                 QueuedMessageUi(id = "q-2", content = "保留的内容"),
             ),
@@ -112,6 +126,7 @@ class AgentMessageQueueReducerTest {
         assertEquals("正在敲的半句话\n撤回的内容", recalled!!.input)
         assertEquals(listOf("img-1", "img-2"), recalled.pendingImages.map { it.id })
         assertEquals(listOf("file-1"), recalled.pendingFileReferences.map { it.id })
+        assertEquals(listOf("selected-skill"), recalled.selectedSkillIds)
         assertEquals(listOf("q-2"), recalled.queuedMessages.map { it.id })
         assertEquals(state.inputSyncVersion + 1, recalled.inputSyncVersion)
     }

@@ -161,7 +161,7 @@
     <string name="local_models_runtime_auto_connect">自动接入</string>
     <string name="local_models_runtime_auto_connect_summary">新下载的模型自动加入模型选择器，无需填写地址或 API。</string>
     <string name="local_models_runtime_auto_start">接入后自动启动</string>
-    <string name="local_models_runtime_auto_start_summary">下载完成后加载，并在下次打开 Nexus 时恢复当前选中的本地模型。</string>
+    <string name="local_models_runtime_auto_start_summary">下载完成后加载，并在下次打开 NEXA 时恢复当前选中的本地模型。</string>
     <string name="local_models_runtime_parameters">运行参数</string>
     <string name="local_models_runtime_compute_group">计算与内存</string>
     <string name="local_models_runtime_sampling_group">采样</string>

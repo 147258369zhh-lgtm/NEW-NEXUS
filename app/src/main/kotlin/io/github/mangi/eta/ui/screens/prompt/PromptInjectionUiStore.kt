@@ -10,6 +10,7 @@ import io.github.mangi.eta.agent.prompt.PromptAnalysisReport
 import io.github.mangi.eta.agent.prompt.PromptConflictAnalyzer
 import io.github.mangi.eta.agent.prompt.PromptScopeBinding
 import io.github.mangi.eta.agent.prompt.PromptScopeType
+import io.github.mangi.eta.agent.prompt.PromptInheritance
 import io.github.mangi.eta.agent.prompt.PromptTarget
 import io.github.mangi.eta.agent.prompt.PromptTemplate
 import io.github.mangi.eta.agent.subagent.SubagentProfileCatalog
@@ -43,6 +44,7 @@ internal data class PromptMeetingOption(
 internal data class PromptCharacterOption(val id: String, val title: String)
 
 internal data class PromptAutomationOption(val id: String, val title: String)
+internal data class PromptProjectOption(val id: String, val title: String)
 
 /** One selectable binding target, already resolved to human-readable metadata. */
 internal data class PromptScopeTargetUi(
@@ -60,6 +62,7 @@ private data class PromptScopeSnapshot(
     val meetings: List<PromptMeetingOption>,
     val characters: List<PromptCharacterOption>,
     val automations: List<PromptAutomationOption>,
+    val projects: List<PromptProjectOption>,
 )
 
 /**
@@ -85,6 +88,8 @@ internal class PromptInjectionUiStore(context: Context) {
         private set
     var automations by mutableStateOf<List<PromptAutomationOption>>(emptyList())
         private set
+    var projects by mutableStateOf<List<PromptProjectOption>>(emptyList())
+        private set
     var loading by mutableStateOf(true)
         private set
     var status by mutableStateOf<String?>(null)
@@ -102,6 +107,7 @@ internal class PromptInjectionUiStore(context: Context) {
         meetings = snapshot.meetings
         characters = snapshot.characters
         automations = snapshot.automations
+        projects = snapshot.projects
         loading = false
     }
 
@@ -126,8 +132,8 @@ internal class PromptInjectionUiStore(context: Context) {
         PromptInjectionStore.deleteTemplate(templateId)
     }
 
-    suspend fun bind(templateId: String, target: PromptTarget): Boolean = mutate {
-        PromptInjectionStore.bind(templateId, target)
+    suspend fun bind(templateId: String, target: PromptTarget, inheritance: PromptInheritance = PromptInheritance.APPEND): Boolean = mutate {
+        PromptInjectionStore.bind(templateId, target, inheritance)
     }
 
     suspend fun unbind(target: PromptTarget): Boolean = mutate {
@@ -193,6 +199,9 @@ internal class PromptInjectionUiStore(context: Context) {
 
     private fun availableTargets(type: PromptScopeType): List<PromptScopeTargetUi> = when (type) {
         PromptScopeType.GLOBAL -> emptyList()
+        PromptScopeType.PROJECT -> projects.map { project ->
+            PromptScopeTargetUi(PromptTarget.project(project.id), project.title, project.id)
+        }
         PromptScopeType.MODEL -> providers.flatMap { provider ->
             provider.models.filter { it.modelId.isNotBlank() }.filter { provider.id.isNotBlank() }.map { model ->
                 PromptScopeTargetUi(
@@ -203,7 +212,9 @@ internal class PromptInjectionUiStore(context: Context) {
                 )
             }
         }
-        PromptScopeType.CONVERSATION -> conversations.filter { it.id.isNotBlank() }.map { conversation ->
+        PromptScopeType.CONVERSATION -> listOf(PromptScopeTargetUi(
+            PromptTarget.NEW_CONVERSATION, "以后新建的普通会话", "创建时继承当前绑定，不改变已有会话",
+        )) + conversations.filter { it.id.isNotBlank() }.map { conversation ->
             PromptScopeTargetUi(
                 target = PromptTarget.conversation(conversation.id),
                 title = conversation.title.ifBlank { conversation.id },
@@ -252,6 +263,7 @@ internal class PromptInjectionUiStore(context: Context) {
 
     fun targetTitle(target: PromptTarget): String = when (target.type) {
         PromptScopeType.GLOBAL -> ""
+        PromptScopeType.PROJECT -> projects.firstOrNull { it.id == target.primaryId }?.title ?: target.primaryId
         PromptScopeType.MODEL -> {
             val provider = providers.firstOrNull { it.id == target.primaryId }
             val model = provider?.models?.firstOrNull { it.modelId == target.secondaryId }
@@ -259,8 +271,8 @@ internal class PromptInjectionUiStore(context: Context) {
             val modelName = model?.displayName ?: target.secondaryId
             "$providerName / $modelName"
         }
-        PromptScopeType.CONVERSATION -> conversations.firstOrNull { it.id == target.primaryId }
-            ?.title?.takeIf(String::isNotBlank) ?: target.primaryId
+        PromptScopeType.CONVERSATION -> if (target == PromptTarget.NEW_CONVERSATION) "以后新建的普通会话" else
+            conversations.firstOrNull { it.id == target.primaryId }?.title?.takeIf(String::isNotBlank) ?: target.primaryId
         PromptScopeType.SUBAGENT -> target.primaryId
         PromptScopeType.MEETING -> meetings.firstOrNull { it.id == target.primaryId }
             ?.title?.takeIf(String::isNotBlank) ?: target.primaryId
@@ -278,10 +290,10 @@ internal class PromptInjectionUiStore(context: Context) {
     }
 
     fun targetDetail(target: PromptTarget): String = when (target.type) {
-        PromptScopeType.CONVERSATION -> target.primaryId
+        PromptScopeType.CONVERSATION -> if (target == PromptTarget.NEW_CONVERSATION) "创建时继承当前绑定" else target.primaryId
         PromptScopeType.MODEL -> target.secondaryId
         PromptScopeType.MEETING_PARTICIPANT -> target.secondaryId
-        PromptScopeType.CHARACTER, PromptScopeType.AUTOMATION -> target.primaryId
+        PromptScopeType.CHARACTER, PromptScopeType.AUTOMATION, PromptScopeType.PROJECT -> target.primaryId
         else -> ""
     }
 
@@ -329,6 +341,10 @@ internal class PromptInjectionUiStore(context: Context) {
             AgentTaskDatabase.get(appContext).agentTaskDao().definitionsNow()
                 .map { definition -> PromptAutomationOption(definition.id, definition.title) }
         }.getOrDefault(emptyList())
+        val loadedProjects = runCatching {
+            io.github.mangi.eta.fork.projects.ProjectRepository.projects(appContext).first()
+                .filter { it.archivedAt == null }.map { PromptProjectOption(it.id, it.name) }
+        }.getOrDefault(emptyList())
         return PromptScopeSnapshot(
             config = loadedConfig,
             providers = loadedProviders,
@@ -337,6 +353,7 @@ internal class PromptInjectionUiStore(context: Context) {
             meetings = loadedMeetings,
             characters = loadedCharacters,
             automations = loadedAutomations,
+            projects = loadedProjects,
         )
     }
 

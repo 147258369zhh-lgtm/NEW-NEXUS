@@ -162,6 +162,7 @@ internal object PromptImportCodec {
                         .put("content", block.content)
                         .put("enabled", block.enabled)
                         .put("position", block.position.wireValue)
+                        .put("stages", JSONArray(block.stages.map { it.wireValue }.sorted()))
                         .put("order", block.order),
                 )
             }
@@ -184,6 +185,7 @@ internal object PromptImportCodec {
                 JSONObject()
                     .put("template_id", binding.templateId)
                     .put("target", binding.target.toJson())
+                    .put("inheritance", binding.inheritance.name)
                     .put("enabled", binding.enabled),
             )
         }
@@ -209,6 +211,7 @@ internal object PromptImportCodec {
             append('\n')
             append("<!-- eta-block enabled:").append(block.enabled)
                 .append(" position:").append(block.position.wireValue)
+                .append(" stages:").append(block.stages.joinToString(",") { it.wireValue }.ifBlank { "all" })
                 .append(" order:").append(block.order.takeIf { it != 0 } ?: index)
                 .append(" -->\n")
             append("## ").append(singleLine(block.title.ifBlank { "Block ${index + 1}" })).append('\n')
@@ -226,6 +229,7 @@ internal object PromptImportCodec {
             append("[Block ").append(index + 1).append(']')
                 .append(" enabled=").append(block.enabled)
                 .append(" position=").append(block.position.wireValue)
+                .append(" stages=").append(block.stages.joinToString(",") { it.wireValue }.ifBlank { "all" })
                 .append(" order=").append(block.order.takeIf { it != 0 } ?: index)
                 .append('\n')
             append("Title: ").append(singleLine(block.title)).append('\n')
@@ -320,7 +324,7 @@ internal object PromptImportCodec {
     ): PromptImportPreview {
         if (root.stringOrNull("schema") == PromptInjectionConfig.SCHEMA) {
             val version = root.optInt("version", -1)
-            if (version != PromptInjectionConfig.VERSION) {
+            if (version !in 1..PromptInjectionConfig.VERSION) {
                 fail(PromptImportErrorCode.UNSUPPORTED_FORMAT, "不支持的 Nexus 提示词版本：" + version)
             }
             return importNative(root, sourceHash, sourceBytes)
@@ -395,6 +399,10 @@ internal object PromptImportCodec {
                     content = content,
                     enabled = block.optBoolean("enabled", true),
                     position = PromptBlockPosition.fromWire(block.stringOrNull("position")),
+                    stages = block.optJSONArray("stages")?.let { values ->
+                        (0 until values.length()).map { PromptStage.fromWire(values.optString(it)) }
+                            .filter { it != PromptStage.AUTO }.toSet()
+                    }.orEmpty(),
                     order = block.optInt("order", 0),
                 )
             }
@@ -455,6 +463,7 @@ internal object PromptImportCodec {
                 templateId = templateId,
                 target = target,
                 enabled = binding.optBoolean("enabled", true),
+                inheritance = PromptInheritance.fromWire(binding.optString("inheritance")),
             )
         }
         if (bindings.isNotEmpty()) {
@@ -1168,7 +1177,7 @@ internal object PromptImportCodec {
                 position = PromptBlockPosition.fromWire(attributes["position"]),
                 order = attributes["order"]?.toIntOrNull() ?: index * 10,
                 notices = notices,
-            )
+            ).map { it.copy(stages = roundTripStages(attributes["stages"])) }
         }
         if (blocks.isEmpty()) return null
         enforceBlocks(blocks)
@@ -1229,7 +1238,7 @@ internal object PromptImportCodec {
                 position = PromptBlockPosition.fromWire(attributes["position"]),
                 order = attributes["order"]?.toIntOrNull() ?: index * 10,
                 notices = notices,
-            )
+            ).map { it.copy(stages = roundTripStages(attributes["stages"])) }
         }
         if (blocks.isEmpty()) return null
         enforceBlocks(blocks)
@@ -1298,6 +1307,10 @@ internal object PromptImportCodec {
         if (remaining.isNotEmpty()) chunks += remaining
         return chunks
     }
+
+    private fun roundTripStages(raw: String?): Set<PromptStage> =
+        if (raw.isNullOrBlank() || raw == "all") emptySet()
+        else raw.split(',').map(PromptStage::fromWire).filter { it != PromptStage.AUTO }.toSet()
 
     private fun roundTripAttributes(raw: String?): Map<String, String> = raw
         ?.let { attributes ->

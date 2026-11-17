@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -39,6 +40,9 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.terminal.TerminalKey
 import io.github.mangi.eta.agent.terminal.TerminalModifiers
@@ -56,6 +60,7 @@ internal fun TerminalEntryScreen(
     terminalStore: UserTerminalStore,
     consoleStore: ConsoleStore,
     onOpenEnvironment: () -> Unit,
+    isVisible: Boolean = true,
 ) {
     val consoleState by consoleStore.uiState.collectAsState()
     var consoleMode by rememberSaveable { mutableStateOf(true) }
@@ -76,6 +81,7 @@ internal fun TerminalEntryScreen(
             terminalStore = terminalStore,
             onExitConsole = { consoleMode = false },
             onOpenEnvironment = onOpenEnvironment,
+            isVisible = isVisible,
         )
         else -> UserTerminalScreen(
             store = terminalStore,
@@ -100,7 +106,21 @@ internal fun ConsoleScreen(
     terminalStore: UserTerminalStore,
     onExitConsole: () -> Unit,
     onOpenEnvironment: () -> Unit,
+    isVisible: Boolean = true,
 ) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(store, lifecycleOwner, isVisible) {
+        fun updateVisibility() {
+            store.setRenderingEnabled(isVisible && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+        }
+        val observer = LifecycleEventObserver { _, _ -> updateVisibility() }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        updateVisibility()
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            store.setRenderingEnabled(false)
+        }
+    }
     val state by store.uiState.collectAsState()
     val terminalState by terminalStore.uiState.collectAsState()
     var showTasks by remember { mutableStateOf(false) }
@@ -280,7 +300,7 @@ private fun ConsoleGrid(
         ) {
             itemsIndexed(
                 items = frame.lines,
-                key = { _, line -> line.id },
+                key = { _, line -> "${frame.sessionId}:${line.id}" },
                 contentType = { _, _ -> "console-line" },
             ) { index, line ->
                 val onCursorLine = state.connected && index == cursorLineIndex

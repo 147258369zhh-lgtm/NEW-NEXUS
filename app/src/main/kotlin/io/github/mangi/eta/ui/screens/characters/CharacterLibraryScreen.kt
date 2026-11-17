@@ -1,6 +1,7 @@
 package io.github.mangi.eta.ui.screens.characters
 
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,27 +18,34 @@ import androidx.compose.material.icons.rounded.SearchOff
 import androidx.compose.material.icons.rounded.SportsBar
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.agent.roleplay.CharacterProfile
+import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.app.CharacterLibraryStore
 import io.github.mangi.eta.ui.components.ListEmptyState
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.NexusSettingsTabs
 import io.github.mangi.eta.ui.navigation.AppRoute
+import io.github.mangi.eta.ui.screens.prompt.PromptInjectionScreen
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import top.yukonga.miuix.kmp.basic.InputField
 import top.yukonga.miuix.kmp.basic.SearchBar
-import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.basic.TabRow
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle as SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.preference.ArrowPreference
+import io.github.mangi.eta.ui.components.NexusSettingsArrowPreference as ArrowPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 internal val CharacterCardPadding = 12.dp
@@ -50,6 +58,12 @@ internal fun CharacterLibraryScreen(
     onOpenInstructions: () -> Unit,
     onBack: () -> Unit,
 ) {
+    var showingCharacters by rememberSaveable { mutableStateOf(false) }
+    BackHandler(enabled = showingCharacters) { showingCharacters = false }
+    if (!showingCharacters) {
+        PromptInjectionScreen(onBack = onBack, onOpenCharacters = { showingCharacters = true })
+        return
+    }
     val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) store.importCard(uri) { onNavigate(AppRoute.CharacterDetail(it)) }
     }
@@ -61,8 +75,8 @@ internal fun CharacterLibraryScreen(
         onNavigate(AppRoute.CharacterEditor())
     }
     MiuixScaffoldPage(
-        title = "角色与指令",
-        onBack = onBack,
+        title = "剧情人物与背景",
+        onBack = { showingCharacters = false },
         actions = {
             IconButton(onClick = importCard, enabled = !store.busy) {
                 Icon(Icons.Rounded.FileUpload, contentDescription = "导入角色卡")
@@ -72,36 +86,6 @@ internal fun CharacterLibraryScreen(
             }
         },
     ) {
-        item(key = "character_instruction_tabs") {
-            TabRow(
-                tabs = listOf("角色", "指令"),
-                selectedTabIndex = 0,
-                onTabSelected = { index -> if (index == 1) onOpenInstructions() },
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            )
-        }
-        item(key = "prompt_and_tool_boundary") {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = CharacterCardPadding)
-                    .padding(top = 2.dp, bottom = 10.dp),
-            ) {
-                ArrowPreference(
-                    title = "提示词与工具边界",
-                    summary = "管理全局、模型、角色、会话与会议室的指令注入",
-                    startAction = {
-                        Icon(
-                            imageVector = Icons.Rounded.Tune,
-                            contentDescription = null,
-                            tint = MiuixTheme.colorScheme.primary,
-                            modifier = Modifier.padding(end = 12.dp),
-                        )
-                    },
-                    onClick = { onNavigate(AppRoute.PromptInjection) },
-                )
-            }
-        }
         item(key = "search") {
             SearchBar(
                 modifier = Modifier
@@ -206,22 +190,9 @@ internal fun CharacterLibraryScreen(
             SmallTitle("我的")
             Card(
                 modifier = Modifier
-                    .padding(horizontal = 12.dp)
+                    .padding(horizontal = 16.dp)
                     .padding(bottom = 12.dp),
             ) {
-                ArrowPreference(
-                    title = "角色行为与附加指令",
-                    summary = "组合角色人格、会话规则、输出格式与后置行为",
-                    startAction = {
-                        Icon(
-                            imageVector = Icons.Rounded.Description,
-                            contentDescription = null,
-                            tint = MiuixTheme.colorScheme.primary,
-                            modifier = Modifier.padding(end = 12.dp),
-                        )
-                    },
-                    onClick = onOpenInstructions,
-                )
                 ArrowPreference(
                     title = "我的人设",
                     summary = "角色对你的称呼与你在故事中的身份",

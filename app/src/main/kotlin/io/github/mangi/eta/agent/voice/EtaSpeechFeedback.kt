@@ -50,7 +50,7 @@ internal data class EtaSpeechState(
     val speaking: Boolean = false,
     /** 朗读期间回声消除可用，说一句话就能打断。 */
     val bargeInArmed: Boolean = false,
-    /** Canonical state shared with remote voice surfaces and the future full-duplex controller. */
+    /** Task-facing phase; independent duplex capture is reported by bargeInArmed. */
     val canonical: VoiceSessionSnapshot = VoiceSessionSnapshot(),
 ) {
     val active: Boolean get() = phase != EtaSpeechPhase.IDLE

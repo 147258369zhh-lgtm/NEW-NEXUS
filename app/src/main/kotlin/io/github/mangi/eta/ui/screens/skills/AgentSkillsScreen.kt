@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -44,6 +45,7 @@ import io.github.mangi.eta.ui.components.EtaStatusTone
 import io.github.mangi.eta.ui.components.EtaUiMetrics
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.NexusSettingsGroup
 import io.github.mangi.eta.ui.model.AgentSkillsAction
 import io.github.mangi.eta.ui.model.AgentSkillsUiState
 import io.github.mangi.eta.ui.model.SkillItemUi
@@ -60,12 +62,13 @@ import kotlinx.coroutines.withContext
 import androidx.core.content.FileProvider
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle as SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.preference.ArrowPreference
+import top.yukonga.miuix.kmp.basic.TextField
+import io.github.mangi.eta.ui.components.NexusSettingsArrowPreference as ArrowPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
 
@@ -76,6 +79,23 @@ fun AgentSkillsScreen(
     modifier: Modifier = Modifier,
 ) {
     var page by remember { mutableStateOf("") }
+    state.editor?.let { editor ->
+        var name by remember(editor.id, editor.revision) { mutableStateOf(editor.name) }
+        var body by remember(editor.id, editor.revision) { mutableStateOf(editor.body) }
+        androidx.activity.compose.BackHandler { onAction(AgentSkillsAction.CloseEditor) }
+        MiuixScaffoldPage(title = "编辑 Skill", onBack = { onAction(AgentSkillsAction.CloseEditor) }, modifier = modifier) {
+            item { TextField(value = name, onValueChange = { name = it.take(100) }, label = "显示名", modifier = Modifier.fillMaxWidth().padding(16.dp)) }
+            item { TextField(value = body, onValueChange = { body = it }, label = "技能正文", minLines = 12, maxLines = 40, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) }
+            item { TextButton(text = "保存", enabled = name.isNotBlank() && state.busySkillId == null,
+                onClick = { onAction(AgentSkillsAction.SaveEditor(editor.id, name, body, editor.revision)) }, modifier = Modifier.padding(16.dp)) }
+        }
+        state.notice?.let { notice ->
+            WindowDialog(show = true, title = notice.title, summary = notice.message, onDismissRequest = { onAction(AgentSkillsAction.DismissNotice) }) {
+                TextButton(text = "确定", onClick = { onAction(AgentSkillsAction.DismissNotice) })
+            }
+        }
+        return
+    }
     androidx.compose.runtime.LaunchedEffect(page) { if (page.isEmpty()) onAction(AgentSkillsAction.Refresh) }
     if (page.isNotEmpty()) {
         androidx.activity.compose.BackHandler { page = "" }
@@ -203,7 +223,7 @@ fun AgentSkillsScreen(
         modifier = modifier,
     ) {
         item(key = "skill-evolution") {
-            Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
                 DetailListRow("经验技能", "自动提炼、证据验证与版本管理", Icons.Rounded.AutoAwesome, tone = EtaIconTone.AUTOMATION, onClick = { page = "evolution" })
                 DetailListRow(
                     title = stringResource(R.string.skills_tools_permission_title),
@@ -231,7 +251,7 @@ fun AgentSkillsScreen(
             SmallTitle(stringResource(R.string.ui_install_087db6), modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
             Card(
                 modifier = Modifier
-                    .padding(horizontal = 12.dp)
+                    .padding(horizontal = 16.dp)
                     .padding(bottom = EtaUiMetrics.groupGap),
             ) {
                 ArrowPreference(
@@ -272,16 +292,14 @@ fun AgentSkillsScreen(
         }
 
         if (needsReview.isNotEmpty()) {
-            item(key = "review") {
+            item(key = "review-heading") {
                 SmallTitle("建议复核", modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
-                Card(
-                    modifier = Modifier
-                        .padding(horizontal = 12.dp)
-                        .padding(bottom = EtaUiMetrics.groupGap),
-                ) {
-                    needsReview.forEach { skill ->
+            }
+            items(needsReview, key = { "review-${it.id}" }) { skill ->
+                NexusSettingsGroup {
                         SkillSwitchRow(
                             skill = skill,
+                            onEdit = { onAction(AgentSkillsAction.OpenEditor(skill.id)) },
                             enabled = !operationPending,
                             onToggle = { enabled ->
                                 onAction(AgentSkillsAction.ToggleSkill(skill.id, enabled))
@@ -301,22 +319,19 @@ fun AgentSkillsScreen(
                                 null
                             },
                         )
-                    }
                 }
             }
         }
 
         if (builtinInstalled.isNotEmpty()) {
-            item(key = "builtin") {
+            item(key = "builtin-heading") {
                 SmallTitle(stringResource(R.string.ui_built_in_skills_1ceedf), modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
-                Card(
-                    modifier = Modifier
-                        .padding(horizontal = 12.dp)
-                        .padding(bottom = EtaUiMetrics.groupGap),
-                ) {
-                    builtinInstalled.forEach { skill ->
+            }
+            items(builtinInstalled, key = { "builtin-${it.id}" }) { skill ->
+                NexusSettingsGroup {
                         SkillSwitchRow(
                             skill = skill,
+                            onEdit = { onAction(AgentSkillsAction.OpenEditor(skill.id)) },
                             enabled = !operationPending,
                             onToggle = { enabled ->
                                 onAction(AgentSkillsAction.ToggleSkill(skill.id, enabled))
@@ -331,22 +346,19 @@ fun AgentSkillsScreen(
                                 null
                             },
                         )
-                    }
                 }
             }
         }
 
         if (userInstalled.isNotEmpty()) {
-            item(key = "user") {
+            item(key = "user-heading") {
                 SmallTitle(stringResource(R.string.ui_user_skills_748e7f), modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
-                Card(
-                    modifier = Modifier
-                        .padding(horizontal = 12.dp)
-                        .padding(bottom = EtaUiMetrics.groupGap),
-                ) {
-                    userInstalled.forEach { skill ->
+            }
+            items(userInstalled, key = { "user-${it.id}" }) { skill ->
+                NexusSettingsGroup {
                         SkillSwitchRow(
                             skill = skill,
+                            onEdit = { onAction(AgentSkillsAction.OpenEditor(skill.id)) },
                             enabled = !operationPending,
                             onToggle = { enabled ->
                                 onAction(AgentSkillsAction.ToggleSkill(skill.id, enabled))
@@ -362,20 +374,16 @@ fun AgentSkillsScreen(
                                 null
                             },
                         )
-                    }
                 }
             }
         }
 
         if (removed.isNotEmpty()) {
-            item(key = "removed") {
+            item(key = "removed-heading") {
                 SmallTitle(stringResource(R.string.ui_removed_4e5c49), modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
-                Card(
-                    modifier = Modifier
-                        .padding(horizontal = 12.dp)
-                        .padding(bottom = EtaUiMetrics.groupGap),
-                ) {
-                    removed.forEach { skill ->
+            }
+            items(removed, key = { "removed-${it.id}" }) { skill ->
+                NexusSettingsGroup {
                         BasicComponent(
                             title = skill.name,
                             summary = stringResource(R.string.ui_click_to_reinstall_dc60de),
@@ -384,7 +392,6 @@ fun AgentSkillsScreen(
                                 onAction(AgentSkillsAction.ReinstallBuiltin(skill.id))
                             },
                         )
-                    }
                 }
             }
         }
@@ -589,7 +596,7 @@ fun AgentSkillsScreen(
 @Composable
 private fun SkillHealthCard(installedCount: Int, reviewCount: Int) {
     val healthy = reviewCount == 0
-    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = EtaUiMetrics.groupGap)) {
+    Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = EtaUiMetrics.groupGap)) {
         Row(
             modifier = Modifier.padding(16.dp),
             verticalAlignment = Alignment.CenterVertically,

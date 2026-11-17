@@ -2,6 +2,7 @@ package io.github.mangi.eta.fork.meeting
 
 import io.github.mangi.eta.agent.accessibility.AccessibilityWaitPhase
 import io.github.mangi.eta.agent.runtime.AgentEvent
+import io.github.mangi.eta.agent.runtime.RunApprovalPhase
 import java.util.concurrent.TimeoutException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -22,7 +23,8 @@ internal class MeetingRunEventRecorder(
     private val flushTimeoutMs: Long = 10_000,
     private val persistStream: suspend (MeetingStreamActivity) -> Unit = {},
     private val recordStreams: Boolean = true,
-    private val streamFlushIntervalMs: Long = 120,
+    private val streamFlushIntervalMs: Long = 200,
+    private val persistApproval: suspend (AgentEvent.ApprovalChanged) -> Unit = {},
 ) {
     private val lock = Any()
     private val events = MeetingRunEventMailbox()
@@ -34,6 +36,8 @@ internal class MeetingRunEventRecorder(
         val tools = linkedMapOf<String, MeetingToolActivity>()
         val failedWaits = mutableSetOf<Int>()
         val failedTools = mutableSetOf<String>()
+        val approvals = linkedMapOf<String, AgentEvent.ApprovalChanged>()
+        val failedApprovals = mutableSetOf<String>()
         val stream = MeetingStreamReducer(runId)
         val failedStreams = linkedMapOf<String, MeetingStreamActivity>()
         suspend fun persist(block: suspend () -> Unit): Boolean = try {
@@ -47,6 +51,10 @@ internal class MeetingRunEventRecorder(
         suspend fun saveTool(tool: MeetingToolActivity) {
             tools[tool.messageId] = tool
             if (persist { persistTool(tool) }) failedTools.remove(tool.messageId) else failedTools.add(tool.messageId)
+        }
+        suspend fun saveApproval(event: AgentEvent.ApprovalChanged) {
+            approvals[event.approvalId] = event
+            if (persist { persistApproval(event) }) failedApprovals.remove(event.approvalId) else failedApprovals.add(event.approvalId)
         }
         suspend fun flushStreams() {
             stream.drain().forEach { activity ->
@@ -67,7 +75,10 @@ internal class MeetingRunEventRecorder(
             if (!streamEvent || (System.nanoTime() - lastFlush) / 1_000_000 >= streamFlushIntervalMs) {
                 flushStreams(); lastFlush = System.nanoTime()
             }
-            if (event is AgentEvent.AccessibilityWaiting) {
+            if (event is AgentEvent.ApprovalChanged) {
+                val previous = approvals[event.approvalId]
+                if (previous == null || previous.phase == RunApprovalPhase.REQUESTED) saveApproval(event)
+            } else if (event is AgentEvent.AccessibilityWaiting) {
                 val previous = waits[event.outage]
                 if (previous != event && (previous == null || previous.phase == AccessibilityWaitPhase.WAITING)) saveWait(event)
             } else {
@@ -84,18 +95,20 @@ internal class MeetingRunEventRecorder(
         // Missing finishes do not prove successful execution; preserve the partial trace without a spinner.
         tools.values.filter { !it.phase.terminal }.forEach { tool -> saveTool(tool.copy(phase = MeetingToolPhase.INTERRUPTED)) }
         waits.values.filter { it.phase == AccessibilityWaitPhase.WAITING }.forEach { event -> saveWait(event.copy(phase = AccessibilityWaitPhase.CANCELLED)) }
+        approvals.values.filter { it.phase == RunApprovalPhase.REQUESTED }.toList().forEach { saveApproval(it.copy(phase = RunApprovalPhase.CANCELLED)) }
         // A failed terminal write has no later event to repair it. Retry each latest snapshot once,
         // within the same bounded flush, without replaying any tool or inventing a successful commit.
         failedTools.toList().forEach { id -> saveTool(tools.getValue(id)) }
         failedWaits.toList().forEach { outage -> saveWait(waits.getValue(outage)) }
+        failedApprovals.toList().forEach { id -> saveApproval(approvals.getValue(id)) }
         failedStreams.toMap().forEach { (id, activity) -> if (persist { persistStream(activity) }) failedStreams.remove(id) }
-        writesComplete = failedTools.isEmpty() && failedWaits.isEmpty() && failedStreams.isEmpty()
+        writesComplete = failedTools.isEmpty() && failedWaits.isEmpty() && failedStreams.isEmpty() && failedApprovals.isEmpty()
     }
 
     init { writer.invokeOnCompletion { events.close() } }
 
     fun accept(event: AgentEvent) {
-        if (event !is AgentEvent.AccessibilityWaiting && event !is AgentEvent.ToolStarted &&
+        if (event !is AgentEvent.ApprovalChanged && event !is AgentEvent.AccessibilityWaiting && event !is AgentEvent.ToolStarted &&
             event !is AgentEvent.ToolFinished && event !is AgentEvent.HostedToolStarted && event !is AgentEvent.HostedToolFinished &&
             (!recordStreams || !isStreamEvent(event))) return
         synchronized(lock) { if (!closed) events.trySend(event) }

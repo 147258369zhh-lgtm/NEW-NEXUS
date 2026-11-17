@@ -13,6 +13,21 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MnnModelPackageTest {
+    @Test fun runtimeRequiresWeightsTokenizerAndModelConfigInsideThePackage() {
+        val root = Files.createTempDirectory("mnn-runtime-package").toFile()
+        try {
+            File(root, "config.json").writeText("{}")
+            File(root, "llm.mnn").writeText("graph")
+            assertThrows(IllegalArgumentException::class.java) { MnnModelPackage.validateForRuntime(root) }
+            File(root, "llm.mnn.weight").writeText("weights")
+            File(root, "tokenizer.txt").writeText("tokens")
+            File(root, "llm_config.json").writeText("{}")
+            MnnModelPackage.validateForRuntime(root)
+            File(root, "config.json").writeText("""{"tokenizer_file":"../tokenizer.txt"}""")
+            assertThrows(IllegalArgumentException::class.java) { MnnModelPackage.validateForRuntime(root) }
+        } finally { root.deleteRecursively() }
+    }
+
     @Test
     fun validatesMinimumDirectoryAndOptionalVision() {
         val root = Files.createTempDirectory("mnn-package").toFile()

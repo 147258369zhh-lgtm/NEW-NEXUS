@@ -11,6 +11,9 @@ class WakeWordTest {
         assertTrue(WakeWordMatcher.matches("你好，小 ETA，打开设置", config))
         assertTrue(WakeWordMatcher.matches("助手", config))
         assertFalse(WakeWordMatcher.matches("打开设置", config))
+        assertTrue(WakeWordMatcher.matches("助手打开设置", config))
+        assertTrue(WakeWordMatcher.matches("hello Nexus", WakeWordConfig(enabled = true)))
+        assertFalse(WakeWordMatcher.matches("Nexuses", WakeWordConfig(enabled = true)))
     }
 
     @Test

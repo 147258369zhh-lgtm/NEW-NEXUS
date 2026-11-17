@@ -1,0 +1,43 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+  <string name="linux_sources_title">Linux 下載來源</string>
+  <string name="linux_sources_defaults">依用途選擇來源</string>
+  <string name="linux_sources_custom_count">%1$d 個自訂來源</string>
+  <string name="linux_sources_priority_tab">來源與優先順序</string>
+  <string name="linux_sources_custom_tab">自訂</string>
+  <string name="linux_sources_latest_tab">最新正式版本</string>
+  <string name="linux_sources_distribution">Linux 系統</string>
+  <string name="linux_sources_purpose">來源用途</string>
+  <string name="linux_sources_transport_note">依用途選擇優先來源；失敗後嘗試其他來源。系統與工具封存檔維持官方摘要驗證。</string>
+  <string name="linux_sources_china">中國來源</string>
+  <string name="linux_sources_overseas">海外官方來源</string>
+  <string name="linux_sources_preferred">優先</string>
+  <string name="linux_sources_prefer">設為優先</string>
+  <string name="linux_sources_delete">刪除</string>
+  <string name="linux_sources_jdk_note">OpenJDK 官方封存檔僅支援 Debian glibc；Alpine 使用其 APK 相容版本。鏡像缺少對應正式版本時改用官方來源。</string>
+  <string name="linux_sources_name">來源名稱</string>
+  <string name="linux_sources_url">HTTPS 位址或封存檔路徑範本</string>
+  <string name="linux_sources_security">APT security HTTPS 位址</string>
+  <string name="linux_sources_template_note">封存檔範本支援 {version}、{file}、{arch}、{official}；套件來源請填寫鏡像根位址。不能輸入命令。</string>
+  <string name="linux_sources_latest_note">唯讀檢查官方最新正式版本；檢查不會下載、安裝或覆寫現有環境。安裝版本需有符合平台的官方封存檔與摘要。</string>
+  <string name="linux_sources_checking">正在檢查</string>
+  <string name="linux_sources_check">檢查官方最新版本</string>
+  <string name="linux_sources_failed">檢查失敗</string>
+  <string name="linux_sources_close">關閉</string>
+  <string name="linux_sources_save">儲存並優先使用</string>
+  <string name="linux_sources_invalid">來源無效</string>
+  <string name="linux_sources_rootfs">RootFS 系統映像</string>
+  <string name="linux_sources_apk">APK 套件</string>
+  <string name="linux_sources_apt">APT 套件</string>
+  <string name="linux_sources_uv">uv 工具封存檔</string>
+  <string name="linux_sources_node">Node.js 封存檔</string>
+  <string name="linux_sources_go">Go SDK 封存檔</string>
+  <string name="linux_sources_jdk">JDK 封存檔</string>
+  <string name="linux_sources_npm">npm 套件</string>
+  <string name="linux_sources_pypi">PyPI 套件</string>
+  <string name="linux_sources_python">Python 獨立封存檔</string>
+  <string name="linux_sources_rust">Rust 工具鏈</string>
+  <string name="linux_sources_generic">通用工具封存檔</string>
+  <string name="linux_sources_maven">Maven 封存檔</string>
+  <string name="linux_sources_gradle">Gradle 封存檔</string>
+</resources>

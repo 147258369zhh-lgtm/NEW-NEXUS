@@ -47,6 +47,7 @@ internal data class LocalDevicePerformanceSnapshot(
     val batteryTemperatureC: Float? = null,
     val screenInteractive: Boolean = true,
     val deviceIdle: Boolean = false,
+    val measured: Boolean = true,
 ) {
     val socLabel: String
         get() = when {
@@ -88,6 +89,9 @@ internal data class LocalModelPerformanceProfile(
  * OpenAI-compatible service end to end.
  */
 internal object LocalModelPerformanceMonitor {
+    @Volatile
+    private var cachedSnapshot: LocalDevicePerformanceSnapshot? = null
+
     private val probeHttp = OkHttpClient.Builder()
         .connectTimeout(4, TimeUnit.SECONDS)
         .readTimeout(8, TimeUnit.SECONDS)
@@ -143,6 +147,39 @@ internal object LocalModelPerformanceMonitor {
             batteryTemperatureC = batteryTemperatureC,
             screenInteractive = power.isInteractive,
             deviceIdle = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) power.isDeviceIdleMode else false,
+        ).also { cachedSnapshot = it }
+    }
+
+    /** Display-only pending data never issues Binder calls or invents available resources. */
+    fun bestAvailableSnapshot(): LocalDevicePerformanceSnapshot =
+        cachedSnapshot ?: pendingSnapshot()
+
+    suspend fun captureDeferred(context: Context): LocalDevicePerformanceSnapshot = withContext(Dispatchers.IO) {
+        capture(context)
+    }
+
+    private fun pendingSnapshot(): LocalDevicePerformanceSnapshot {
+        return LocalDevicePerformanceSnapshot(
+            socManufacturer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                Build.SOC_MANUFACTURER.orEmpty()
+            } else {
+                Build.MANUFACTURER.orEmpty()
+            },
+            socModel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                Build.SOC_MODEL.orEmpty().ifBlank { Build.HARDWARE.orEmpty() }
+            } else {
+                Build.HARDWARE.orEmpty()
+            },
+            deviceModel = Build.MODEL.orEmpty(),
+            androidSdk = Build.VERSION.SDK_INT,
+            cpuCores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1),
+            totalRamBytes = 0L,
+            availableRamBytes = 0L,
+            freeStorageBytes = 0L,
+            thermalStatus = PowerManager.THERMAL_STATUS_NONE,
+            batteryPercent = null,
+            powerSaveMode = false,
+            measured = false,
         )
     }
 

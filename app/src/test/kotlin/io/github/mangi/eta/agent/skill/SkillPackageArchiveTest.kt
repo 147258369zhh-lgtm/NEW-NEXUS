@@ -74,6 +74,26 @@ class SkillPackageArchiveTest {
     }
 
     @Test
+    fun restoringOneExportedSkillPreservesOtherSkillsAndResources() {
+        val root = temporaryFolder.newFolder("restore-selected-skills")
+        val selected = File(root, "selected-skill")
+        writeSkill(selected, "selected-skill", "Original")
+        File(selected, "assets/example.txt").also { it.parentFile!!.mkdirs(); it.writeText("original asset") }
+        val other = File(root, "other-skill")
+        writeSkill(other, "other-skill", "Keep this")
+        val archive = File(temporaryFolder.newFolder("restore-output"), "skill.zip")
+        SkillPackageArchive.export("selected-skill", "Selected", selected, archive)
+        File(selected, "assets/example.txt").writeText("changed")
+        val service = SkillIndexService(RuntimeEnvironment.getApplication(), root)
+        val installer = SkillPackageInstaller(root, service)
+        val conflict = installer.installLocalZip({ archive.inputStream() }) as SkillInstallResult.Conflict
+        assertTrue(installer.installLocalZip({ archive.inputStream() }, replaceUserSkill = true,
+            expectedReplacementId = "selected-skill", expectedArchiveSha256 = conflict.archiveSha256) is SkillInstallResult.Success)
+        assertEquals("original asset", File(selected, "assets/example.txt").readText())
+        assertTrue(File(other, "SKILL.md").readText().contains("Keep this"))
+    }
+
+    @Test
     fun exportRejectsSymbolicLinksWithoutWritingAnArchive() {
         val source = temporaryFolder.newFolder("symlink-source")
         writeSkill(source, "symlink-skill", "Must not export links.")

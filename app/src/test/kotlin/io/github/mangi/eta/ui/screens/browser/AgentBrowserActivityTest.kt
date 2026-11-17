@@ -34,6 +34,15 @@ class AgentBrowserActivityTest {
     }
 
     @Test
+    fun artworkLinksAcceptOnlyWebAddresses() {
+        val context = RuntimeEnvironment.getApplication()
+        val safe = AgentBrowserActivity.createIntent(context, "artwork-links", "https://example.com/page")
+        assertEquals("https://example.com/page", safe.getStringExtra("io.github.mangi.eta.extra.BROWSER_INITIAL_URL"))
+        val blocked = AgentBrowserActivity.createIntent(context, "artwork-links", "javascript:alert(1)")
+        assertFalse(blocked.hasExtra("io.github.mangi.eta.extra.BROWSER_INITIAL_URL"))
+    }
+
+    @Test
     fun missingSessionDoesNotOpenAnUnrelatedPage() {
         val controller = Robolectric.buildActivity(AgentBrowserActivity::class.java, Intent()).create()
         try {

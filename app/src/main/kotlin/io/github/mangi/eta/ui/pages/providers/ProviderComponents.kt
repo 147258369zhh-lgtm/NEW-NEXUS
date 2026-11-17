@@ -33,9 +33,9 @@ import io.github.mangi.eta.data.model.ProviderSetting
 import io.github.mangi.eta.ui.components.providerBrandLogoRes as sharedProviderBrandLogoRes
 import io.github.mangi.eta.ui.components.EtaIconTile
 import io.github.mangi.eta.ui.components.EtaIconTone
-import io.github.mangi.eta.ui.components.EtaUiMetrics
-import io.github.mangi.eta.ui.components.etaGlassSurface
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.NexusSettingsGroup
+import io.github.mangi.eta.ui.components.LocalNexusSettingsVisuals
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.squircle.squircleBorder
@@ -51,6 +51,9 @@ internal fun ProviderSection(
 ) {
     Column(modifier = modifier) {
         if (title != null) {
+            if (LocalNexusSettingsVisuals.current) {
+                NexusSettingsSmallTitle(title)
+            } else {
             Row(
                 modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 7.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -74,14 +77,9 @@ internal fun ProviderSection(
                     fontWeight = FontWeight.SemiBold,
                 )
             }
+            }
         }
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = EtaUiMetrics.pageHorizontal)
-                .padding(bottom = EtaUiMetrics.groupGap)
-                .etaGlassSurface(),
-        ) {
+        NexusSettingsGroup {
             content()
         }
     }
@@ -107,12 +105,13 @@ private fun ProviderBrandImage(
         contentDescription = null,
         contentScale = ContentScale.Fit,
         modifier = modifier
+            .then(if (LocalNexusSettingsVisuals.current) Modifier.padding(end = 4.dp).size(24.dp) else Modifier
             .padding(end = 4.dp)
             .size(32.dp)
             .shadow(3.dp, CircleShape, ambientColor = MiuixTheme.colorScheme.onSurface.copy(alpha = 0.08f))
             .clip(CircleShape)
             .background(MiuixTheme.colorScheme.surfaceContainerHigh)
-            .border(0.65.dp, Color.White.copy(alpha = 0.16f), CircleShape),
+            .border(0.65.dp, Color.White.copy(alpha = 0.16f), CircleShape)),
     )
 }
 

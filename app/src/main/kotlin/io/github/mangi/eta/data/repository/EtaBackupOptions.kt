@@ -22,6 +22,7 @@ internal data class EtaBackupOptions(
     val format: EtaBackupFormat = EtaBackupFormat.FULL,
     val contents: Set<EtaBackupContent> = EtaBackupContent.entries.toSet(),
     val includeAppFiles: Boolean = false,
+    val includeNotepad: Boolean = true,
     val compression: EtaBackupCompression = EtaBackupCompression.FAST,
 ) {
     fun validated(): EtaBackupOptions {

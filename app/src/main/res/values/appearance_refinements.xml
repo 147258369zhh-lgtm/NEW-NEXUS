@@ -1,0 +1,17 @@
+<resources>
+    <string name="appearance_press_feedback">Press rebound</string>
+    <string name="appearance_press_feedback_summary">Soft spring feedback on compact controls</string>
+    <string name="appearance_glass_group">Glass material</string>
+    <string name="appearance_glass_density">Glass density</string>
+    <string name="appearance_glass_density_summary">Lower is clearer; higher improves reading contrast</string>
+    <string name="appearance_glass_softness">Background softness</string>
+    <string name="appearance_glass_softness_summary">Adjust the softness of backgrounds behind glass</string>
+    <string name="appearance_glass_refraction">Glass refraction</string>
+    <string name="appearance_glass_refraction_summary">Subtle edge refraction; turn off for a lighter effect</string>
+    <string name="appearance_gesture_group">Navigation gestures</string>
+    <string name="appearance_mode_swipe">Swipe between chat and meetings</string>
+    <string name="appearance_mode_swipe_summary">Use horizontal swipes in the upper area</string>
+    <string name="appearance_mode_swipe_distance">Swipe distance</string>
+    <string name="appearance_mode_swipe_distance_summary">Lower is more responsive; higher reduces accidental switches</string>
+    <string name="appearance_save_failed">The change could not be saved. Please try again.</string>
+</resources>

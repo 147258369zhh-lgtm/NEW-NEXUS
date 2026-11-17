@@ -50,7 +50,13 @@ internal class MarkdownInlineBuilder(
         val builder = AnnotatedString.Builder()
         val state = LineState()
         builder.appendNodes(nodes, parent = null, state)
-        return builder.toAnnotatedString().trimTrailingWhitespace()
+        val rendered = builder.toAnnotatedString().trimTrailingWhitespace()
+        val result = AnnotatedString.Builder(rendered)
+        Regex("""\[\^([^\]\s]+)]""").findAll(rendered.text).forEach { match ->
+            val inCode = rendered.spanStyles.any { it.start <= match.range.first && it.end >= match.range.last + 1 && it.item.fontFamily == FontFamily.Monospace }
+            if (!inCode) result.addStringAnnotation("NEXA_FOOTNOTE", match.groupValues[1], match.range.first, match.range.last + 1)
+        }
+        return result.toAnnotatedString()
     }
 
     /** 软换行后的缩进与引用前缀（`>`）属于块结构，不属于正文。 */
@@ -86,8 +92,12 @@ internal class MarkdownInlineBuilder(
                 appendChildren(node, state)
             }
             MarkdownElementTypes.CODE_SPAN -> appendCode(codeSpanText(node))
-            GFMElementTypes.INLINE_MATH, GFMElementTypes.BLOCK_MATH ->
-                append(LatexToUnicodeFormatter.format(mathText(node)))
+            GFMElementTypes.INLINE_MATH, GFMElementTypes.BLOCK_MATH -> {
+                val latex = mathText(node)
+                val start = length
+                append(LatexToUnicodeFormatter.format(latex))
+                if (length > start) addStringAnnotation("NEXA_LATEX", latex, start, length)
+            }
             MarkdownElementTypes.INLINE_LINK -> appendInlineLink(node, state)
             MarkdownElementTypes.FULL_REFERENCE_LINK -> appendReferenceLink(
                 node = node,

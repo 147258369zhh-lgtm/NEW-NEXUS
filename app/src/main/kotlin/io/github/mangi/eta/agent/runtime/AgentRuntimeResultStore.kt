@@ -44,8 +44,19 @@ internal object AgentRuntimeResultStore {
         }
     }
 
-    fun pendingPage(context: Context): List<AgentRuntimeWire.CompletedRun> = runBlocking(Dispatchers.IO) {
-        EtaDatabase.get(context.applicationContext).runtimeRunDao().pendingResultHeaders(8).map { header ->
+    fun pendingPage(
+        context: Context,
+        source: String? = null,
+        afterCreatedAt: Long = Long.MIN_VALUE,
+        afterRunId: String = "",
+    ): List<AgentRuntimeWire.CompletedRun> = runBlocking(Dispatchers.IO) {
+        val dao = EtaDatabase.get(context.applicationContext).runtimeRunDao()
+        val headers = if (source.isNullOrBlank()) {
+            dao.pendingResultHeaders(AgentRuntimeWire.RESULT_PAGE_SIZE, afterCreatedAt, afterRunId)
+        } else {
+            dao.pendingResultHeadersForSource(source, AgentRuntimeWire.RESULT_PAGE_SIZE, afterCreatedAt, afterRunId)
+        }
+        headers.map { header ->
             AgentRuntimeWire.CompletedRun(
                 AgentRuntimeWire.EntryHandoff(header.handoffId, header.handoffSource, header.handoffPayload, header.dismissEntrySurface),
                 AgentRuntimeWire.RunResult(header.runId, header.ok, "", contextSnapshotRef = header.runId,
@@ -104,6 +115,7 @@ internal object AgentRuntimeResultStore {
             contextSnapshotJson = result.contextSnapshot?.encode().orEmpty(),
             operation = result.operation,
             rewriteTargetMessageId = result.rewriteTargetMessageId,
+            pauseJson = result.pause?.let(AgentRuntimeWire::pauseToJson),
             createdAt = createdAt,
         )
     }
@@ -125,6 +137,7 @@ internal object AgentRuntimeResultStore {
                 contextSnapshot = AgentContextSnapshot.decode(contextSnapshotJson),
                 operation = operation,
                 rewriteTargetMessageId = rewriteTargetMessageId,
+                pause = AgentRuntimeWire.pauseFromJson(pauseJson),
                 transcript = legacyCompatibleTranscript(
                     raw = transcriptJson,
                     ok = ok,

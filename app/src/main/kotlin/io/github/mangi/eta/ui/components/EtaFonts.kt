@@ -14,3 +14,19 @@ internal val EtaMonospace = FontFamily(
     Font(R.font.jetbrains_mono_regular, FontWeight.Normal),
     Font(R.font.jetbrains_mono_bold, FontWeight.Bold),
 )
+
+/** 经典皮肤的“清润人文”预设；CJK 字形由系统回退，英文与数字保持轻人文节奏。 */
+internal val NexaHumanist = FontFamily(
+    Font(R.font.manrope_variable, FontWeight.Normal),
+    Font(R.font.manrope_variable, FontWeight.Medium),
+    Font(R.font.manrope_variable, FontWeight.SemiBold),
+    Font(R.font.manrope_variable, FontWeight.Bold),
+)
+
+/** 书刊标题预设仅用于标题与阅读的开场层，正文保持系统无衬线。 */
+internal val NexaEditorial = FontFamily(
+    Font(R.font.newsreader_variable, FontWeight.Normal),
+    Font(R.font.newsreader_variable, FontWeight.Medium),
+    Font(R.font.newsreader_variable, FontWeight.SemiBold),
+    Font(R.font.newsreader_variable, FontWeight.Bold),
+)

@@ -18,16 +18,20 @@ internal object NexusCapabilityPolicyAdapter {
         taskId: String,
         highRiskApproved: Boolean,
         now: Long = System.currentTimeMillis(),
+        validUntil: Long = now + 60L * 60_000L,
+        allowedTools: Set<String> = setOf(descriptor.id),
+        allowedEffects: Set<EffectClass> = setOf(descriptor.effectClass),
+        resolvedHostId: HostId? = null,
     ): CapabilityAuthorization {
-        val hostId = hostId(descriptor.hostKind)
+        val hostId = resolvedHostId ?: hostId(descriptor.hostKind)
         val grant = ToolGrant(
             taskId = TaskId(taskId),
             hostId = hostId,
             hostKind = descriptor.hostKind,
-            allowedTools = setOf("*"),
-            allowedEffects = EffectClass.entries.toSet(),
+            allowedTools = allowedTools,
+            allowedEffects = allowedEffects,
             highRiskApproved = highRiskApproved,
-            validUntil = Long.MAX_VALUE,
+            validUntil = validUntil,
         )
         return CapabilityPolicyEngine.authorize(descriptor, grant, snapshots(capabilities, hostId), now)
     }
@@ -48,6 +52,8 @@ internal object NexusCapabilityPolicyAdapter {
         hostId = hostId,
         capability = name,
         available = usable,
+        // Keep the three contract fields distinct: a missing OS/device capability is not
+        // available, while an available capability is not necessarily currently granted.
         granted = usable,
         authorized = usable,
         backend = "native-android",

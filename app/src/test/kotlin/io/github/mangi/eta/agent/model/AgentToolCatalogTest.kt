@@ -86,6 +86,7 @@ class AgentToolCatalogTest {
         assertFalse("web_search" in base)
         assertFalse("fetch_url" in base)
         assertFalse("terminal" in base)
+        assertFalse("skills_prepare_runtime" in base)
 
         variants.forEach { variant ->
             val names = AgentToolCatalog.build(
@@ -113,6 +114,9 @@ class AgentToolCatalogTest {
         assertEquals("boolean", properties.getJSONObject("submit").getString("type"))
         assertFalse(properties.getJSONObject("url").getString("description").contains("HTTPS"))
         assertFalse(function.getString("description").contains("拦截"))
+        val actions = properties.getJSONObject("action").getJSONArray("enum")
+        assertTrue((0 until actions.length()).any { actions.getString(it) == "open_for_user" })
+        assertTrue(function.getString("description").contains("request_user_input"))
     }
 
     @Test
@@ -282,6 +286,7 @@ class AgentToolCatalogTest {
     private companion object {
         val BROWSER_TOOLS = setOf("browser_use", "web_search", "fetch_url")
         val TERMINAL_TOOLS = setOf(
+            "skills_prepare_runtime",
             "read_image",
             "terminal",
             "terminal_job",
@@ -293,6 +298,14 @@ class AgentToolCatalogTest {
             "grep_files",
             "write_file",
             "list_directory",
+            "make_directory",
+            "copy_file",
+            "move_file",
+            "delete_file",
+            "deliver_file",
+            "download_media",
+            "project_workspace_status",
+            "project_workspace_publish",
         )
     }
 }

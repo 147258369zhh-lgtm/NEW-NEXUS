@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
+import java.security.MessageDigest
 
 internal data class LocalModelMetricSample(
     val runId: String,
@@ -40,7 +41,9 @@ internal object LocalModelMetricsStore : LocalModelMetricsRepository {
         val metrics = sample.metrics
         val dao = LocalModelMetricsDatabase.get(context).dao()
         dao.put(LocalModelMetricEntity(
-            sampleId = "${sample.runId.take(220)}:${sample.requestId.take(260)}",
+            // Do not truncate either half of the composite identity: distinct long run ids or
+            // request ids otherwise alias and a late checkpoint can replace another run's receipt.
+            sampleId = sampleId(sample.runId, sample.requestId),
             runId = sample.runId,
             requestId = sample.requestId,
             providerId = sample.providerId,
@@ -93,6 +96,10 @@ internal object LocalModelMetricsStore : LocalModelMetricsRepository {
             metrics = metrics,
         ))
     }
+
+    internal fun sampleId(runId: String, requestId: String): String = "sample-" + MessageDigest.getInstance("SHA-256")
+        .digest("$runId\u0000$requestId".toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
     private fun LocalModelMetricEntity.toSample() = LocalModelMetricSample(
         runId = runId,

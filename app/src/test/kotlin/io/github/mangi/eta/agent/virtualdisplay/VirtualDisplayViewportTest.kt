@@ -4,6 +4,11 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class VirtualDisplayViewportTest {
+    @Test fun fullscreenSpringOvershootCannotProduceInvalidCornerRadius() {
+        assertEquals(1f, io.github.mangi.eta.agent.overlay.materializeProgress(1.2f), 0f)
+        assertEquals(0f, io.github.mangi.eta.agent.overlay.materializeProgress(-0.1f), 0f)
+        assertEquals(0f, io.github.mangi.eta.agent.overlay.materializeProgress(Float.NaN), 0f)
+    }
     @Test fun fitCenterRejectsLetterboxingAndMapsContent() {
         val viewport = VirtualDisplayViewport.fit(400, 400, 200, 400)!!
         assertNull(viewport.toDisplay(99f, 200f))

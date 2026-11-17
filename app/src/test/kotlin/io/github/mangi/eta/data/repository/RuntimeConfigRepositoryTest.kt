@@ -4,21 +4,174 @@ import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.data.model.CustomHeader
 import io.github.mangi.eta.data.model.Model
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
+import io.github.mangi.eta.data.model.ModelRoleSettings
+import io.github.mangi.eta.data.model.ModelRoleBinding
+import io.github.mangi.eta.data.model.ModelRolePurpose
+import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import io.github.mangi.eta.data.model.ProviderTypes
 import io.github.mangi.eta.data.model.ProviderSourceTypes
 import io.github.mangi.eta.data.model.ProviderAuthModes
 import io.github.mangi.eta.data.model.OpenAiEndpointMode
 import io.github.mangi.eta.data.model.ReasoningEffort
+import io.github.mangi.eta.data.repository.ProviderRepository
 import kotlinx.serialization.json.Json
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [36])
 class RuntimeConfigRepositoryTest {
+    private val context = RuntimeEnvironment.getApplication()
+
+    @org.junit.Before
+    fun setUp() {
+        SettingsDataStore.init(context)
+        ProviderRepository.init(context)
+        runBlocking { ProviderRepository.addProvider(OpenAiCompatibleProviderSetting(
+            id = "roundtrip", name = "测试", baseUrl = "https://example.invalid/v1", apiKey = "fixture",
+            models = listOf("aux", "compact", "memory", "memory-updated", "learning", "transcript").map {
+                Model(id = "m-$it", modelId = it, displayName = it)
+            },
+        )) }
+    }
+
+    @Test
+    fun modelRoleSettingsRoundTripPreservesEveryPurposeAndPartialEdits() = runBlocking {
+        val allRoles = ModelRoleSettings(
+            auxiliaryProviderId = "roundtrip", auxiliaryModelId = "m-aux",
+            compactionProviderId = "roundtrip", compactionModelId = "m-compact",
+            memoryProviderId = "roundtrip", memoryModelId = "m-memory",
+            learningProviderId = "roundtrip", learningModelId = "m-learning",
+            transcriptProviderId = "roundtrip", transcriptModelId = "m-transcript",
+        )
+
+        RuntimeConfigRepository.setModelRoleSettings(allRoles)
+        assertEquals(allRoles, RuntimeConfigRepository.modelRoleSettings())
+
+        val partialEdit = RuntimeConfigRepository.modelRoleSettings().copy(memoryModelId = "m-memory-updated")
+        RuntimeConfigRepository.setModelRoleSettings(partialEdit)
+        assertEquals(partialEdit, RuntimeConfigRepository.modelRoleSettings())
+        assertEquals("roundtrip", RuntimeConfigRepository.modelRoleSettings().memoryProviderId)
+        assertEquals("m-learning", RuntimeConfigRepository.modelRoleSettings().learningModelId)
+        assertEquals("m-transcript", RuntimeConfigRepository.modelRoleSettings().transcriptModelId)
+    }
+
+    @Test
+    fun selectingOneProcessingModelKeepsUnassignedJsonNullRolesEmpty() = runBlocking {
+        val onlyAuxiliary = ModelRoleSettings(auxiliaryProviderId = "roundtrip", auxiliaryModelId = "m-aux")
+        RuntimeConfigRepository.setModelRoleSettings(onlyAuxiliary)
+        assertEquals(onlyAuxiliary, RuntimeConfigRepository.modelRoleSettings())
+        RuntimeConfigRepository.setModelRoleSettings(ModelRoleSettings())
+        assertEquals(ModelRoleSettings(), RuntimeConfigRepository.modelRoleSettings())
+    }
+
+    @Test
+    fun compactionModelFallsBackFromExplicitToAuxiliary() {
+        val provider = OpenAiCompatibleProviderSetting(
+            id = "roles", name = "角色测试", baseUrl = "https://example.invalid/v1", apiKey = "fixture-key",
+            models = listOf(
+                Model(id = "aux", modelId = "aux-api", displayName = "辅助"),
+                Model(id = "compaction", modelId = "compact-api", displayName = "压缩"),
+            ),
+        )
+        val auxiliary = RuntimeConfigRepository.resolveCompactionRole(
+            ModelRoleSettings(auxiliaryProviderId = provider.id, auxiliaryModelId = "aux"),
+            listOf(provider),
+        )
+        assertEquals("aux", auxiliary?.model?.id)
+        assertEquals(ModelRoleSource.AUXILIARY, auxiliary?.source)
+
+        val explicit = RuntimeConfigRepository.resolveCompactionRole(
+            ModelRoleSettings(
+                auxiliaryProviderId = provider.id,
+                auxiliaryModelId = "aux",
+                compactionProviderId = provider.id,
+                compactionModelId = "compaction",
+            ),
+            listOf(provider),
+        )
+        assertEquals("compaction", explicit?.model?.id)
+        assertEquals(ModelRoleSource.COMPACTION, explicit?.source)
+
+        val scoped = RuntimeConfigRepository.resolveCompactionRole(
+            ModelRoleSettings(
+                compactionProviderId = provider.id,
+                compactionModelId = "compaction",
+            ),
+            listOf(provider),
+            ModelRoleBinding("aux", provider.id),
+        )
+        assertEquals("aux", scoped?.model?.id)
+    }
+
+    @Test
+    fun maintenancePurposesUseDedicatedModelThenAuxiliaryThenPrimary() {
+        val provider = OpenAiCompatibleProviderSetting(
+            id = "role-chain", name = "测试", baseUrl = "https://example.invalid/v1",
+            apiKey = "fixture-key",
+            models = listOf(
+                Model(id = "primary", modelId = "primary-api", displayName = "主模型", toolCall = true),
+                Model(id = "aux", modelId = "aux-api", displayName = "辅助"),
+                Model(id = "memory", modelId = "memory-api", displayName = "记忆"),
+                Model(id = "learning", modelId = "learning-api", displayName = "自学习"),
+                Model(id = "transcript", modelId = "transcript-api", displayName = "语音整理"),
+            ),
+        )
+        val primary = RuntimeConfigRepository.buildRuntimeConfig(provider, provider.models[0])
+        val configured = ModelRoleSettings(
+            auxiliaryProviderId = provider.id,
+            auxiliaryModelId = "aux",
+            memoryProviderId = provider.id,
+            memoryModelId = "memory",
+            learningProviderId = provider.id,
+            learningModelId = "learning",
+            transcriptProviderId = provider.id,
+            transcriptModelId = "transcript",
+        )
+
+        ModelRolePurpose.entries.forEach { purpose ->
+            val expected = when (purpose) {
+                ModelRolePurpose.MEMORY -> "memory-api"
+                ModelRolePurpose.LEARNING -> "learning-api"
+                ModelRolePurpose.TRANSCRIPT -> "transcript-api"
+            }
+            assertEquals(
+                expected,
+                RuntimeConfigRepository.resolveModelRoleRuntimeConfig(
+                    purpose, configured, listOf(provider), primary,
+                ).model,
+            )
+        }
+        assertEquals(
+            "aux-api",
+            RuntimeConfigRepository.resolveModelRoleRuntimeConfig(
+                ModelRolePurpose.MEMORY,
+                configured.copy(memoryModelId = null, memoryProviderId = null),
+                listOf(provider),
+                primary,
+            ).model,
+        )
+        assertEquals(
+            "primary-api",
+            RuntimeConfigRepository.resolveModelRoleRuntimeConfig(
+                ModelRolePurpose.MEMORY,
+                ModelRoleSettings(),
+                listOf(provider),
+                primary,
+            ).model,
+        )
+    }
+
     @Test
     fun mapsExplicitModelToolCapabilityIntoRuntimeConfig() {
         val provider = OpenAiCompatibleProviderSetting(
@@ -31,7 +184,25 @@ class RuntimeConfigRepositoryTest {
 
         assertFalse(config(false).supportsTools)
         assertTrue(config(true).supportsTools)
-        assertTrue(config(null).supportsTools)
+        assertFalse(config(null).supportsTools)
+    }
+
+    @Test
+    fun mapsExplicitModelVisionCapabilityIntoRuntimeConfig() {
+        val provider = OpenAiCompatibleProviderSetting(
+            id = "vision-provider", name = "测试", baseUrl = "https://example.invalid/v1",
+        )
+        fun config(vision: Boolean?) = RuntimeConfigRepository.buildRuntimeConfig(
+            provider,
+            Model(
+                id = "model-$vision", modelId = "fixture", displayName = "测试",
+                attachment = vision,
+            ),
+        )
+
+        assertFalse(config(false).supportsImageInput)
+        assertTrue(config(true).supportsImageInput)
+        assertFalse(config(null).supportsImageInput)
     }
 
     @Test

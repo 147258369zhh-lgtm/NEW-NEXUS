@@ -12,6 +12,21 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 internal object ModelRepository {
+    /** Automatic discovery only adds previously unknown models; existing user settings stay intact. */
+    suspend fun addDiscoveredCatalog(catalog: RemoteModelCatalog): Int = withContext(Dispatchers.IO) {
+        ProviderRepository.mutationMutex.withLock {
+            val provider = requireNotNull(ProviderRepository.providerById(catalog.connection.id))
+            require(provider.authMode == ProviderAuthModes.API_KEY && catalog.matches(provider)) { "服务商连接已变更" }
+            val existing = provider.models.mapTo(mutableSetOf()) { it.modelId.normalizedModelId() }
+            val additions = catalog.models.asSequence().filter { it.modelId.isNotBlank() }
+                .filter { existing.add(it.modelId.normalizedModelId()) }.take(500)
+                .mapIndexed { index, model -> model.withNewChatDefaults().copy(id = model.id.ifBlank(::newId), isBuiltIn = false,
+                    source = io.github.mangi.eta.data.model.ModelSource.REMOTE,
+                    contextWindowOverride = model.contextWindow, sortOrder = provider.models.size + index) }.toList()
+            if (additions.isNotEmpty()) ProviderRepository.replaceModels(provider.id, provider.models + additions)
+            additions.size
+        }
+    }
     fun modelsByProviderFlow(providerId: String): Flow<List<Model>> =
         allModelsByProviderFlow(providerId).map { models ->
             models.filter { it.isEnabled }.sortedBy { it.sortOrder }
@@ -48,7 +63,7 @@ internal object ModelRepository {
 
         val existing = models.firstOrNull { it.id == draft.id }
         val saved = if (existing == null) {
-            draft.copy(
+            draft.withNewChatDefaults().copy(
                 id = draft.id.ifBlank(::newId),
                 modelId = modelId,
                 displayName = displayName,

@@ -6,14 +6,18 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.Modifier
 import io.github.mangi.eta.ui.components.AgentChatBody
 import io.github.mangi.eta.ui.components.AgentConversationLoadState
 import io.github.mangi.eta.ui.components.LocalRoleplayChat
 import io.github.mangi.eta.ui.components.LocalAgentBrowserSession
 import io.github.mangi.eta.agent.browser.BrowserSessionRegistry
+import io.github.mangi.eta.agent.skill.SkillCompatibilityChecker
+import io.github.mangi.eta.agent.skill.SkillRuntime
 import io.github.mangi.eta.agent.workflow.GoalPlanNotepadStore
 import io.github.mangi.eta.ui.components.ConversationStage
 import io.github.mangi.eta.data.model.ConversationSubject
@@ -21,10 +25,12 @@ import io.github.mangi.eta.ui.model.AgentChatHomeUiState
 import io.github.mangi.eta.ui.model.ConversationHistoryLoadState
 import io.github.mangi.eta.ui.model.AgentHomeAction
 import io.github.mangi.eta.ui.model.AgentModelPickerUiState
+import io.github.mangi.eta.ui.model.SkillChoiceUi
 import io.github.mangi.eta.ui.model.roleplayChatUi
 import io.github.mangi.eta.ui.components.NexusNotepadDialog
 import io.github.zhh_lgtm.nexus.application.api.WorkflowSnapshot
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 
 /**
@@ -41,13 +47,55 @@ internal fun AgentHomeScreen(
     onAction: (AgentHomeAction) -> Unit,
     onSubmitMessage: (String, Boolean) -> Boolean,
     onNewConversation: () -> Unit,
+    onOpenMcp: () -> Unit = {},
+    onOpenTools: () -> Unit = {},
+    notepadOpen: Boolean = false,
+    onNotepadOpenChange: (Boolean) -> Unit = {},
     isLoadingConversation: Boolean = false,
     conversationLoadFailed: Boolean = false,
     historyLoadState: ConversationHistoryLoadState = ConversationHistoryLoadState.Idle,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    var showNotepad by remember { mutableStateOf(false) }
+    val liveQuestionNodes = remember(state.messages) {
+        state.messages.filterIsInstance<io.github.mangi.eta.ui.model.UserMessageUi>()
+            .map { io.github.mangi.eta.ui.components.ConversationQuestionNode(it.id, it.content.take(160)) }
+    }
+    val questionIndexResult by produceState<Pair<String?, List<io.github.mangi.eta.ui.components.ConversationQuestionNode>>>(
+        conversationKey to emptyList(), conversationKey, liveQuestionNodes, state.isStreaming,
+    ) {
+        val nodes = try {
+            conversationKey?.let { id -> io.github.mangi.eta.data.repository.ConversationQuestionRepository.index(context, id) }
+                .orEmpty().map { io.github.mangi.eta.ui.components.ConversationQuestionNode(it.id, it.label) }
+        } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { emptyList() }
+        value = conversationKey to nodes
+    }
+    val questionIndex = questionIndexResult.second.takeIf { questionIndexResult.first == conversationKey }.orEmpty()
+    val questionNodes = remember(questionIndex, liveQuestionNodes) {
+        // Live assistant tokens leave the user-node list structurally equal, so merging the
+        // full historical index happens only when a question itself changes.
+        (questionIndex + liveQuestionNodes).distinctBy { it.id }
+    }
+    var skillRefreshKey by remember { mutableIntStateOf(0) }
+    val skillLoad by produceState<Result<List<SkillChoiceUi>>?>(null, context, skillRefreshKey) {
+        value = try {
+            val choices = withContext(Dispatchers.IO) {
+                SkillRuntime.createIndexService(context).listInstalledSkills()
+                    .filter { SkillCompatibilityChecker.evaluate(it).available }
+                    .map { SkillChoiceUi(it.id, it.name) }
+            }
+            Result.success(choices)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            Result.failure(failure)
+        }
+    }
+    val availableSkills = skillLoad?.getOrNull().orEmpty()
+    val unavailableLabel = stringResource(io.github.mangi.eta.R.string.chat_unavailable_skill)
+    val skillChoices = availableSkills + state.selectedSkillIds
+        .filterNot { selectedId -> availableSkills.any { it.id == selectedId } }
+        .map { id -> SkillChoiceUi(id, "$id · $unavailableLabel") }
     val workflowSnapshot by produceState<WorkflowSnapshot?>(
         initialValue = null,
         conversationKey,
@@ -59,7 +107,13 @@ internal fun AgentHomeScreen(
         }
     }
     // key 内保持完整分支，避免提前返回遗留无法转换为 DEX 的编译器标记。
-    ConversationStage(ConversationSubject.chat(conversationKey)) {
+    ConversationStage(ConversationSubject.chat(conversationKey), onDshCommand = { name, args ->
+        if (args.isNotBlank()) false else when (name) {
+            "stop" -> { onAction(AgentHomeAction.StopRun); true }
+            "compact" -> if (state.canCompactContext && !state.isStreaming) { onAction(AgentHomeAction.CompactContext); true } else false
+            else -> false
+        }
+    }) {
         if (!state.isConversationLoaded) {
             AgentConversationLoadState(
                 isLoading = isLoadingConversation,
@@ -74,6 +128,10 @@ internal fun AgentHomeScreen(
             CompositionLocalProvider(
                 LocalRoleplayChat provides state.roleplayChatUi(),
                 LocalAgentBrowserSession provides browser,
+                io.github.mangi.eta.ui.components.LocalConversationQuestionNavigation provides io.github.mangi.eta.ui.components.ConversationQuestionNavigation(
+                    conversationKey, questionNodes,
+                    { id, page -> conversationKey?.let { io.github.mangi.eta.ui.app.AgentConversationStore.questionWindow(context, it, id, page) }.orEmpty() },
+                    state.messageEdit == null),
             ) {
                 AgentChatBody(
                     messages = state.messages,
@@ -83,6 +141,12 @@ internal fun AgentHomeScreen(
                     isStreaming = state.isStreaming,
                     reasoningEffort = state.reasoningEffort,
                     workflowMode = state.workflowMode,
+                    selectedSkillIds = state.selectedSkillIds,
+                    availableSkills = skillChoices,
+                    skillChoicesLoading = skillLoad == null,
+                    skillChoicesLoadFailed = skillLoad?.isFailure == true,
+                    onRetrySkillChoices = { skillRefreshKey++ },
+                    onSelectedSkillIdsChange = { onAction(AgentHomeAction.SelectedSkillIdsChanged(it)) },
                     workflowSnapshot = workflowSnapshot,
                     availableReasoningEfforts = state.availableReasoningEfforts,
                     pendingImages = state.pendingImages,
@@ -117,6 +181,7 @@ internal fun AgentHomeScreen(
                     onDeleteMessage = { id -> onAction(AgentHomeAction.DeleteMessage(id)) },
                     onRegenerateMessage = { id -> onAction(AgentHomeAction.RegenerateMessage(id)) },
                     onForkMessage = { id -> onAction(AgentHomeAction.ForkMessage(id)) },
+                    onCreateTaskFromMessage = { id -> onAction(AgentHomeAction.CreateTaskFromMessage(id)) },
                     onSelectReplyCandidate = { id, index -> onAction(AgentHomeAction.SelectReplyCandidate(id, index)) },
                     onSuggestionClick = { prompt ->
                         onAction(AgentHomeAction.SubmitMessage(prompt))
@@ -125,9 +190,9 @@ internal fun AgentHomeScreen(
                     onOpenPermissions = { onAction(AgentHomeAction.OpenPermissions) },
                     onOpenBrowser = { onAction(AgentHomeAction.OpenBrowser) },
                     onNewConversation = onNewConversation,
-                    onOpenNotepad = conversationKey?.takeIf(String::isNotBlank)?.let {
-                        { showNotepad = true }
-                    },
+                    onOpenMcp = onOpenMcp,
+                    onOpenTools = onOpenTools,
+                    onOpenSettings = { onAction(AgentHomeAction.OpenSettings) },
                     hasEarlierMessages = state.hasEarlierMessages,
                     messageStartIndex = state.messageStartIndex,
                     historyLoadState = historyLoadState,
@@ -135,15 +200,10 @@ internal fun AgentHomeScreen(
                     onHistoryViewportChanged = { onAction(AgentHomeAction.HistoryViewportChanged(it)) },
                     modifier = modifier,
                 )
-                if (showNotepad && conversationKey != null) {
-                    NexusNotepadDialog(
+                if (notepadOpen) {
+                    io.github.mangi.eta.ui.components.IndependentNotepadDialog(
                         context = context,
-                        scopeId = conversationKey,
-                        onDismiss = { showNotepad = false },
-                        onAgentAction = { prompt ->
-                            showNotepad = false
-                            onSubmitMessage(prompt, false)
-                        },
+                        onDismiss = { onNotepadOpenChange(false) },
                     )
                 }
             }

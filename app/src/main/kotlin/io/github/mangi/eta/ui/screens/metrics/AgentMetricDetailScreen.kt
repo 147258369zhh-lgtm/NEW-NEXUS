@@ -11,6 +11,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.runtime.AgentRunMetricsStore
+import io.github.mangi.eta.agent.runtime.AgentMetricsTime
 import io.github.mangi.eta.agent.runtime.AgentTokenCostEstimator
 import io.github.mangi.eta.agent.runtime.AgentMetricTraceEntity
 import io.github.mangi.eta.agent.runtime.AgentMetricRequestEntity
@@ -27,13 +28,13 @@ import java.text.NumberFormat
 import java.util.Date
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.onEach
-import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle as SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.basic.TabRow
+import io.github.mangi.eta.ui.components.NexaCompactAction
+import io.github.mangi.eta.ui.components.NexaSegmentedTabs
 import top.yukonga.miuix.kmp.window.WindowDialog
-import top.yukonga.miuix.kmp.preference.ArrowPreference
+import io.github.mangi.eta.ui.components.NexusSettingsArrowPreference as ArrowPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
@@ -52,23 +53,30 @@ internal fun AgentMetricDetailScreen(recordId: String, onBack: () -> Unit, onOpe
         AgentRunMetricsStore.detail(context, recordId).onEach { loading = false; failed = false }
             .catch { loading = false; failed = true }
     }.collectAsState(initial = null)
+    val currencies = (detail?.models.orEmpty().mapNotNull { it.price?.currency } +
+        detail?.children.orEmpty().mapNotNull { it.price?.currency }).distinct().sorted()
+    LaunchedEffect(recordId, currencies) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching { io.github.mangi.eta.agent.runtime.AgentCnyExchangeStore.capture(context, recordId, currencies) }
+        }
+    }
     MiuixScaffoldPage(title = stringResource(R.string.metrics_detail_title), onBack = onBack, overlay = {
         inspectedModel?.let { model -> WindowDialog(show = true, title = model.name.ifBlank { model.modelId }, onDismissRequest = { inspectedModel = null }) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("${model.providerId} · ${model.modelId}", style = MiuixTheme.textStyles.footnote1)
-                Text(metricCostLabel(AgentTokenCostEstimator.estimate(model.metrics, model.price)), style = MiuixTheme.textStyles.body2)
+                Text(metricCostLabel(AgentTokenCostEstimator.estimate(model.metrics, model.price), model.recordId), style = MiuixTheme.textStyles.body2)
                 Text("${model.metrics.requestAttempts} 次请求 · ${model.metrics.retries} 次重试", style = MiuixTheme.textStyles.body2)
                 model.price?.let { price ->
                     Text("每百万 Token\n输入 ${price.currency} ${price.input}\n输出 ${price.currency} ${price.output}\n缓存读取 ${price.cacheRead ?: "未知"}\n缓存写入 ${price.cacheWrite ?: "未知"}", style = MiuixTheme.textStyles.footnote1)
                 }
-                TextButton("关闭", onClick = { inspectedModel = null })
+                NexaCompactAction("关闭", onClick = { inspectedModel = null })
             }
         } }
         inspectedStep?.let { step -> WindowDialog(show = true, title = metricTraceLabel(step.kind), summary =
             "开始后 %.3f 秒".format(step.elapsedMs / 1000.0) + "\n事件 #${step.sequence}" + (step.round?.let { " · 第 $it 轮" } ?: "") +
                 step.label.takeIf { it.isNotBlank() }?.let { "\n$it" }.orEmpty() + step.success?.let { if (it) "\n成功" else "\n失败" }.orEmpty(),
             onDismissRequest = { inspectedStep = null }) {
-            TextButton("关闭", onClick = { inspectedStep = null })
+            NexaCompactAction("关闭", onClick = { inspectedStep = null })
         } }
         inspectedRequest?.let { request -> WindowDialog(
             show = true,
@@ -76,7 +84,7 @@ internal fun AgentMetricDetailScreen(recordId: String, onBack: () -> Unit, onOpe
             onDismissRequest = { inspectedRequest = null },
         ) {
             AgentRequestDetails(request)
-            TextButton(stringResource(R.string.metrics_clear), onClick = { inspectedRequest = null })
+            NexaCompactAction(stringResource(R.string.metrics_clear), onClick = { inspectedRequest = null })
         } }
     }) {
         val loaded = detail
@@ -84,25 +92,29 @@ internal fun AgentMetricDetailScreen(recordId: String, onBack: () -> Unit, onOpe
             Card(Modifier.padding(12.dp)) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(stringResource(if (loading) R.string.metrics_loading else if (failed) R.string.metrics_load_failed else R.string.metrics_record_missing))
-                    if (failed) TextButton(stringResource(R.string.metrics_refresh), onClick = { loading = true; reload++ })
+                    if (failed) NexaCompactAction(stringResource(R.string.metrics_refresh), onClick = { loading = true; reload++ })
                 }
             }
         } else {
             val record = loaded.run
             if (failed) item(key = "stale_error") {
-                Card(Modifier.padding(horizontal = 12.dp).padding(top = 12.dp)) {
+                Card(Modifier.padding(horizontal = 16.dp).padding(top = 12.dp)) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(stringResource(R.string.metrics_load_failed), color = MiuixTheme.colorScheme.error)
-                        TextButton(stringResource(R.string.metrics_refresh), onClick = { loading = true; reload++ })
+                        NexaCompactAction(stringResource(R.string.metrics_refresh), onClick = { loading = true; reload++ })
                     }
                 }
             }
             item(key = "overview") {
-                Card(Modifier.padding(horizontal = 12.dp).padding(top = 12.dp, bottom = 12.dp)) {
+                Card(Modifier.padding(horizontal = 16.dp).padding(top = 12.dp, bottom = 12.dp)) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(metricSourceLabel(record.source) + " · " + metricStatusLabel(record.status), style = MiuixTheme.textStyles.body1)
-                        Text(DateFormat.getDateTimeInstance().format(Date(record.startedAt)), style = MiuixTheme.textStyles.body2)
-                        Text(stringResource(R.string.metrics_detail_duration, NumberFormat.getNumberInstance().format(record.durationMs / 1000.0)), style = MiuixTheme.textStyles.body2)
+                        val startedAt = AgentMetricsTime.known(record.startedAt)
+                        Text(startedAt?.let { DateFormat.getDateTimeInstance().format(Date(it)) }
+                            ?: stringResource(R.string.metrics_time_unknown), style = MiuixTheme.textStyles.body2)
+                        Text(record.durationMs.takeIf { it > 0 }?.let {
+                            stringResource(R.string.metrics_detail_duration, NumberFormat.getNumberInstance().format(it / 1000.0))
+                        } ?: stringResource(R.string.metrics_duration_unknown), style = MiuixTheme.textStyles.body2)
                     }
                     ArrowPreference(title = if (showTechnical) "收起用量明细" else "用量明细", onClick = { showTechnical = !showTechnical })
                     if (showTechnical) {
@@ -122,18 +134,33 @@ internal fun AgentMetricDetailScreen(recordId: String, onBack: () -> Unit, onOpe
                 val billable = loaded.models + loaded.children.map { it.asModel() }
                 AgentMetricsOverview(listOf(record), billable, billable.map { it.metrics }.ifEmpty { listOf(record.metrics) }, costAvailable = !failed)
             }
+            if (record.metrics.approvalRequests > 0) item(key = "approval_summary") {
+                SmallTitle("审批")
+                Card(Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp)) {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("${record.metrics.approvalRequests} 次请求", style = MiuixTheme.textStyles.body1)
+                        Text(
+                            "通过 ${record.metrics.approvalsApproved} · 拒绝 ${record.metrics.approvalsRejected} · " +
+                                "超时 ${record.metrics.approvalsTimedOut} · 取消 ${record.metrics.approvalsCancelled} · " +
+                                "记录失败 ${record.metrics.approvalsFailed}",
+                            style = MiuixTheme.textStyles.footnote1,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                    }
+                }
+            }
             item(key = "models_title") { SmallTitle(stringResource(R.string.metrics_detail_models)) }
             items(loaded.models.sortedBy { it.index }, key = { "model_${it.index}" }) { model ->
-                Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 8.dp)) {
+                Card(Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp)) {
                     DetailListRow(title = model.name.ifBlank { model.modelId }, icon = Icons.Rounded.Memory,
                         preview = "${metricNumber(model.metrics.inputTokens)} 输入 · ${metricNumber(model.metrics.outputTokens)} 输出",
                         subtitle = "${model.metrics.rounds} 轮 · ${model.metrics.requestAttempts} 次请求 · ${model.metrics.retries} 次重试",
-                        value = metricCostLabel(AgentTokenCostEstimator.estimate(model.metrics, model.price)), onClick = { inspectedModel = model })
+                        value = metricCostLabel(AgentTokenCostEstimator.estimate(model.metrics, model.price), model.recordId), onClick = { inspectedModel = model })
                 }
             }
             if (loaded.children.isNotEmpty()) item(key = "children_title") { SmallTitle(stringResource(R.string.metrics_children_title)) }
             items(loaded.children.sortedBy { it.index }, key = { "child_${it.scopeId}" }) { child ->
-                Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 8.dp)) {
+                Card(Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp)) {
                     DetailListRow(title = child.name.ifBlank { child.modelId },
                         icon = if (child.kind == "compaction") Icons.Rounded.Compress else Icons.Rounded.AccountTree,
                         preview = stringResource(if (child.kind == "compaction") R.string.metrics_child_compaction else R.string.metrics_child_subagent) + " · " + metricStatusLabel(child.status),
@@ -141,7 +168,7 @@ internal fun AgentMetricDetailScreen(recordId: String, onBack: () -> Unit, onOpe
                             stringResource(R.string.metrics_child_relation, child.index + 1,
                                 loaded.children.firstOrNull { it.scopeId == child.parentScopeId }?.let { (it.index + 1).toString() }
                                     ?: stringResource(R.string.metrics_child_parent_root)),
-                        value = metricCostLabel(AgentTokenCostEstimator.estimate(child.metrics, child.price)), onClick = { inspectedModel = child.asModel() })
+                        value = metricCostLabel(AgentTokenCostEstimator.estimate(child.metrics, child.price), child.recordId), onClick = { inspectedModel = child.asModel() })
                 }
             }
             item(key = "requests_title") { SmallTitle(stringResource(R.string.metrics_requests_title)) }
@@ -175,7 +202,7 @@ internal fun AgentMetricDetailScreen(recordId: String, onBack: () -> Unit, onOpe
             }
             item(key = "trace_title") { SmallTitle(stringResource(R.string.metrics_trace_title)) }
             item(key = "trace_filters") {
-                TabRow(tabs = listOf("全部", "工具", "异常"), selectedTabIndex = traceFilter, onTabSelected = { traceFilter = it }, modifier = Modifier.padding(horizontal = 12.dp))
+                NexaSegmentedTabs(tabs = listOf("全部", "工具", "异常"), selectedTabIndex = traceFilter, onTabSelected = { traceFilter = it }, modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp))
             }
             if (record.omittedTraceSteps > 0) item(key = "trace_limit") {
                 Text(stringResource(R.string.metrics_trace_limit, record.omittedTraceSteps), Modifier.padding(horizontal = 24.dp, vertical = 12.dp),

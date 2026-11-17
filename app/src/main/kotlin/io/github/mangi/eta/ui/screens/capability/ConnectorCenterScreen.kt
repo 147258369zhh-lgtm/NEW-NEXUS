@@ -3,9 +3,9 @@ package io.github.mangi.eta.ui.screens.capability
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Android
 import androidx.compose.material.icons.rounded.Bluetooth
@@ -26,24 +26,32 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.connector.ConnectorConfigStore
 import io.github.mangi.eta.agent.connector.ConnectorHealth
 import io.github.mangi.eta.agent.connector.ConnectorRegistry
 import io.github.mangi.eta.agent.connector.SavedConnectorConfig
 import io.github.mangi.eta.agent.connector.createSavedConnector
+import io.github.mangi.eta.agent.connector.ConnectorSettingsService
 import io.github.mangi.eta.ui.components.DetailListRow
+import io.github.mangi.eta.ui.components.DialogChoicePreference
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.NexusSettingsTabs
 import java.net.URI
 import kotlinx.coroutines.launch
-import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
+import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle as SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
@@ -60,11 +68,13 @@ internal fun ConnectorCenterScreen(
     val scope = rememberCoroutineScope()
     val registry = remember(context.applicationContext) { ConnectorRegistry(context) }
     val configStore = remember(context.applicationContext) { ConnectorConfigStore(context.applicationContext) }
+    val configuration = remember(context.applicationContext) { ConnectorSettingsService(context.applicationContext) }
     var localHealth by remember { mutableStateOf<ConnectorHealth?>(null) }
     var endpoint by remember { mutableStateOf("") }
     var webSocketHealth by remember { mutableStateOf<ConnectorHealth?>(null) }
     var working by remember { mutableStateOf(false) }
-    var savedConnectors by remember { mutableStateOf(configStore.load()) }
+    var savedConnectors by remember { mutableStateOf(emptyList<SavedConnectorConfig>()) }
+    var configurationsLoaded by remember { mutableStateOf(false) }
     var configName by remember { mutableStateOf("") }
     var configProtocol by remember { mutableStateOf("websocket") }
     var configEndpoint by remember { mutableStateOf("") }
@@ -72,19 +82,69 @@ internal fun ConnectorCenterScreen(
     var configToken by remember { mutableStateOf("") }
     var configNotice by remember { mutableStateOf<String?>(null) }
     var configError by remember { mutableStateOf<String?>(null) }
+    var selectedTab by rememberSaveable { mutableStateOf(0) }
+    val connectionsListState = rememberLazyListState()
+    val localListState = rememberLazyListState()
+    val networkListState = rememberLazyListState()
+    val diagnosticsListState = rememberLazyListState()
+    val listState = when (selectedTab) {
+        1 -> localListState
+        2 -> networkListState
+        3 -> diagnosticsListState
+        else -> connectionsListState
+    }
     val auditEvents = registry.security().auditEvents()
 
     LaunchedEffect(Unit) {
         localHealth = registry.localTransport().probe()
     }
+    LaunchedEffect(configStore) {
+        try {
+            savedConnectors = withContext(Dispatchers.IO) { configStore.load() }
+            configurationsLoaded = true
+        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (failure: Exception) { configError = failure.message ?: "连接配置无法读取" }
+    }
     DisposableEffect(registry) {
         onDispose { registry.close() }
     }
 
-    MiuixScaffoldPage(title = "统一连接中心", onBack = onBack) {
-        item(key = "intro") {
+    MiuixScaffoldPage(
+        title = "统一连接中心",
+        onBack = onBack,
+        listState = listState,
+        aboveContent = {
+            Column {
+                NexusSettingsTabs(
+                    tabs = listOf(
+                        stringResource(R.string.settings_tab_connections),
+                        stringResource(R.string.settings_tab_local_capabilities),
+                        stringResource(R.string.settings_tab_network_capabilities),
+                        stringResource(R.string.settings_tab_diagnostics_audit),
+                    ),
+                    selectedTab = selectedTab,
+                    onTabSelected = { selectedTab = it },
+                )
+                if (working) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        InfiniteProgressIndicator(size = 18.dp)
+                        Text("正在处理连接…", style = MiuixTheme.textStyles.footnote1)
+                    }
+                }
+                configError?.let { Text(it, color = MiuixTheme.colorScheme.error, style = MiuixTheme.textStyles.footnote1, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
+                configNotice?.takeUnless { it == configError }?.let { Text(it, color = MiuixTheme.colorScheme.primary, style = MiuixTheme.textStyles.footnote1, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
+                webSocketHealth?.let { health ->
+                    Text(health.detail, style = MiuixTheme.textStyles.footnote1,
+                        color = if (health.available) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.error,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+                }
+            }
+        },
+    ) {
+        if (selectedTab == 2) item(key = "intro") {
             SmallTitle("Connector SDK")
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+            Card(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                 Column(
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -102,9 +162,9 @@ internal fun ConnectorCenterScreen(
                 }
             }
         }
-        item(key = "manual_config") {
+        if (selectedTab == 0) item(key = "manual_config") {
             SmallTitle("连接配置")
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+            Card(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                 Column(
                     modifier = Modifier.fillMaxWidth().padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -116,22 +176,15 @@ internal fun ConnectorCenterScreen(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    listOf(
-                        listOf("websocket", "jsonrpc", "graphql", "sse"),
-                        listOf("unix_socket", "intent", "broadcast", "mediastore"),
-                        listOf("sqlite", "shell", "stdio"),
-                    ).forEach { protocols ->
-                        Row(modifier = Modifier.fillMaxWidth()) {
-                            protocols.forEach { protocol ->
-                                TextButton(
-                                    text = protocolLabel(protocol),
-                                    onClick = { configProtocol = protocol; configError = null },
-                                    modifier = Modifier.weight(1f),
-                                )
-                            }
-                            repeat(4 - protocols.size) { Spacer(Modifier.weight(1f)) }
-                        }
-                    }
+                    val protocols = listOf("websocket", "jsonrpc", "graphql", "sse", "unix_socket", "intent", "broadcast", "mediastore", "rest", "sqlite", "shell", "stdio")
+                    DialogChoicePreference(
+                        title = "连接协议",
+                        value = protocolLabel(configProtocol),
+                        options = protocols.map(::protocolLabel),
+                        selectedIndex = protocols.indexOf(configProtocol).coerceAtLeast(0),
+                        enabled = !working && configurationsLoaded,
+                        onSelectedIndexChange = { configProtocol = protocols[it]; configError = null },
+                    )
                     if (configProtocol in SavedConnectorConfig.NETWORK_PROTOCOLS) {
                         TextField(
                             value = configEndpoint,
@@ -160,10 +213,13 @@ internal fun ConnectorCenterScreen(
                     }
                     TextButton(
                         text = "保存连接",
+                        enabled = !working && configurationsLoaded,
                         modifier = Modifier.fillMaxWidth(),
                         onClick = {
-                            runCatching {
-                                configStore.save(
+                            scope.launch {
+                              working = true
+                              try {
+                                configuration.save(
                                     SavedConnectorConfig(
                                         id = "",
                                         name = configName,
@@ -173,29 +229,28 @@ internal fun ConnectorCenterScreen(
                                     ),
                                     configToken.takeIf(String::isNotBlank),
                                 )
-                            }.onSuccess {
-                                savedConnectors = configStore.load()
+                                savedConnectors = withContext(Dispatchers.IO) { configStore.load() }
                                 configName = ""
                                 configEndpoint = ""
                                 configSocketPath = ""
                                 configToken = ""
                                 configError = null
-                                configNotice = "连接配置已保存，Agent 可使用 connection_id 调用。"
-                            }.onFailure { failure ->
+                                configNotice = "连接已保存"
+                              } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                              catch (failure: Exception) {
                                 configNotice = null
                                 configError = failure.message ?: "连接配置保存失败"
+                              } finally { working = false }
                             }
                         },
                     )
-                    configError?.let { Text(it, color = MiuixTheme.colorScheme.error, style = MiuixTheme.textStyles.footnote1) }
-                    configNotice?.let { Text(it, color = MiuixTheme.colorScheme.primary, style = MiuixTheme.textStyles.footnote1) }
                 }
             }
         }
-        if (savedConnectors.isNotEmpty()) {
+        if (selectedTab == 0 && savedConnectors.isNotEmpty()) {
             item(key = "saved_connections") {
                 SmallTitle("已保存连接")
-                Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+                Card(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                     savedConnectors.forEach { connector ->
                         DetailListRow(
                             title = connector.name,
@@ -210,7 +265,7 @@ internal fun ConnectorCenterScreen(
                                         createSavedConnector(
                                             context = context,
                                             config = connector,
-                                            bearerToken = configStore.token(connector),
+                                            bearerToken = configStore.tokenOrThrow(connector),
                                             security = registry.security(),
                                         ).use { it.probe() }
                                     }.getOrElse { ConnectorHealth(false, it.message ?: "连接测试失败") }
@@ -223,9 +278,15 @@ internal fun ConnectorCenterScreen(
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                             TextButton(
                                 text = "删除",
+                                enabled = !working,
                                 onClick = {
-                                    configStore.remove(connector.id)
-                                    savedConnectors = configStore.load()
+                                    scope.launch {
+                                        working = true
+                                        try { configuration.remove(connector); savedConnectors = withContext(Dispatchers.IO) { configStore.load() } }
+                                        catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                                        catch (failure: Exception) { configError = failure.message ?: "连接删除失败" }
+                                        finally { working = false }
+                                    }
                                 },
                             )
                         }
@@ -233,9 +294,9 @@ internal fun ConnectorCenterScreen(
                 }
             }
         }
-        item(key = "agent_connections") {
+        if (selectedTab == 2) item(key = "agent_connections") {
             SmallTitle("1 · Agent 与 Agent")
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+            Card(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                 DetailListRow(
                     title = "A2A",
                     subtitle = "Agent Card、双向任务、SSE 流式事件和独立服务进程",
@@ -257,9 +318,9 @@ internal fun ConnectorCenterScreen(
                 )
             }
         }
-        item(key = "android_local") {
+        if (selectedTab == 1) item(key = "android_local") {
             SmallTitle("2 · Android 应用")
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+            Card(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                 DetailListRow(
                     title = "Intent / Deep Link / PackageManager",
                     subtitle = localHealth?.detail ?: "正在检查 PackageManager 与 ContentResolver",
@@ -280,7 +341,7 @@ internal fun ConnectorCenterScreen(
                 )
                 DetailListRow(
                     title = "Binder/AIDL / AppFunctions",
-                    subtitle = "必须先有目标应用 AIDL 或 AppFunctions 描述；Nexus 不能凭空生成对方接口",
+                    subtitle = "必须先有目标应用 AIDL 或 AppFunctions 描述；NEXA 不能凭空生成对方接口",
                     icon = Icons.Rounded.Hub,
                     value = "按应用支持",
                 )
@@ -292,9 +353,9 @@ internal fun ConnectorCenterScreen(
                 )
             }
         }
-        item(key = "local_system") {
+        if (selectedTab == 1) item(key = "local_system") {
             SmallTitle("3 · 系统与本机进程")
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+            Card(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                 DetailListRow(
                     title = "STDIO / Shell / PROOT",
                     subtitle = "MCP stdio、Shell 命令、工作目录与本地 Linux 环境共用受控执行边界",
@@ -315,9 +376,9 @@ internal fun ConnectorCenterScreen(
                 )
             }
         }
-        item(key = "websocket") {
+        if (selectedTab == 3) item(key = "websocket") {
             SmallTitle("连接测试")
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+            Card(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                 Column(
                     modifier = Modifier.fillMaxWidth().padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -345,19 +406,12 @@ internal fun ConnectorCenterScreen(
                             }
                         },
                     )
-                    webSocketHealth?.let { health ->
-                        Text(
-                            text = health.detail,
-                            style = MiuixTheme.textStyles.footnote1,
-                            color = if (health.available) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.error,
-                        )
-                    }
                 }
             }
         }
-        item(key = "external_api") {
+        if (selectedTab == 2) item(key = "external_api") {
             SmallTitle("4 · 外部 API 与工具")
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+            Card(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                 DetailListRow(
                     title = "MCP",
                     subtitle = "HTTP、Streamable HTTP、SSE、资源和提示词",
@@ -386,9 +440,9 @@ internal fun ConnectorCenterScreen(
                 )
             }
         }
-        item(key = "cross_device") {
+        if (selectedTab == 2) item(key = "cross_device") {
             SmallTitle("5 · 跨设备与远程")
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+            Card(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                 DetailListRow(
                     title = "HTTP/HTTPS / WebSocket",
                     subtitle = "REST、OpenAPI、JSON-RPC、GraphQL、SSE 和实时双向消息",
@@ -409,9 +463,9 @@ internal fun ConnectorCenterScreen(
                 )
             }
         }
-        item(key = "data") {
+        if (selectedTab == 1) item(key = "data") {
             SmallTitle("6 · 文件与数据")
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+            Card(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                 DetailListRow(
                     title = "SAF / Content URI / MediaStore",
                     subtitle = "仅访问用户授权 URI 或系统公开媒体集合",
@@ -419,16 +473,16 @@ internal fun ConnectorCenterScreen(
                     value = "完整支持",
                 )
                 DetailListRow(
-                    title = "Nexus SQLite",
+                    title = "NEXA SQLite",
                     subtitle = "仅允许有界 SELECT/WITH 只读查询，阻止写语句和 PRAGMA",
                     icon = Icons.Rounded.Dns,
                     value = "完整支持",
                 )
             }
         }
-        item(key = "security") {
+        if (selectedTab == 3) item(key = "security") {
             SmallTitle("最近审计")
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+            Card(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                 if (auditEvents.isEmpty()) {
                     DetailListRow(
                         title = "尚无连接调用",
@@ -451,6 +505,8 @@ internal fun ConnectorCenterScreen(
 }
 
 private fun protocolLabel(protocol: String): String = when (protocol) {
+    "dsh" -> "DSH"
+    "rest" -> "REST"
     "websocket" -> "WebSocket"
     "jsonrpc" -> "JSON-RPC"
     "graphql" -> "GraphQL"

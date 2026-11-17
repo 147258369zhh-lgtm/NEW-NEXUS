@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.content.ContentResolver
 import android.content.ContextWrapper
 import android.provider.Settings
+import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.app.accessibilityPermissionHealthItem
 import io.github.mangi.eta.ui.model.PermissionStatusUi
 import kotlinx.coroutines.CompletableDeferred
@@ -69,6 +70,52 @@ class AgentAccessibilityHealthTest {
         }
         assertEquals(AccessibilityConnectionStatus.UNKNOWN, AgentAccessibilityHealth.snapshot(denied).status)
         assertEquals(PermissionStatusUi.Warning, accessibilityPermissionHealthItem(denied).status)
+    }
+
+    @Test
+    fun previousConnectedProcessWithoutDisconnectIsReportedAsUnclassifiedExit() {
+        val recovered = AgentAccessibilityHealth.recoverPreviousProcessState(
+            wasConnected = true,
+            disconnectCount = 4,
+            previousReason = AccessibilityDisconnectReason.UNBOUND,
+            nowElapsedMs = 123_456L,
+        )
+        assertFalse(recovered.connected)
+        assertEquals(5, recovered.disconnectCount)
+        assertEquals(123_456L, recovered.lastDisconnectedAtMs)
+        assertEquals(AccessibilityDisconnectReason.PROCESS_EXIT_UNREPORTED, recovered.lastDisconnectReason)
+    }
+
+    @Test
+    fun previousDisconnectedProcessPreservesKnownReasonAndCount() {
+        val recovered = AgentAccessibilityHealth.recoverPreviousProcessState(
+            wasConnected = false,
+            disconnectCount = 2,
+            previousReason = AccessibilityDisconnectReason.DESTROYED,
+            nowElapsedMs = 123_456L,
+        )
+        assertFalse(recovered.connected)
+        assertEquals(2, recovered.disconnectCount)
+        assertEquals(AccessibilityDisconnectReason.DESTROYED, recovered.lastDisconnectReason)
+        assertEquals(null, recovered.lastDisconnectedAtMs)
+    }
+
+    @Test
+    fun persistedDisconnectReasonRemainsVisibleWhenElapsedTimeCannotSurviveRestart() {
+        val item = accessibilityPermissionHealthItem(
+            context,
+            AccessibilityHealthSnapshot(
+                status = AccessibilityConnectionStatus.DISCONNECTED,
+                history = AccessibilityConnectionHistory(
+                    connected = false,
+                    disconnectCount = 5,
+                    lastDisconnectReason = AccessibilityDisconnectReason.PROCESS_EXIT_UNREPORTED,
+                ),
+            ),
+        )
+        assertTrue(item.summary.contains(context.getString(R.string.compat_accessibility_disconnect_process_exit)))
+        assertTrue(item.summary.contains(context.getString(R.string.compat_accessibility_disconnect_time_unavailable)))
+        assertTrue(item.summary.contains("5"))
     }
 
     @Test

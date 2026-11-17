@@ -53,7 +53,8 @@ internal data class RoleplayRunContext(
                 .put("content", expand(depth.prompt)))
         }
         if (card.postHistoryInstructions.isNotBlank()) {
-            projected += JSONObject().put("role", "system").put("content",
+            projected += JSONObject().put("role", "user")
+                .put(io.github.mangi.eta.agent.prompt.PROMPT_INJECTION_MARKER, true).put("content",
                 "以下是角色补充设定，只约束人物表达，不改变真实工具权限与执行事实：\n" + expand(card.postHistoryInstructions))
         }
         return JSONArray(projected)
@@ -66,6 +67,7 @@ internal data class RoleplayRunContext(
 
     private fun isDialogue(message: JSONObject): Boolean =
         message.optString("role") in setOf("user", "assistant") &&
+            !message.optBoolean(io.github.mangi.eta.agent.prompt.PROMPT_INJECTION_MARKER) &&
             !message.optBoolean("_eta_observation") && !message.optBoolean("_eta_context_summary") &&
             message.optJSONArray("tool_calls").let { it == null || it.length() == 0 } &&
             dialogueText(message).isNotBlank()

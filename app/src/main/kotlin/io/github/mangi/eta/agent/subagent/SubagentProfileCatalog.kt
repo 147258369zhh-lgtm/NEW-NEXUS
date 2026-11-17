@@ -36,7 +36,8 @@ internal object SubagentProfileCatalog {
         }
         discoverCustomProfiles(agentsDir).forEach { custom ->
             val existing = merged[custom.name]
-            if (existing != null && existing.builtin && !custom.override) {
+            // New presets must not hide a user's previously saved specialist with the same ID.
+            if (existing != null && existing.builtin && existing.name in SubagentProfile.LEGACY_BUILTIN_NAMES && !custom.override) {
                 return@forEach
             }
             merged[custom.name] = custom
@@ -67,7 +68,10 @@ internal object SubagentProfileCatalog {
         require(isValidName(normalizedName)) {
             "子 Agent 名称必须为 2~48 位小写字母、数字与连字符（kebab-case，例如 bill-analyzer）"
         }
-        if (normalizedName in SubagentProfile.BUILTIN_NAMES && !overrideBuiltin) {
+        val previousFile = File(agentsDir, "$normalizedName.md")
+        val preservesExistingSpecialist = normalizedName !in SubagentProfile.LEGACY_BUILTIN_NAMES &&
+            previousFile.isFile && !Files.isSymbolicLink(previousFile.toPath()) && parseProfileFile(previousFile) != null
+        if (normalizedName in SubagentProfile.BUILTIN_NAMES && !overrideBuiltin && !preservesExistingSpecialist) {
             throw IllegalArgumentException(
                 "不能覆盖内置子 Agent \"$normalizedName\"；请换用其他名称（例如 custom-$normalizedName）或显式开启 override",
             )

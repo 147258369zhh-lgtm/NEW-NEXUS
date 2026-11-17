@@ -176,7 +176,8 @@ internal class AgentWebTools(
                         }
                         ensureActive()
                         fetchLocalSnapshot(validatedUrl, fallbackFrom = remoteProvider)
-                    } catch (_: Exception) {
+                    } catch (failure: Exception) {
+                        if (failure is kotlinx.coroutines.CancellationException) throw failure
                         ensureActive()
                         fetchLocalSnapshot(validatedUrl, fallbackFrom = remoteProvider)
                     }

@@ -5,9 +5,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import io.github.mangi.eta.R
-import io.github.mangi.eta.agent.web.ConfigurableWebBackends
-import io.github.mangi.eta.agent.web.WebHttpTransport
-import io.github.mangi.eta.data.model.WebToolBackend
 import io.github.mangi.eta.data.model.WebToolsCredentials
 import io.github.mangi.eta.data.model.WebToolsSettings
 import io.github.mangi.eta.data.repository.WebToolsCredentialsUnavailable
@@ -16,12 +13,15 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
-internal class WebToolsValidationFailure(val userMessage: String) : IllegalArgumentException(userMessage)
+internal typealias WebToolsValidationFailure = io.github.mangi.eta.data.repository.WebToolsValidationFailure
 
 internal class WebToolsSettingsStore(
     private val context: Context,
     private val scope: CoroutineScope,
 ) {
+    private var savedSettings by mutableStateOf<WebToolsSettings?>(null)
+    private var savedCredentials by mutableStateOf<WebToolsCredentials?>(null)
+
     var settings by mutableStateOf(WebToolsSettings())
         private set
     var credentials by mutableStateOf(WebToolsCredentials())
@@ -32,22 +32,29 @@ internal class WebToolsSettingsStore(
         private set
     var saving by mutableStateOf(false)
         private set
+    private var credentialsReadable by mutableStateOf(false)
     var message by mutableStateOf<String?>(null)
         private set
     var messageIsError by mutableStateOf(false)
         private set
+    val hasUnsavedChanges: Boolean
+        get() = loaded && (settings != savedSettings || credentials != savedCredentials)
+    val editable: Boolean get() = loaded && credentialsReadable && !saving
 
     init {
         scope.launch {
             try {
                 settings = WebToolsSettingsRepository.settings()
+                savedSettings = settings
                 hasProviderDeepSeekKey = WebToolsSettingsRepository.deepSeekProviderCredentials() != null
                 try {
                     credentials = WebToolsSettingsRepository.credentials(context)
+                    credentialsReadable = true
                 } catch (_: WebToolsCredentialsUnavailable) {
                     message = context.getString(R.string.web_tools_credentials_lost)
                     messageIsError = true
                 }
+                savedCredentials = credentials
                 loaded = true
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
@@ -58,17 +65,19 @@ internal class WebToolsSettingsStore(
     }
 
     fun edit(value: WebToolsSettings) {
+        if (!editable) return
         settings = value
         message = null
     }
 
     fun editCredentials(value: WebToolsCredentials) {
+        if (!editable) return
         credentials = value
         message = null
     }
 
     fun save() {
-        if (!loaded || saving) return
+        if (!editable) return
         val config = settings
         val secrets = credentials
         saving = true
@@ -77,10 +86,11 @@ internal class WebToolsSettingsStore(
                 val latestProviderDeepSeek = WebToolsSettingsRepository.deepSeekProviderCredentials() != null
                 hasProviderDeepSeekKey = latestProviderDeepSeek
                 validateWebToolsSettings(config, secrets, latestProviderDeepSeek)
-                WebToolsSettingsRepository.saveCredentials(context, secrets)
-                WebToolsSettingsRepository.save(config)
+                io.github.mangi.eta.data.repository.WebToolsSettingsService(context).save(config, secrets)
+                savedSettings = config
+                savedCredentials = secrets
                 message = context.getString(
-                    if (settings === config && credentials === secrets) {
+                    if (settings == config && credentials == secrets) {
                         R.string.speech_saved
                     } else {
                         R.string.speech_saved_with_pending
@@ -105,57 +115,5 @@ internal fun validateWebToolsSettings(
     credentials: WebToolsCredentials,
     hasProviderDeepSeekKey: Boolean,
 ) {
-    val usesDeepSeek = settings.searchBackend == WebToolBackend.DEEPSEEK ||
-        settings.fetchBackend == WebToolBackend.DEEPSEEK
-    if (usesDeepSeek) {
-        if (credentials.deepSeekApiKey.isBlank() && !hasProviderDeepSeekKey) {
-            throw WebToolsValidationFailure("请填写 DeepSeek API Key，或先在模型提供商中配置 DeepSeek")
-        }
-        runCatching {
-            ConfigurableWebBackends.deepSeekEndpoint(settings.deepSeek.baseUrl, "search")
-        }.getOrElse {
-            throw WebToolsValidationFailure("DeepSeek Base URL 须为合法的 HTTP(S) 地址")
-        }
-    }
-    if (settings.searchBackend == WebToolBackend.CUSTOM) {
-        val rawUrl = settings.customSearch.url.trim()
-        if (rawUrl.isEmpty()) {
-            throw WebToolsValidationFailure("请填写自定义搜索接口地址")
-        }
-        val probeUrl = rawUrl
-            .replace("{{query}}", "eta")
-            .replace("{{raw_query}}", "eta")
-            .replace("{{count}}", "5")
-        runCatching { WebHttpTransport.validateUrl(probeUrl) }.getOrElse {
-            throw WebToolsValidationFailure("自定义搜索接口须为合法的 HTTP(S) 地址")
-        }
-        runCatching {
-            ConfigurableWebBackends.parseCustomHeaders(
-                settings.customSearch.headersText,
-                credentials.customSearchApiKey,
-            )
-        }.getOrElse {
-            throw WebToolsValidationFailure(it.message ?: "自定义搜索请求头格式无效")
-        }
-    }
-    if (settings.fetchBackend == WebToolBackend.CUSTOM) {
-        val rawUrl = settings.customFetch.url.trim()
-        if (rawUrl.isEmpty()) {
-            throw WebToolsValidationFailure("请填写自定义读取接口地址")
-        }
-        val probeUrl = rawUrl
-            .replace("{{url}}", "https%3A%2F%2Fexample.com")
-            .replace("{{raw_url}}", "https://example.com")
-        runCatching { WebHttpTransport.validateUrl(probeUrl) }.getOrElse {
-            throw WebToolsValidationFailure("自定义读取接口须为合法的 HTTP(S) 地址")
-        }
-        runCatching {
-            ConfigurableWebBackends.parseCustomHeaders(
-                settings.customFetch.headersText,
-                credentials.customFetchApiKey,
-            )
-        }.getOrElse {
-            throw WebToolsValidationFailure(it.message ?: "自定义读取请求头格式无效")
-        }
-    }
+    io.github.mangi.eta.data.repository.validateWebToolsConfiguration(settings, credentials, hasProviderDeepSeekKey)
 }

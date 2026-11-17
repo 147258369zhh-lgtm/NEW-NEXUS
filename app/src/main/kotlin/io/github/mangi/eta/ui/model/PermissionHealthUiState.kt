@@ -1,6 +1,7 @@
 package io.github.mangi.eta.ui.model
 
 import androidx.compose.runtime.Immutable
+import io.github.mangi.eta.data.model.AgentPermissionMode
 
 internal const val LOCAL_NETWORK_PERMISSION_ITEM_ID = "local_network"
 
@@ -9,6 +10,7 @@ data class PermissionHealthUiState(
     val items: List<PermissionHealthItemUi>,
     val runtime: DeviceRuntimeUi? = null,
     val rootAccessibilityRecovery: RootAccessibilityRecoveryUi? = null,
+    val agentPermissionMode: AgentPermissionMode = AgentPermissionMode.SMART_APPROVAL,
 ) {
     val issueCount: Int get() = items.count { it.requiredForCore && it.status != PermissionStatusUi.Available }
 }

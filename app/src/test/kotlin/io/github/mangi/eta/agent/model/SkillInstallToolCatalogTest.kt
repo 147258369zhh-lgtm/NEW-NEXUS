@@ -9,6 +9,17 @@ import org.junit.Test
 
 class SkillInstallToolCatalogTest {
     @Test
+    fun `runtime preparation is a reversible write exposed only with terminal file permission`() {
+        assertFalse("skills_prepare_runtime" in AgentToolCatalog.build(false, false).toolNames())
+        val function = AgentToolCatalog.build(true, false).function("skills_prepare_runtime")
+        val parameters = function.getJSONObject("parameters")
+        assertEquals(setOf("skillId"), parameters.requiredNames())
+        assertFalse(parameters.getJSONObject("properties").has("destination"))
+        assertEquals(io.github.zhh_lgtm.nexus.kernel.api.EffectClass.REVERSIBLE_WRITE,
+            io.github.mangi.eta.agent.capability.NexusToolEffectClassifier.classify("skills_prepare_runtime"))
+    }
+
+    @Test
     fun `Skill resource reader is always visible with bounded relative path schema`() {
         val function = AgentToolCatalog.build(false, false).function("skills_read_resource")
         val parameters = function.getJSONObject("parameters")
@@ -17,8 +28,16 @@ class SkillInstallToolCatalogTest {
         assertEquals(1_000, properties.getJSONObject("relativePath").getInt("maxLength"))
         assertEquals(512, properties.getJSONObject("maxChars").getInt("minimum"))
         assertEquals(64_000, properties.getJSONObject("maxChars").getInt("maximum"))
+        assertEquals(0, properties.getJSONObject("offset").getInt("minimum"))
+        assertTrue(properties.getJSONObject("offset").getString("description").contains("UTF-16"))
         assertTrue("skillId" in parameters.requiredNames())
         assertTrue("relativePath" in parameters.requiredNames())
+    }
+
+    @Test fun `Skill body also exposes bounded continuation offsets`() {
+        val properties = AgentToolCatalog.build(false, false).function("skills_read")
+            .getJSONObject("parameters").getJSONObject("properties")
+        assertEquals(0, properties.getJSONObject("offset").getInt("minimum"))
     }
 
     @Test

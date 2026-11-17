@@ -27,6 +27,15 @@ import org.junit.Test
 
 class GeminiModelCatalogHttpTest {
     @Test
+    fun imageModelsSurviveTheFullCatalogFetchWithTheirTextAndImageModalities() = runBlocking {
+        withServer(listOf("""{"models":[{"name":"models/gemini-2.5-flash-image","supportedGenerationMethods":["generateContent"]},{"name":"models/gemini-3-pro-image","supportedGenerationMethods":["generateContent"]}]}""")) { url, _ ->
+            val result = RemoteModelFetcher.fetchCatalog(provider(url), OkHttpClient(), noOAuth).getOrThrow()
+            assertEquals(listOf("gemini-2.5-flash-image", "gemini-3-pro-image"), result.models.map { it.modelId })
+            result.models.forEach { assertEquals(listOf("text", "image"), it.outputModalities) }
+        }
+    }
+
+    @Test
     fun paginatesWithNativeAuthenticationNormalizesNamesAndDoesNotInferUnknownCapabilities() = runBlocking {
         withServer(listOf(
             """{"models":[{"name":"models/gemini-3.8-flash","displayName":"Flash","inputTokenLimit":1048576,

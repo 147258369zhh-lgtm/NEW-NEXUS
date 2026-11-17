@@ -43,17 +43,18 @@ class AutoBackupDocumentsTest {
     }
 
     @Test fun publishesCompleteBytesBeforePruningOnlyOwnedNames() = runBlocking {
-        provider.seed("Eta-auto-20250101-030000-1234abcd.eta-backup")
-        val unrelated = listOf("notes.json", "Eta-auto-manual.json", "Eta-auto-20250101-030000-1234abcd.eta-backup.part")
+        provider.seed("Nexus-auto-20250101-030000-1234abcd.eta-backup")
+        val unrelated = listOf("notes.json", "Nexus-auto-manual.json", "Nexus-auto-20250101-030000-1234abcd.eta-backup.part",
+            "Eta-auto-20250101-030000-1234abcd.eta-backup")
         unrelated.forEach(provider::seed)
         val bytes = ByteArray(600_000) { (it % 251).toByte() }
         AutoBackupDocuments.save(context, settings, null) { output, _, _ -> output.write(bytes); summary }
         assertTrue(AutoBackupStore.status(context), AutoBackupStore.status(context).startsWith("备份成功"))
-        assertFalse("Names: ${provider.names()}", provider.names().contains("Eta-auto-20250101-030000-1234abcd.eta-backup"))
-        val published = provider.names().single { it.startsWith("Eta-auto-") && it.endsWith(".eta-backup") }
+        assertFalse("Names: ${provider.names()}", provider.names().contains("Nexus-auto-20250101-030000-1234abcd.eta-backup"))
+        val published = provider.names().single { it.startsWith("NEXA-auto-") && it.endsWith(".eta-backup") }
         assertArrayEquals(bytes, provider.read(published))
         assertTrue(provider.names().containsAll(unrelated))
-        assertFalse(provider.names().contains("Eta-auto-20250101-030000-1234abcd.eta-backup"))
+        assertFalse(provider.names().contains("Nexus-auto-20250101-030000-1234abcd.eta-backup"))
         assertTrue(AutoBackupStore.lastSuccess(context) > 0)
     }
 
@@ -74,11 +75,11 @@ class AutoBackupDocumentsTest {
     }
 
     @Test fun renameFailureRemovesPartialAndDoesNotDeletePreviousBackup() = runBlocking {
-        provider.seed("Eta-auto-20250101-030000-1234abcd.eta-backup")
+        provider.seed("Nexus-auto-20250101-030000-1234abcd.eta-backup")
         provider.failRename = true
         val result = runCatching { AutoBackupDocuments.save(context, settings, null) { output, _, _ -> output.write(byteArrayOf(7)); summary } }
         assertTrue(result.isFailure)
-        assertEquals(listOf("Eta-auto-20250101-030000-1234abcd.eta-backup"), provider.names())
+        assertEquals(listOf("Nexus-auto-20250101-030000-1234abcd.eta-backup"), provider.names())
         assertEquals(0L, AutoBackupStore.lastSuccess(context))
     }
 
@@ -93,13 +94,22 @@ class AutoBackupDocumentsTest {
     }
 
     @Test fun cleanupFailurePreservesNewBackupAndSuccessfulTimestamp() = runBlocking {
-        val old = "Eta-auto-20250101-030000-1234abcd.eta-backup"
+        val old = "Nexus-auto-20250101-030000-1234abcd.eta-backup"
         provider.seed(old)
         provider.failDeleteName = old
         AutoBackupDocuments.save(context, settings, "secret") { output, password, _ -> assertEquals("secret", password); output.write(byteArrayOf(8)); summary }
         assertEquals(2, provider.names().size)
         assertTrue(AutoBackupStore.lastSuccess(context) > 0)
         assertTrue(AutoBackupStore.status(context).startsWith("备份已保存，旧备份清理失败"))
+    }
+
+    @Test fun retentionOrdersOldAndCurrentProductPrefixesByTime() = runBlocking {
+        provider.seed("Nexus-auto-20250102-030000-1234abcd.eta-backup")
+        provider.seed("NEXA-auto-20250101-030000-1234abcd.eta-backup")
+        AutoBackupDocuments.save(context, settings.copy(keep = 2), null) { output, _, _ -> output.write(byteArrayOf(1)); summary }
+        assertEquals(2, provider.names().size)
+        assertTrue(provider.names().contains("Nexus-auto-20250102-030000-1234abcd.eta-backup"))
+        assertFalse(provider.names().contains("NEXA-auto-20250101-030000-1234abcd.eta-backup"))
     }
 
     companion object { const val AUTHORITY = "eta.backup.test.documents" }

@@ -13,9 +13,15 @@ import org.json.JSONObject
 internal suspend fun synthesizeSpeech(settings: SpeechSettings, credentials: SpeechCredentials,
     text: String, onAudio: (ByteArray) -> Unit) = withTimeout(90_000) {
     when (settings.tts) {
+        TtsProvider.DEEPSEEK -> return@withTimeout synthesizeDeepSeek(settings.deepSeekTts, credentials.deepSeekTts, text, onAudio)
+        TtsProvider.XIAOMI -> return@withTimeout synthesizeXiaomiMiMo(settings.xiaomiTts, credentials.xiaomiTts, text, onAudio)
+        TtsProvider.BAIDU -> return@withTimeout synthesizeBaidu(settings.baiduTts, credentials.baiduTtsApiKey, credentials.baiduTtsSecretKey, text, onAudio)
+        TtsProvider.IFLYTEK -> return@withTimeout synthesizeIflytek(settings.iflytekTts, credentials.iflytekTtsApiKey, credentials.iflytekTtsApiSecret, text, onAudio)
+        TtsProvider.TENCENT -> return@withTimeout synthesizeTencent(settings.tencentTts, credentials.tencentTtsSecretId, credentials.tencentTtsSecretKey, text, onAudio)
         TtsProvider.LOCAL -> return@withTimeout LocalSpeechRuntime.synthesize(settings, text, onAudio)
         TtsProvider.GEMINI -> return@withTimeout synthesizeGemini(settings.geminiTts, credentials.geminiTts, text, onAudio)
         TtsProvider.MINIMAX -> return@withTimeout synthesizeMiniMax(settings.minimaxTts, credentials.minimaxTts, text, onAudio)
+        TtsProvider.AZURE -> return@withTimeout synthesizeAzure(settings.azureTts, credentials.azureTts, text, onAudio)
         TtsProvider.NONE -> throw SpeechFailure(SpeechErrorCode.CONFIGURATION, "请先选择语音播报服务")
         TtsProvider.QWEN, TtsProvider.DOUBAO -> Unit
     }

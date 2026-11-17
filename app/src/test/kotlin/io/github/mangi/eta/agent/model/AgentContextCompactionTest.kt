@@ -9,6 +9,202 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AgentContextCompactionTest {
+    @Test fun cancelledIndependentSummaryDoesNotFallBackOrReplaceHistory() {
+        val messages = jsonHistory()
+        val original = messages.toString()
+        var fallbackRequests = 0
+        val session = AgentContextSession(config, messages, 1, "cancel-summary",
+            provider { _, _ -> fallbackRequests++; response("不应生成摘要") },
+            AgentRunController(), { emptySet() }, {}, { fail("不应提交快照") },
+            compactionConfig = config.copy(model = "summary-model"),
+            compactionProvider = provider { _, _ -> throw kotlinx.coroutines.CancellationException("cancelled") })
+
+        assertThrows(kotlinx.coroutines.CancellationException::class.java) { session.compact(force = true, final = true) }
+        assertEquals(0, fallbackRequests)
+        assertEquals(original, messages.toString())
+        assertNull(session.snapshot())
+    }
+
+    @Test fun cancelledFinalCheckpointDoesNotPublishFallbackSnapshot() {
+        val messages = jsonHistory()
+        var checkpoints = 0
+        val session = AgentContextSession(config, messages, 1, "cancel-checkpoint",
+            provider { _, _ -> response("历史已完成") }, AgentRunController(), { emptySet() }, {},
+            { if (++checkpoints > 1) throw kotlinx.coroutines.CancellationException("cancelled") })
+
+        session.compact(force = true)
+        val originalSnapshot = session.snapshot()
+        assertThrows(kotlinx.coroutines.CancellationException::class.java) { session.compact(final = true) }
+        assertSame(originalSnapshot, session.snapshot())
+    }
+
+    @Test fun failedProviderEstimateFallsBackToLocalBudget() {
+        val messages = JSONArray().put(JSONObject().put("role", "system").put("content", "规则"))
+            .put(AgentConversationCodec.userTextMessage("旧任务"))
+            .put(JSONObject().put("role", "assistant").put("content", "历史".repeat(8_000)))
+            .put(AgentConversationCodec.userTextMessage("继续"))
+        var summaries = 0
+        val fixture = object : AgentProviderClient {
+            override val id = "fixture"
+            override val capabilities = ProviderCapabilities(EndpointKind.CHAT_COMPLETIONS, true, true, true, true, false, false)
+            override fun estimateInputTokens(request: ProviderRequest, runController: AgentRunController): Int? =
+                throw IllegalStateException("估算不可用")
+            override fun complete(request: ProviderRequest, runController: AgentRunController, onEvent: (ProviderEvent) -> Unit): ProviderResponse {
+                summaries++
+                return response("旧任务已完成。")
+            }
+        }
+        val session = AgentContextSession(config.copy(contextWindow = 16_000), messages, 1, "estimate",
+            fixture, AgentRunController(), { emptySet() }, {}, {})
+        session.compact()
+        assertTrue(summaries > 0)
+        assertNotNull(session.snapshot())
+    }
+
+    @Test fun cancelledProviderEstimateDoesNotStartAReplacementRequest() {
+        val messages = JSONArray().put(AgentConversationCodec.userTextMessage("原始请求"))
+        val original = messages.toString()
+        val fixture = object : AgentProviderClient {
+            override val id = "fixture"
+            override val capabilities = ProviderCapabilities(EndpointKind.CHAT_COMPLETIONS, true, true, true, true, false, false)
+            override fun estimateInputTokens(request: ProviderRequest, runController: AgentRunController): Int? =
+                throw kotlinx.coroutines.CancellationException("cancelled")
+            override fun complete(request: ProviderRequest, runController: AgentRunController, onEvent: (ProviderEvent) -> Unit): ProviderResponse =
+                error("cancelled estimation must not start another request")
+        }
+        val session = AgentContextSession(config.copy(contextWindow = 16_000), messages, 0, "cancel",
+            fixture, AgentRunController(), { emptySet() }, {}, {})
+        assertThrows(kotlinx.coroutines.CancellationException::class.java) { session.compact() }
+        assertEquals(original, messages.toString())
+    }
+
+    @Test fun shortMediumAndLongWindowsBoundEverySummaryRequestIncludingGiantEscapedMessages() {
+        for (window in listOf(4_096, 16_384, 128_000)) {
+            val original = JSONArray().put(JSONObject().put("role", "system").put("content", "规则"))
+                .put(AgentConversationCodec.userTextMessage("旧任务"))
+                .put(JSONObject().put("role", "assistant").put("content", ("证据\\\"\n".repeat(8_000))))
+                .put(AgentConversationCodec.userTextMessage("最新任务"))
+            var requests = 0
+            val result = AgentContextCompactor(config.copy(contextWindow = window), provider { request, _ ->
+                requests++
+                val budget = ContextBudgetPolicy.forCompaction(window)
+                assertTrue("window=$window", ContextBudgetPolicy.estimateMessages(request.messages) <= budget.usableInputTokens)
+                assertEquals(budget.outputReserveTokens, request.contextOutputTokenCeiling)
+                response("旧任务已执行并记录证据。")
+            }, AgentRunController()).compact(original, 1, emptySet())
+            assertTrue(requests > 0)
+            assertTrue(result.toString().contains("最新任务"))
+        }
+    }
+
+    @Test fun automaticCompactionIncludesSystemAndToolsWhenUsageUnderstatesTheRequest() {
+        val original = JSONArray().put(JSONObject().put("role", "system").put("content", "规则".repeat(2_000)))
+            .put(AgentConversationCodec.userTextMessage("旧任务"))
+            .put(JSONObject().put("role", "assistant").put("content", "历史".repeat(4_000)))
+            .put(AgentConversationCodec.userTextMessage("继续"))
+        var requests = 0
+        val session = AgentContextSession(config.copy(contextWindow = 16_000), original, 1, "budget",
+            provider { _, _ -> requests++; response("旧任务已完成。") }, AgentRunController(), { emptySet() }, {}, {})
+        session.observeInputTokens(1)
+        session.compact(tools = JSONArray().put(JSONObject().put("description", "工具说明".repeat(1_000))))
+        assertTrue(requests > 0)
+        assertNotNull(session.snapshot())
+    }
+
+    @Test fun finalCompactionKeepsLatestCompletedRequestAndAnswerTogether() {
+        val original = jsonHistory().put(AgentConversationCodec.userTextMessage("最新已执行任务"))
+            .put(JSONObject().put("role", "assistant").put("content", "最新执行结果已经完成"))
+        val result = AgentContextCompactor(config, provider { _, _ -> response("历史任务均已完成。") },
+            AgentRunController()).compact(original, 1, emptySet())
+        assertEquals("最新已执行任务", result.getJSONObject(result.length() - 2).getString("content"))
+        assertEquals("最新执行结果已经完成", result.getJSONObject(result.length() - 1).getString("content"))
+    }
+
+    @Test
+    fun firstAssistantScreenshotReachesChatWithoutTryingToCompressItsEncoding() {
+        val events = mutableListOf<AgentEvent>()
+        val reference = "data:image/png;base64," + "A".repeat(300_000)
+        var requests = 0
+        val result = AgentModelClient.complete(
+            config.copy(contextWindow = 16_000), "这是什么？",
+            AgentModelClient.ToolExecutor { error("不应执行工具") },
+            images = listOf(AgentModelClient.ModelImage(reference, "image/png", 225_000)),
+            provider = provider { request, _ ->
+                requests++
+                assertEquals(ProviderRequestPurpose.CHAT, request.purpose)
+                assertTrue(request.messages.toString().contains(reference))
+                response("这是当前屏幕。")
+            }, onEvent = events::add,
+        )
+        assertEquals(1, requests)
+        assertEquals("这是当前屏幕。", result.content)
+        assertTrue(events.filterIsInstance<AgentEvent.ContextCompaction>().isEmpty())
+    }
+
+    @Test fun anOversizedFirstCompletedAnswerStillCompactsWhileKeepingItsRequestBeforeTheSummary() {
+        val original = JSONArray().put(AgentConversationCodec.userTextMessage("已完成的首次任务"))
+            .put(JSONObject().put("role", "assistant").put("content", "完整结果".repeat(5_000)))
+        var summaries = 0
+        val session = AgentContextSession(config.copy(contextWindow = 16_000), original, 0, "first-answer",
+            provider { request, _ ->
+                summaries++
+                assertEquals(ProviderRequestPurpose.COMPACTION, request.purpose)
+                response("首次任务已完成。")
+            }, AgentRunController(), { emptySet() }, {}, {})
+        session.compact(final = true)
+        assertTrue(summaries > 0)
+        val snapshot = checkNotNull(session.snapshot())
+        assertEquals("已完成的首次任务", snapshot.messages.first().content)
+        assertTrue(snapshot.messages.last().contextSummary)
+    }
+
+    @Test
+    fun automaticCompactionSkipsAnOversizedFirstPromptButExplicitCompactionStillFails() {
+        val events = mutableListOf<AgentEvent>()
+        val context = AgentContextSession(
+            config = config.copy(contextWindow = 16_000),
+            messages = JSONArray().put(AgentConversationCodec.userTextMessage("中".repeat(24_000))),
+            systemCount = 0, operationId = "first-prompt", provider = provider { _, _ ->
+                error("没有完整历史时不应请求摘要")
+            }, runController = AgentRunController(), sensitiveIds = { emptySet() },
+            onEvent = events::add, onContextSnapshot = { error("未压缩，不应覆盖历史") },
+        )
+        context.compact()
+        assertTrue(events.isEmpty())
+        val failure = assertThrows(AgentModelFailure::class.java) { context.compact(force = true) }
+        assertEquals("CONTEXT_NOT_COMPACTABLE", failure.code)
+        assertTrue(events.filterIsInstance<AgentEvent.ContextCompaction>().any { it.phase == "failed" })
+    }
+
+    @Test
+    fun independentCompactionModelFailureFallsBackToTheChatModel() {
+        val messages = jsonHistory()
+        var primaryRequests = 0
+        var summaryRequests = 0
+        val summaryConfig = config.copy(model = "summary-model")
+        val compactor = AgentContextCompactor(
+            config = config,
+            provider = provider { request, _ ->
+                primaryRequests++
+                assertEquals(config.model, request.effectiveConfig.model)
+                response("使用聊天模型完成的摘要。")
+            },
+            controller = AgentRunController(),
+            summaryConfig = summaryConfig,
+            summaryProvider = provider { request, _ ->
+                summaryRequests++
+                assertEquals(summaryConfig.model, request.effectiveConfig.model)
+                throw AgentModelFailure("HTTP_400", false, "独立压缩模型不可用")
+            },
+        )
+
+        compactor.compact(messages, 1, emptySet())
+
+        assertTrue(summaryRequests >= 1)
+        assertTrue(primaryRequests >= 1)
+        assertTrue(compactor.summaryFallbackUsed)
+    }
+
     @Test
     fun automaticScreenContentIsNotCopiedIntoCompactionInput() {
         val messages = jsonHistory()
@@ -94,7 +290,10 @@ class AgentContextCompactionTest {
         assertEquals(listOf("完成最新请求"), result.transcript.map { it.content })
         val snapshot = checkNotNull(result.contextSnapshot)
         assertTrue(snapshot.messages.any { it.contextSummary })
-        assertEquals("最新请求必须保留", snapshot.messages.last().content)
+        assertEquals("user", snapshot.messages[snapshot.messages.lastIndex - 1].role)
+        assertEquals("最新请求必须保留", snapshot.messages[snapshot.messages.lastIndex - 1].content)
+        assertEquals("assistant", snapshot.messages.last().role)
+        assertEquals("完成最新请求", snapshot.messages.last().content)
         assertEquals(9, snapshot.consumedUserTurns)
         assertTrue(events.filterIsInstance<AgentEvent.ContextCompaction>().any { it.phase == "completed" })
         assertTrue(snapshots.all { AgentContextSnapshot.decode(it.encode()) == it })

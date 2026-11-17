@@ -67,4 +67,19 @@ class EtaBackupFileTreeTest {
         assertFalse(Files.exists(root.toPath(), NOFOLLOW_LINKS))
         assertEquals("keep", secret.readText())
     }
+
+    @Test fun scopedTraversalRejectsSymlinkedParent() = runBlocking {
+        val root = temporary.newFolder("app")
+        val outside = temporary.newFolder("outside")
+        val secret = File(outside, "independent-notepad/secret").apply { parentFile!!.mkdirs(); writeText("keep") }
+        try { Files.createSymbolicLink(File(root, "files").toPath(), outside.toPath())
+        } catch (failure: Exception) { assumeNoException("Host cannot create symlinks", failure) }
+        val visited = mutableListOf<File>()
+        val result = runCatching {
+            EtaBackupFileTree.walk(root, listOf("files/independent-notepad"), emptySet()) { file, _ -> visited += file }
+        }
+        assertTrue(result.exceptionOrNull() is EtaBackupException)
+        assertTrue(visited.isEmpty())
+        assertEquals("keep", secret.readText())
+    }
 }

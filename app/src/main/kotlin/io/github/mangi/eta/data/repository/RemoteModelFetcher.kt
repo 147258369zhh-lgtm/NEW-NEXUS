@@ -16,9 +16,11 @@ import io.github.mangi.eta.data.model.Model
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
 import io.github.mangi.eta.data.model.ModelSource
 import io.github.mangi.eta.data.model.ProviderSetting
+import io.github.mangi.eta.data.model.ProviderSourceTypes
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.data.provider.OfficialModelCatalog
 import io.github.mangi.eta.data.provider.ProviderConnectionProfile
+import io.github.mangi.eta.data.provider.ProviderSourceRegistry
 import java.util.UUID
 import kotlin.coroutines.resume
 import kotlinx.coroutines.CancellationException
@@ -58,6 +60,11 @@ internal object RemoteModelFetcher {
             continuation.invokeOnCancellation { controller.cancel() }
             try {
                 controller.throwIfCancelled()
+                if (io.github.mangi.eta.agent.packages.PackageAiRegistry.isPackageProvider(provider.id)) {
+                    val models = io.github.mangi.eta.agent.packages.PackageAiCatalog(context = io.github.mangi.eta.data.datastore.SettingsDataStore.applicationContext()).list(provider, controller)
+                    continuation.resume(Result.success(RemoteModelCatalog(models, provider, null)))
+                    return@suspendCancellableCoroutine
+                }
                 val profile = ProviderConnectionProfile.forAuthMode(provider.authMode)
                 val binding = profile?.let { credentials.binding(provider.id, provider.authMode) }
                 val fetched = when {
@@ -69,7 +76,13 @@ internal object RemoteModelFetcher {
                     profile == null && provider is AnthropicProviderSetting -> fetchAnthropic(provider, controller, client, credentials)
                     else -> fetchOpenAiCompatible(provider, controller, client, credentials)
                 }
-                val models = if (profile == ProviderConnectionProfile.OPENAI_CODEX) fetched else fetched.filter(::isChatCapableModel)
+                val sourceType = ProviderSourceRegistry.resolve(provider)
+                val models = if (profile == ProviderConnectionProfile.OPENAI_CODEX) fetched else fetched.filter {
+                    isChatCapableModel(it) || isProviderImageModel(sourceType, it.modelId)
+                }.map { model ->
+                    if (sourceType != ProviderSourceTypes.GEMINI && isProviderImageModel(sourceType, model.modelId))
+                        model.copy(outputModalities = listOf(Model.IMAGE_MODALITY)) else model
+                }
                 controller.throwIfCancelled()
                 if (binding != null && !credentials.isCurrent(binding)) {
                     throw ProviderAuthException("oauth_session_changed", "登录账号已变更，请重新拉取模型")
@@ -200,7 +213,8 @@ internal object RemoteModelFetcher {
         credentials: Credentials,
         maxBytes: Long = MAX_CATALOG_BYTES,
     ): String = AuthorizedProviderHttp.execute(
-        client = client,
+        client = client.newBuilder().callTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+            .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).build(),
         providerId = provider.id,
         authMode = provider.authMode,
         request = request,
@@ -231,6 +245,14 @@ internal object RemoteModelFetcher {
         val id = model.modelId.lowercase()
         return NON_CHAT_MODEL_ID_MARKERS.none { it in id }
     }
+
+    internal fun isOfficialImageModel(modelId: String): Boolean =
+        modelId.startsWith("gpt-image-") || modelId in setOf("dall-e-2", "dall-e-3")
+
+    internal fun isProviderImageModel(sourceType: String, modelId: String): Boolean =
+        sourceType == ProviderSourceTypes.OPENAI && isOfficialImageModel(modelId) ||
+            sourceType == ProviderSourceTypes.BAILIAN && (modelId == "wan2.6-t2i" || modelId.startsWith("qwen-image")) ||
+            sourceType == ProviderSourceTypes.GEMINI && modelId in setOf("gemini-2.5-flash-image", "gemini-3-pro-image")
 
     private val NON_CHAT_MODEL_ID_MARKERS = listOf(
         // 语音识别
@@ -314,12 +336,16 @@ internal object RemoteModelFetcher {
         }
         val effortSupported = effort?.boolean("supported") == true || supportedEfforts.isNotEmpty()
         val thinkingSupported = thinking?.boolean("supported") == true
-        val reasoningSupported = effortSupported || thinkingSupported
+        val reasoningSupported = when {
+            effortSupported || thinkingSupported -> true
+            effort?.boolean("supported") == false && thinking?.boolean("supported") == false -> false
+            else -> null
+        }
         return base.copy(
             contextWindow = positiveInt("max_input_tokens") ?: base.contextWindow,
             attachment = capabilities?.capabilitySupported("image_input") ?: base.attachment,
-            reasoning = reasoningSupported.takeIf { capabilities != null } ?: base.reasoning,
-            reasoningCapabilities = if (reasoningSupported) {
+            reasoning = reasoningSupported ?: base.reasoning,
+            reasoningCapabilities = if (reasoningSupported == true) {
                 ModelReasoningCapabilities(
                     supportedEfforts = supportedEfforts,
                     defaultEffort = ReasoningEffort.HIGH.takeIf {
@@ -430,7 +456,8 @@ internal object RemoteModelFetcher {
             "supports_image_in",
             "supports_video_in",
         )
-        if (capabilityNames.none(::containsKey)) return emptyList()
+        // Null or malformed fields do not assert that the model is text-only.
+        if (capabilityNames.none { boolean(it) != null }) return emptyList()
         return buildList {
             add(Model.TEXT_MODALITY)
             if (boolean("attachment", "vision", "supports_image_in") == true) {

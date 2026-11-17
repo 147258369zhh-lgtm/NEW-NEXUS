@@ -14,9 +14,12 @@ data class AgentMemoryUiState(
     val savedRevision: String = "",
     val draftBytes: Int = 0,
     val maxBytes: Int = AgentMemoryStore.MAX_FILE_BYTES,
-    val coreBudgetChars: Int = 8_000,
+    val coreBudgetChars: Int = io.github.mangi.eta.agent.memory.TaskMemorySelector.coreBudget(null),
+    val totalBudgetChars: Int = io.github.mangi.eta.agent.memory.TaskMemorySelector.budget(null),
     val scopes: List<AgentMemoryScope> = listOf(AgentMemoryScope.GLOBAL),
     val selectedScope: AgentMemoryScope = AgentMemoryScope.GLOBAL,
+    val scopeNames: Map<String, String> = emptyMap(),
+    val characters: Map<String, String> = emptyMap(),
     val notice: String? = null,
 ) {
     val hasUnsavedChanges: Boolean get() = draft != savedContent

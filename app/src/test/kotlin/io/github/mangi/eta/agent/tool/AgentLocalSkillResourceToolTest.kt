@@ -64,9 +64,42 @@ class AgentLocalSkillResourceToolTest {
         assertEquals("INVALID_RELATIVE_PATH", json.getString("code"))
     }
 
-    private fun fixture(): Fixture {
+    @Test
+    fun longResourcesSupportUnicodeSafeContinuationAndRejectOutOfRangeOffsets() {
+        val fixture = fixture()
+        val text = "a".repeat(511) + "😀" + "中".repeat(70_000) + "tail"
+        File(fixture.skillRoot, "references/guide.md").apply { parentFile?.mkdirs(); writeText(text) }
+        fun read(offset: Int): JSONObject = JSONObject(fixture.tools.execute(AgentModelClient.ToolCall(
+            id = "page-$offset", name = "skills_read_resource", argumentsJson = JSONObject()
+                .put("skillId", "resource-demo").put("relativePath", "references/guide.md")
+                .put("maxChars", 512).put("offset", offset).toString(),
+        )).content)
+        try {
+            val first = read(0)
+            assertEquals(511, first.getInt("next_offset"))
+            assertEquals("utf16-code-unit", first.getString("offsetUnit"))
+            assertEquals("😀", read(first.getInt("next_offset")).getString("text").take(2))
+            assertEquals("INVALID_OFFSET", read(512).getString("code"))
+            assertEquals("INVALID_OFFSET", read(text.length + 1).getString("code"))
+            assertTrue(read(70_000).getString("text").isNotEmpty())
+        } finally { fixture.tools.close() }
+    }
+
+    @Test
+    fun runtimePreparationHonorsTheLiveTerminalPermissionAndSkillDeclaredWriteBoundary() {
+        val disabled = fixture()
+        val arguments = JSONObject().put("skillId", "resource-demo").toString()
+        fun prepare(fixture: Fixture): JSONObject = fixture.tools.use {
+            JSONObject(it.execute(AgentModelClient.ToolCall(id = "prepare", name = "skills_prepare_runtime", argumentsJson = arguments)).content)
+        }
+        assertEquals("TERMINAL_TOOLS_DISABLED", prepare(disabled).getString("code"))
+        val readOnly = fixture(terminalEnabled = true, allowedTools = "Read")
+        assertEquals("SKILL_TOOL_NOT_ALLOWED", prepare(readOnly).getString("code"))
+    }
+
+    private fun fixture(terminalEnabled: Boolean = false, allowedTools: String? = null): Fixture {
         val context = RuntimeEnvironment.getApplication() as Context
-        val skillsRoot = temporaryFolder.newFolder("skills")
+        val skillsRoot = temporaryFolder.newFolder()
         val skillRoot = File(skillsRoot, "resource-demo").also { it.mkdirs() }
         File(skillRoot, "SKILL.md").writeText(
             """
@@ -76,7 +109,10 @@ class AgentLocalSkillResourceToolTest {
             ---
 
             # Resource demo
-            """.trimIndent(),
+            """.trimIndent().let { raw ->
+                if (allowedTools == null) raw else raw.replace("description: Read bounded reference files in tests.",
+                    "description: Read bounded reference files in tests.\nallowed-tools: $allowedTools")
+            },
         )
         val indexService = SkillIndexService(context, skillsRoot)
         indexService.listSkillsForManagement(forceRefresh = true)
@@ -85,7 +121,7 @@ class AgentLocalSkillResourceToolTest {
             tools = AgentLocalTools(
                 context = context,
                 logger = NoOpLogger,
-                terminalToolsEnabled = { false },
+                terminalToolsEnabled = { terminalEnabled },
                 skillIndexService = indexService,
                 skillResourceReader = SkillResourceReader(skillsRoot),
                 runAvailableSkillIds = setOf("resource-demo"),

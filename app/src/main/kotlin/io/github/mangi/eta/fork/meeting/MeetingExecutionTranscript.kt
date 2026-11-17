@@ -19,11 +19,14 @@ internal object MeetingExecutionTranscript {
         val recorder = MeetingRunEventRecorder(
             runId = runId,
             persistWait = { MeetingRepository.recordAccessibilityWait(context, participant.roomId,
-                participant.profileName, participant.displayName, runId, it) },
+                participant.profileName, participant.displayName, runId, it, taskId) },
             persistTool = { MeetingRepository.recordToolActivity(context, participant.roomId,
                 participant.profileName, participant.displayName, participant.isHost, taskId, it) },
             persistStream = { MeetingRepository.recordStreamActivity(context, participant.roomId,
                 participant.profileName, participant.displayName, participant.isHost, taskId, it) },
+            persistApproval = { MeetingRepository.appendEvent(context, participant.roomId, taskId,
+                "approval_wait:$runId:${it.approvalId}", org.json.JSONObject()
+                    .put("profile", participant.profileName).put("phase", it.phase.name)) },
             recordStreams = recordStreams,
             onFailure = { AndroidAgentLogger.warn("Meeting transcript persistence failed: ${it.javaClass.simpleName}") },
         )

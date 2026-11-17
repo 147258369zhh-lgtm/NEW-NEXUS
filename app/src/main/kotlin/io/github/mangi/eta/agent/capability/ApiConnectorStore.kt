@@ -16,35 +16,39 @@ internal class ApiConnectorStore(context: Context) {
         "capability-center/api-connectors.json",
     )
 
-    @Synchronized
-    fun load(): List<ApiConnectorDefinition> {
-        if (!file.isFile) return emptyList()
-        return runCatching {
+    fun load(): List<ApiConnectorDefinition> = synchronized(FILE_LOCK) {
+        if (!file.isFile) emptyList() else try {
             val root = JSONObject(file.readText(Charsets.UTF_8))
             require(root.optInt("version") == VERSION)
             val values = root.optJSONArray("connectors") ?: JSONArray()
             buildList {
                 for (index in 0 until values.length()) {
-                    values.optJSONObject(index)?.let(::parseConnector)?.let(::add)
+                    val value = values.optJSONObject(index)
+                        ?: throw IllegalArgumentException("第 ${index + 1} 个 API 连接不是对象")
+                    add(parseConnector(value))
                 }
             }.distinctBy(ApiConnectorDefinition::id)
                 .sortedBy { it.name.lowercase(Locale.ROOT) }
-        }.getOrDefault(emptyList())
+        } catch (failure: Throwable) {
+            throw ApiConnectorException(
+                "CONNECTOR_CONFIG_CORRUPT",
+                "API 连接配置已损坏，已停止读取且不会覆盖原文件；请从备份恢复或导出原文件后重新导入。",
+                failure,
+            )
+        }
     }
 
-    @Synchronized
-    fun save(connectors: List<ApiConnectorDefinition>): List<ApiConnectorDefinition> {
+    fun save(connectors: List<ApiConnectorDefinition>): List<ApiConnectorDefinition> = synchronized(FILE_LOCK) {
         val validated = connectors.map(::validate).distinctBy(ApiConnectorDefinition::id)
         require(validated.size <= MAX_CONNECTORS) { "最多添加 $MAX_CONNECTORS 个 API 连接" }
         require(validated.sumOf { it.actions.size } <= MAX_ACTIONS) {
             "所有 API 连接合计最多包含 $MAX_ACTIONS 个操作"
         }
         write(validated)
-        return validated.sortedBy { it.name.lowercase(Locale.ROOT) }
+        validated.sortedBy { it.name.lowercase(Locale.ROOT) }
     }
 
-    @Synchronized
-    fun upsert(connector: ApiConnectorDefinition): List<ApiConnectorDefinition> {
+    fun upsert(connector: ApiConnectorDefinition): List<ApiConnectorDefinition> = synchronized(FILE_LOCK) {
         val current = load()
         val existing = current.indexOfFirst { it.id == connector.id }
         val next = if (existing >= 0) {
@@ -52,12 +56,12 @@ internal class ApiConnectorStore(context: Context) {
         } else {
             current + connector
         }
-        return save(next)
+        save(next)
     }
 
-    @Synchronized
-    fun delete(connectorId: String): List<ApiConnectorDefinition> =
+    fun delete(connectorId: String): List<ApiConnectorDefinition> = synchronized(FILE_LOCK) {
         save(load().filterNot { it.id == connectorId })
+    }
 
     fun validate(connector: ApiConnectorDefinition): ApiConnectorDefinition {
         require(CONNECTOR_ID.matches(connector.id)) { "API 连接 ID 无效" }
@@ -153,13 +157,14 @@ internal class ApiConnectorStore(context: Context) {
     private fun validateBaseUrl(raw: String): String {
         val uri = runCatching { URI(raw.trim()) }
             .getOrElse { throw ApiConnectorException("INVALID_BASE_URL", "API 基础地址无效") }
-        require(uri.scheme.equals("https", ignoreCase = true) && !uri.host.isNullOrBlank()) {
+        val loopback = uri.host?.lowercase(Locale.ROOT)?.removePrefix("[")?.removeSuffix("]") in setOf("127.0.0.1", "localhost", "::1")
+        require(!uri.host.isNullOrBlank() && (uri.scheme.equals("https", ignoreCase = true) || loopback && uri.scheme.equals("http", ignoreCase = true))) {
             "API 基础地址必须使用 HTTPS"
         }
         require(uri.rawUserInfo == null && uri.rawQuery == null && uri.rawFragment == null) {
             "API 基础地址不能包含凭据、查询参数或片段"
         }
-        require(uri.port in setOf(-1, 443)) { "API 基础地址只允许标准 HTTPS 端口" }
+        require(uri.port in setOf(-1, 443) || loopback && uri.port in 1..65535) { "API 基础地址只允许标准 HTTPS 端口或本机服务端口" }
         return uri.toASCIIString().trimEnd('/')
     }
 
@@ -204,9 +209,9 @@ internal class ApiConnectorStore(context: Context) {
         .filter(String::isNotBlank)
         .distinct()
 
-    private fun parseConnector(value: JSONObject): ApiConnectorDefinition? = runCatching {
+    private fun parseConnector(value: JSONObject): ApiConnectorDefinition {
         val actions = value.optJSONArray("actions") ?: JSONArray()
-        ApiConnectorDefinition(
+        return ApiConnectorDefinition(
             id = value.optString("id"),
             name = value.optString("name"),
             description = value.optString("description"),
@@ -224,7 +229,7 @@ internal class ApiConnectorStore(context: Context) {
             createdAt = value.optLong("createdAt", System.currentTimeMillis()),
             updatedAt = value.optLong("updatedAt", System.currentTimeMillis()),
         ).let(::validate)
-    }.getOrNull()
+    }
 
     private fun parseAction(value: JSONObject): ApiConnectorAction = ApiConnectorAction(
         name = value.optString("name"),
@@ -330,6 +335,7 @@ internal class ApiConnectorStore(context: Context) {
         values.map(String::trim).filter(String::isNotBlank)
 
     private companion object {
+        val FILE_LOCK = Any()
         const val VERSION = 1
         const val MAX_CONNECTORS = 24
         const val MAX_ACTIONS = 256

@@ -9,8 +9,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -20,6 +24,24 @@ import androidx.compose.ui.unit.dp
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import android.icu.text.BreakIterator
+import java.util.Locale
+
+internal enum class AgentIdentityPalette { Default, MeetingVivid }
+
+private val DefaultAgentIdentityColors = listOf(
+    Color(0xFF287FE8), Color(0xFF19A87F), Color(0xFFEB8543),
+    Color(0xFFD64D80), Color(0xFF6577E3), Color(0xFF10A5B9),
+)
+
+private val MeetingAgentIdentityColors = listOf(
+    Color(0xFF3998FF) to Color(0xFF1D72E0),
+    Color(0xFF24C99A) to Color(0xFF0AA47B),
+    Color(0xFFFFA15B) to Color(0xFFF47445),
+    Color(0xFFF76CA8) to Color(0xFFE44386),
+    Color(0xFFB188FF) to Color(0xFF8F58E8),
+    Color(0xFF31C8E7) to Color(0xFF109FCA),
+)
 
 /** Deterministic visual identity shared by meeting participants and Subagent settings. */
 @Composable
@@ -32,14 +54,18 @@ internal fun AgentIdentityAvatar(
     statusDescription: String? = null,
     selected: Boolean = false,
     modifier: Modifier = Modifier,
+    singleInitial: Boolean = false,
+    palette: AgentIdentityPalette = AgentIdentityPalette.Default,
 ) {
     val colors = MiuixTheme.colorScheme
-    val palette = listOf(
-        Color(0xFF5B8DEF), Color(0xFF8B6CF6), Color(0xFF19A974),
-        Color(0xFFE58B2A), Color(0xFFE45C86), Color(0xFF00A6A6),
-    )
-    val start = palette[(seed.hashCode() and Int.MAX_VALUE) % palette.size]
-    val end = palette[((seed.hashCode().toLong() * 31L and Long.MAX_VALUE) % palette.size).toInt()]
+    val identity = seed.hashCode().toUInt().toLong()
+    val (start, end) = when (palette) {
+        AgentIdentityPalette.Default -> {
+            val colors = DefaultAgentIdentityColors
+            colors[(identity % colors.size).toInt()] to colors[((identity / colors.size + 2L) % colors.size).toInt()]
+        }
+        AgentIdentityPalette.MeetingVivid -> MeetingAgentIdentityColors[(identity % MeetingAgentIdentityColors.size).toInt()]
+    }
     Box(
         modifier = modifier.size(size + 9.dp),
         contentAlignment = Alignment.Center,
@@ -49,7 +75,7 @@ internal fun AgentIdentityAvatar(
                 .align(Alignment.Center)
                 .size(size + if (selected) 4.dp else 2.dp)
                 .background(
-                    Brush.linearGradient(listOf(start.copy(alpha = .18f), end.copy(alpha = .06f))),
+                    if (selected) start.copy(alpha = .24f) else Color.Transparent,
                     CircleShape,
                 ),
         )
@@ -59,7 +85,7 @@ internal fun AgentIdentityAvatar(
                 .size(size)
                 .background(
                     Brush.linearGradient(
-                        listOf(start.copy(alpha = .92f), end.copy(alpha = .76f)),
+                        listOf(start, if (palette == AgentIdentityPalette.Default) end.copy(alpha = .88f) else end),
                     ),
                     CircleShape,
                 )
@@ -78,11 +104,19 @@ internal fun AgentIdentityAvatar(
                     modifier = Modifier.size(size * .46f),
                 )
             } else {
+                val density = LocalDensity.current
+                val style = if (singleInitial) MiuixTheme.textStyles.footnote1.copy(
+                    fontSize = with(density) { (size * 0.48f).toSp() },
+                    lineHeight = with(density) { (size * 0.65f).toSp() },
+                ) else MiuixTheme.textStyles.footnote1
                 Text(
-                    text = avatarInitials(displayName),
-                    style = MiuixTheme.textStyles.footnote1,
+                    text = remember(displayName, singleInitial) { avatarInitials(displayName, singleInitial) },
+                    style = style,
                     fontWeight = FontWeight.Bold,
                     color = Color.White,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.semantics { contentDescription = displayName },
                 )
             }
         }
@@ -100,12 +134,24 @@ internal fun AgentIdentityAvatar(
     }
 }
 
-private fun avatarInitials(displayName: String): String {
+private fun avatarInitials(displayName: String, singleInitial: Boolean = false): String {
+    fun takeGraphemes(text: String, count: Int): String {
+        val iterator = BreakIterator.getCharacterInstance(Locale.ROOT)
+        iterator.setText(text)
+        var end = iterator.first()
+        repeat(count) {
+            val next = iterator.next()
+            if (next == BreakIterator.DONE) return text.substring(0, end)
+            end = next
+        }
+        return text.substring(0, end)
+    }
     val words = displayName.trim().split(Regex("\\s+")).filter(String::isNotBlank)
+    if (singleInitial) return words.firstOrNull()?.let { takeGraphemes(takeGraphemes(it, 1).uppercase(), 1) }.orEmpty().ifBlank { "A" }
     val value = when {
-        words.size >= 2 -> words.take(2).joinToString("") { it.take(1) }
+        words.size >= 2 -> words.take(2).joinToString("") { takeGraphemes(it, 1) }
         words.singleOrNull()?.all(Char::isDigit) == true -> "AI"
-        else -> words.firstOrNull()?.take(2).orEmpty()
+        else -> words.firstOrNull()?.let { takeGraphemes(it, 2) }.orEmpty()
     }.uppercase()
     return value.ifBlank { "AI" }
 }

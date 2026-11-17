@@ -90,34 +90,149 @@ internal class AccessibilityRebindTransaction(
     }
 }
 
+/** Persisted fields deliberately contain wall time and boot identity, never process-local elapsed time. */
+internal data class AccessibilityRecoveryBudgetRecord(
+    val attempts: Int = 0,
+    val lastAttemptAtEpochMs: Long? = null,
+    val lastAttemptBootCount: Int? = null,
+)
+
+internal interface AccessibilityRecoveryBudgetStore {
+    fun load(): AccessibilityRecoveryBudgetRecord
+    fun save(record: AccessibilityRecoveryBudgetRecord): Boolean
+}
+
+/** Pure persistence adapter so durability and corrupt-value behavior can be tested without Android. */
+internal class MapAccessibilityRecoveryBudgetStore(
+    var values: MutableMap<String, Any?> = mutableMapOf(),
+    var writesSucceed: Boolean = true,
+) : AccessibilityRecoveryBudgetStore {
+    override fun load() = AccessibilityRecoveryBudgetRecord(
+        attempts = (values[KEY_ATTEMPTS] as? Number)?.toLong()?.let { stored ->
+            if (stored !in 0L..DELAYS_COUNT.toLong()) DELAYS_COUNT else stored.toInt()
+        } ?: if (values.containsKey(KEY_ATTEMPTS)) DELAYS_COUNT else 0,
+        lastAttemptAtEpochMs = (values[KEY_ATTEMPT_AT_EPOCH_MS] as? Number)?.toLong(),
+        lastAttemptBootCount = (values[KEY_ATTEMPT_BOOT_COUNT] as? Number)?.toInt()?.takeIf { it >= 0 },
+    )
+
+    override fun save(record: AccessibilityRecoveryBudgetRecord): Boolean {
+        if (!writesSucceed) return false
+        values = mutableMapOf<String, Any?>().apply {
+            put(KEY_ATTEMPTS, record.attempts)
+            record.lastAttemptAtEpochMs?.let { put(KEY_ATTEMPT_AT_EPOCH_MS, it) }
+            record.lastAttemptBootCount?.let { put(KEY_ATTEMPT_BOOT_COUNT, it) }
+        }
+        return true
+    }
+
+    companion object {
+        private const val DELAYS_COUNT = 3
+        const val KEY_ATTEMPTS = "recovery_attempts"
+        const val KEY_ATTEMPT_AT_EPOCH_MS = "recovery_attempt_at_epoch_ms"
+        const val KEY_ATTEMPT_BOOT_COUNT = "recovery_attempt_boot_count"
+    }
+}
+
+private class MemoryAccessibilityRecoveryBudgetStore(
+    private var record: AccessibilityRecoveryBudgetRecord = AccessibilityRecoveryBudgetRecord(),
+) : AccessibilityRecoveryBudgetStore {
+    override fun load() = record
+    override fun save(record: AccessibilityRecoveryBudgetRecord): Boolean {
+        this.record = record
+        return true
+    }
+}
+
 /** 最多三次，只有持续连接一分钟后才重置，避免快速连接/崩溃导致无限重启。 */
-internal class AccessibilityRecoveryBudget {
-    private var attempts = 0
-    private var lastAttemptAt: Long? = null
+internal class AccessibilityRecoveryBudget(
+    private val store: AccessibilityRecoveryBudgetStore = MemoryAccessibilityRecoveryBudgetStore(),
+) {
+    private var record = sanitize(store.load())
     private var lastStableConnectionAt: Long? = null
+    private var lastStableBootCount: Int? = null
 
     @Synchronized
-    fun recordConnection(connectedAt: Long?, disconnectedAt: Long?, now: Long, connected: Boolean) {
+    fun recordConnection(
+        connectedAt: Long?,
+        disconnectedAt: Long?,
+        now: Long,
+        connected: Boolean,
+        bootCount: Int? = 0,
+    ) {
         val since = connectedAt ?: return
         val until = if (connected) now else disconnectedAt ?: return
-        if (since != lastStableConnectionAt && until - since >= STABLE_MS) {
-            reset()
-            lastStableConnectionAt = since
+        if ((since != lastStableConnectionAt || bootCount != lastStableBootCount) && until - since >= STABLE_MS) {
+            if (reset()) {
+                lastStableConnectionAt = since
+                lastStableBootCount = bootCount
+            }
         }
     }
 
     @Synchronized
-    fun acquire(now: Long): Long? {
-        if (attempts >= 3) return null
-        val wait = lastAttemptAt?.let { (DELAYS[attempts] - (now - it)).coerceAtLeast(0L) } ?: 0L
+    fun acquire(nowEpochMs: Long, bootCount: Int? = 0): Long? {
+        if (record.attempts >= DELAYS.size) return null
+        if (record.attempts > 0 && record.lastAttemptAtEpochMs == null) return null
+        val wait = cooldownRemaining(nowEpochMs, bootCount, record.attempts)
         if (wait > 0L) return wait
-        attempts++
-        lastAttemptAt = now
+        val next = record.copy(
+            attempts = record.attempts + 1,
+            lastAttemptAtEpochMs = nowEpochMs,
+            lastAttemptBootCount = bootCount.takeIf { nowEpochMs > 0L },
+        )
+        // Fail closed if the attempt cannot be durably recorded; a process restart must not reopen the
+        // budget merely because persistence failed after a Root request was issued.
+        if (!store.save(next)) return null
+        record = next
         return 0L
     }
 
     @Synchronized
-    fun reset() { attempts = 0; lastAttemptAt = null }
+    fun reset(): Boolean {
+        lastStableConnectionAt = null
+        lastStableBootCount = null
+        return resetRecord()
+    }
+
+    private fun resetRecord(): Boolean {
+        val cleared = AccessibilityRecoveryBudgetRecord()
+        if (!store.save(cleared)) return false
+        record = cleared
+        return true
+    }
+
+    private fun cooldownRemaining(nowEpochMs: Long, bootCount: Int?, attempts: Int): Long {
+        val attemptedAt = record.lastAttemptAtEpochMs
+            ?: return 0L
+        val attemptedBoot = record.lastAttemptBootCount
+        val delay = DELAYS[attempts]
+        // Wall time is meaningful only within one known boot. A reboot, a backwards clock, or a boot
+        // identity that changed after persistence is ambiguous, so start a fresh conservative delay
+        // from the first observed timestamp in the new time domain. Persisting it prevents every
+        // retry in the same boot from charging the full delay forever.
+        if (nowEpochMs > 0L && bootCount != null && (attemptedBoot == null || attemptedBoot != bootCount || nowEpochMs < attemptedAt)) {
+            val rebased = record.copy(lastAttemptAtEpochMs = nowEpochMs, lastAttemptBootCount = bootCount)
+            if (store.save(rebased)) record = rebased
+            return delay
+        }
+        if (nowEpochMs <= 0L || nowEpochMs < attemptedAt) return delay
+        if (attemptedBoot != null && bootCount == null) return delay
+        return (delay - (nowEpochMs - attemptedAt)).coerceAtLeast(0L)
+    }
+
+    private fun sanitize(value: AccessibilityRecoveryBudgetRecord): AccessibilityRecoveryBudgetRecord {
+        // A negative value cannot be a valid persisted budget. Treat it as exhausted so
+        // corrupted/overflowed storage never resets the automatic recovery allowance.
+        val attempts = if (value.attempts < 0) DELAYS.size else value.attempts.coerceAtMost(DELAYS.size)
+        val hasTimestamp = (value.lastAttemptAtEpochMs ?: 0L) > 0L && (value.lastAttemptBootCount ?: -1) >= 0
+        if (!hasTimestamp) return AccessibilityRecoveryBudgetRecord(attempts = attempts)
+        if (attempts == 0) return AccessibilityRecoveryBudgetRecord()
+        return AccessibilityRecoveryBudgetRecord(
+            attempts = attempts,
+            lastAttemptAtEpochMs = value.lastAttemptAtEpochMs.takeIf { hasTimestamp },
+            lastAttemptBootCount = value.lastAttemptBootCount.takeIf { hasTimestamp },
+        )
+    }
 
     companion object {
         const val STABLE_MS = 60_000L

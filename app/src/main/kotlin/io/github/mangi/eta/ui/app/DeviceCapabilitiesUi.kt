@@ -8,10 +8,12 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.libxposed.service.XposedService
 import io.github.mangi.eta.EtaApp
@@ -23,6 +25,7 @@ import io.github.mangi.eta.agent.tool.AgentToolCapabilities
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityHealth
 import io.github.mangi.eta.agent.accessibility.RootAccessibilityRecovery
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 
 internal data class DeviceCapabilitiesUi(
     val root: RootAccessState,
@@ -37,19 +40,23 @@ internal data class DeviceCapabilitiesUi(
 @Composable
 internal fun rememberDeviceCapabilities(): DeviceCapabilitiesUi {
     val context = LocalContext.current.applicationContext
+    val scope = rememberCoroutineScope()
     val root by RootAccess.state.collectAsState()
     val recovery by RootAccessibilityRecovery.state.collectAsState()
     var xposedConnected by remember { mutableStateOf(EtaApp.serviceInstance != null) }
-    var tools by remember { mutableStateOf(AgentToolCapabilities.capture(context)) }
+    val runtime by SettingsRuntimeSnapshotStore.state.collectAsState()
+    val owner = LocalLifecycleOwner.current
+    val tools = runtime.capabilities
     LaunchedEffect(root, xposedConnected, recovery) {
-        tools = AgentToolCapabilities.capture(context)
+        SettingsRuntimeSnapshotStore.refresh(context, maxAgeMillis = 2_000L)
     }
-    LaunchedEffect(context) {
-        AgentAccessibilityHealth.observeChanges(context).collect {
-            tools = AgentToolCapabilities.capture(context)
+    LaunchedEffect(context, owner) {
+        owner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            AgentAccessibilityHealth.observeChanges(context).collect {
+                SettingsRuntimeSnapshotStore.refresh(context)
+            }
         }
     }
-    val owner = LocalLifecycleOwner.current
     DisposableEffect(owner, context) {
         val listener = object : EtaApp.ServiceStateListener {
             override fun onServiceStateChanged(service: XposedService?) {
@@ -58,8 +65,9 @@ internal fun rememberDeviceCapabilities(): DeviceCapabilitiesUi {
         }
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                RootAccess.refresh(context)
-                tools = AgentToolCapabilities.capture(context)
+                // Activity-level resume already refreshes Root. Returning between settings
+                // entries must not start another su probe and fan out capability recompositions.
+                scope.launch { SettingsRuntimeSnapshotStore.refresh(context, maxAgeMillis = 2_000L) }
             }
         }
         EtaApp.addServiceStateListener(listener, notifyImmediately = true)
@@ -82,6 +90,7 @@ internal fun RootAccessState.description(context: Context): String = context.get
         status == RootAccessStatus.GRANTED -> R.string.capability_root_granted
         status == RootAccessStatus.UNAVAILABLE -> R.string.capability_root_unavailable
         status == RootAccessStatus.TIMED_OUT -> R.string.capability_root_timeout
+        status == RootAccessStatus.DENIED -> R.string.capability_root_denied
         else -> R.string.capability_root_not_granted
     },
 )

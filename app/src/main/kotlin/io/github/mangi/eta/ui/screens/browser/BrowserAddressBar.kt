@@ -1,23 +1,19 @@
 package io.github.mangi.eta.ui.screens.browser
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.Crossfade
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import io.github.mangi.eta.ui.app.LocalEtaDesignTokens
+import io.github.mangi.eta.ui.components.NexaCompactAction
+import io.github.mangi.eta.ui.components.NexusGlassBackdrop
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -53,11 +49,9 @@ import io.github.mangi.eta.agent.browser.BrowserSessionSnapshot
 import top.yukonga.miuix.kmp.basic.DropdownImpl
 import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.ListPopupColumn
 import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowListPopup
 
@@ -77,11 +71,14 @@ internal fun BrowserAddressBar(
     onOpenExternal: () -> Unit,
     onClosePage: () -> Unit,
     onClearData: () -> Unit,
+    onScanQr: () -> Unit,
+    onFinishTakeover: () -> Unit,
 ) {
     val colors = MiuixTheme.colorScheme
     val addressLabel = stringResource(R.string.browser_search_or_address)
     Row(
-        modifier = Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 6.dp),
+        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         AnimatedVisibility(
@@ -89,7 +86,7 @@ internal fun BrowserAddressBar(
             enter = fadeIn() + expandHorizontally(),
             exit = fadeOut() + shrinkHorizontally(),
         ) {
-            Row {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 BrowserControlButton(
                     icon = Icons.AutoMirrored.Rounded.ArrowBack,
                     description = stringResource(if (snapshot.canGoBack) R.string.browser_back else R.string.action_back),
@@ -104,51 +101,48 @@ internal fun BrowserAddressBar(
                 )
             }
         }
-        Row(
-            modifier = Modifier
-                .weight(1f)
-                .padding(horizontal = 4.dp)
-                .height(40.dp)
-                .squircleSurface(color = colors.surfaceContainerHigh, cornerRadius = 20.dp)
-                .padding(start = 12.dp, end = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                imageVector = if (snapshot.url.startsWith("https://")) Icons.Rounded.Lock else Icons.Rounded.Language,
-                contentDescription = null,
-                modifier = Modifier.size(15.dp),
-                tint = colors.onSurfaceVariantSummary,
-            )
-            Spacer(Modifier.width(8.dp))
-            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-                if (address.text.isEmpty()) {
-                    Text(
-                        text = addressLabel,
-                        style = MiuixTheme.textStyles.body2,
-                        color = colors.onSurfaceVariantSummary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+        Box(Modifier.weight(1f).padding(horizontal = 6.dp).height(44.dp).clip(RoundedCornerShape(22.dp))) {
+            val tokens = LocalEtaDesignTokens.current
+            if (tokens.skin.isGlass) NexusGlassBackdrop(Modifier.matchParentSize(), cornerRadius = 22.dp, refract = false)
+            else Box(Modifier.matchParentSize().background(tokens.surfaceElevated, RoundedCornerShape(22.dp)))
+            Row(Modifier.fillMaxSize().padding(start = 12.dp, end = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = if (snapshot.url.startsWith("https://")) Icons.Rounded.Lock else Icons.Rounded.Language,
+                    contentDescription = null,
+                    modifier = Modifier.size(15.dp),
+                    tint = colors.onSurfaceVariantSummary,
+                )
+                Spacer(Modifier.width(8.dp))
+                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                    if (address.text.isEmpty()) {
+                        Text(
+                            text = addressLabel,
+                            style = MiuixTheme.textStyles.body2,
+                            color = colors.onSurfaceVariantSummary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    BasicTextField(
+                        value = address,
+                        onValueChange = onAddressChange,
+                        singleLine = true,
+                        textStyle = MiuixTheme.textStyles.body2.copy(color = colors.onSurface),
+                        cursorBrush = SolidColor(colors.primary),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Go),
+                        keyboardActions = KeyboardActions(onGo = { onGo() }),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .semantics { contentDescription = addressLabel }
+                            .onFocusChanged { onFocusChange(it.isFocused) },
                     )
                 }
-                BasicTextField(
-                    value = address,
-                    onValueChange = onAddressChange,
-                    singleLine = true,
-                    textStyle = MiuixTheme.textStyles.body2.copy(color = colors.onSurface),
-                    cursorBrush = SolidColor(colors.primary),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Go),
-                    keyboardActions = KeyboardActions(onGo = { onGo() }),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .semantics { contentDescription = addressLabel }
-                        .onFocusChanged { onFocusChange(it.isFocused) },
+                BrowserSubmitAction(
+                    focused = focused,
+                    canSubmit = address.text.isNotBlank() && !actionPending,
+                    onGo = onGo,
                 )
             }
-            BrowserSubmitAction(
-                focused = focused,
-                canSubmit = address.text.isNotBlank() && !actionPending,
-                onGo = onGo,
-            )
         }
         AnimatedVisibility(
             visible = !focused,
@@ -163,6 +157,15 @@ internal fun BrowserAddressBar(
         }
         BrowserOverflowMenu(
             items = listOf(
+                DropdownItem(
+                    text = stringResource(R.string.browser_finish_takeover),
+                    onClick = onFinishTakeover,
+                ),
+                DropdownItem(
+                    text = stringResource(R.string.browser_scan_qr),
+                    enabled = !actionPending,
+                    onClick = onScanQr,
+                ),
                 DropdownItem(
                     text = stringResource(R.string.browser_open_external),
                     enabled = snapshot.url.startsWith("http://") || snapshot.url.startsWith("https://"),
@@ -190,31 +193,13 @@ private fun BrowserRefreshButton(
     onClick: () -> Unit,
 ) {
     val description = stringResource(if (loading) R.string.browser_stop_loading else R.string.browser_refresh)
-    val tint by animateColorAsState(
-        targetValue = if (enabled) MiuixTheme.colorScheme.onSurface else MiuixTheme.colorScheme.disabledOnSecondaryVariant,
-        animationSpec = tween(180),
-        label = "browser_refresh_tint",
-    )
-    IconButton(
-        onClick = onClick,
+    NexaCompactAction(
+        text = "",
+        icon = if (loading) Icons.Rounded.Close else Icons.Rounded.Refresh,
         enabled = enabled,
         modifier = Modifier.semantics { contentDescription = description },
-    ) {
-        // 只交叉淡化图标，点击区域和地址框宽度不参与加载状态切换。
-        Crossfade(
-            targetState = loading,
-            animationSpec = tween(180),
-            modifier = Modifier.size(20.dp),
-            label = "browser_refresh_icon",
-        ) { isLoading ->
-            Icon(
-                imageVector = if (isLoading) Icons.Rounded.Close else Icons.Rounded.Refresh,
-                contentDescription = null,
-                modifier = Modifier.size(20.dp),
-                tint = tint,
-            )
-        }
-    }
+        onClick = onClick,
+    )
 }
 
 @Composable
@@ -224,7 +209,7 @@ private fun BrowserSubmitAction(
     onGo: () -> Unit,
 ) {
     // 操作槽保持固定宽度，输入动画只作用于图标，不改变网页的布局尺寸。
-    Box(modifier = Modifier.size(36.dp), contentAlignment = Alignment.Center) {
+    Box(modifier = Modifier.size(44.dp), contentAlignment = Alignment.Center) {
         AnimatedVisibility(
             visible = focused,
             enter = fadeIn() + slideInHorizontally { it / 2 },
@@ -235,7 +220,7 @@ private fun BrowserSubmitAction(
                 description = stringResource(R.string.browser_search_or_address),
                 enabled = focused && canSubmit,
                 onClick = onGo,
-                size = 36.dp,
+                size = 44.dp,
             )
         }
     }
@@ -279,14 +264,13 @@ private fun BrowserControlButton(
     description: String,
     enabled: Boolean = true,
     onClick: () -> Unit,
-    size: Dp = 40.dp,
+    size: Dp = 44.dp,
 ) {
-    IconButton(onClick = onClick, enabled = enabled, minWidth = size, minHeight = size) {
-        Icon(
-            imageVector = icon,
-            contentDescription = description,
-            modifier = Modifier.size(20.dp),
-            tint = if (enabled) MiuixTheme.colorScheme.onSurface else MiuixTheme.colorScheme.disabledOnSecondaryVariant,
-        )
-    }
+    NexaCompactAction(
+        text = "",
+        icon = icon,
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.size(size).semantics { contentDescription = description },
+    )
 }

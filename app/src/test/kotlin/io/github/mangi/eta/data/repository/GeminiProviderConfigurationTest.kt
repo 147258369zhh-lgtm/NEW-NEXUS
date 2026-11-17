@@ -35,6 +35,14 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
 class GeminiProviderConfigurationTest {
+    @Test fun geminiReasoningRespectsOverridesAndUnknownCapability() {
+        val provider = GeminiProviderSetting(id = "g", name = "Gemini")
+        val unknown = Model(id = "m", modelId = "unknown-model", displayName = "Unknown")
+        assertNull(RuntimeConfigRepository.reasoningCapabilities(provider, unknown))
+        assertNull(RuntimeConfigRepository.reasoningCapabilities(provider,
+            unknown.copy(modelId = "gemini-3.8-flash", reasoningOverride = false)))
+        assertTrue(RuntimeConfigRepository.reasoningCapabilities(provider, unknown.copy(reasoningOverride = true)) != null)
+    }
     private val context = RuntimeEnvironment.getApplication()
 
     @Before
@@ -71,8 +79,8 @@ class GeminiProviderConfigurationTest {
         assertEquals(ProviderTypes.GEMINI, config.providerType)
         assertEquals(ProviderSourceTypes.GEMINI, config.providerSourceType)
         assertEquals("", config.openAiEndpointMode)
-        assertEquals(ReasoningEffort.DEFAULT, config.reasoningEffort)
-        assertTrue(requireNotNull(config.reasoningCapabilities).mandatory)
+        assertEquals(ReasoningEffort.OFF, config.reasoningEffort)
+        assertNull(config.reasoningCapabilities)
         val raw = Json.encodeToString<ProviderSetting>(stored)
         assertEquals(stored, Json.decodeFromString<ProviderSetting>(raw))
     }
@@ -83,12 +91,9 @@ class GeminiProviderConfigurationTest {
             GeminiProviderSetting(id = "manual-gemini", name = "Gemini"),
             Model(id = "manual-model", modelId = "gemini-future", displayName = "手动模型"),
         )
-        assertEquals(ReasoningEffort.DEFAULT, config.reasoningEffort)
-        assertEquals(ReasoningEffort.DEFAULT, config.effectiveReasoningEffort)
-        val capabilities = requireNotNull(config.reasoningCapabilities)
-        assertEquals(listOf(ReasoningEffort.DEFAULT), capabilities.selectableEfforts)
-        assertNull(capabilities.defaultEnabled)
-        assertFalse(capabilities.mandatory)
+        assertEquals(ReasoningEffort.OFF, config.reasoningEffort)
+        assertFalse(config.thinkingEnabled)
+        assertNull(config.reasoningCapabilities)
     }
 
     @Test
@@ -98,16 +103,18 @@ class GeminiProviderConfigurationTest {
             baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai", apiKey = "fixture-key",
             models = listOf(Model(id = "existing-model", modelId = "gemini-3.8-flash", displayName = "原模型")),
         )
-        ProviderRepository.addProvider(source)
+        val added = ProviderRepository.addProvider(source)
         SettingsDataStore.setSelection(source.id, source.models.single().id)
         ProviderRepository.ensureBuiltInsMerged()
         val providers = ProviderRepository.allProviders()
-        assertEquals(source, providers.first())
-        assertTrue(providers.last() is GeminiProviderSetting)
-        assertEquals(BuiltinProviders.GEMINI_ID, providers.last().id)
+        assertEquals(added, providers.single { it.id == source.id })
+        val gemini = providers.single { it.id == BuiltinProviders.GEMINI_ID }
+        assertTrue(gemini is GeminiProviderSetting)
         assertEquals(source.id, SettingsDataStore.settings().selectedProviderId)
         assertEquals(source.models.single().id, SettingsDataStore.settings().selectedModelId)
-        assertEquals(3, providers.last().models.size)
+        assertEquals(BuiltinProviders.providerById(BuiltinProviders.GEMINI_ID)?.let {
+            io.github.mangi.eta.data.provider.OfficialModelCatalog.modelsForProvider(it).size
+        }, gemini.models.size)
     }
 
     @Test
@@ -132,7 +139,7 @@ class GeminiProviderConfigurationTest {
         EtaBackupRepository.export(context, output)
         val raw = output.toString(Charsets.UTF_8.name())
         val document = Json.decodeFromString<EtaBackupDocument>(raw)
-        assertEquals(8, document.schemaVersion)
+        assertEquals(EtaBackupDocument.SCHEMA_VERSION, document.schemaVersion)
         assertTrue(document.schemaVersion > 3)
         assertEquals(ProviderTypes.GEMINI, document.providers.single { it.provider.id == source.id }.provider.type)
         ProviderRepository.deleteProvider(source.id)

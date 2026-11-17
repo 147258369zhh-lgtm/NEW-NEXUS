@@ -81,6 +81,7 @@ internal data class ProviderModelEntity(
     @ColumnInfo(name = "output_modalities_json") val outputModalitiesJson: String,
     @ColumnInfo(name = "attachment") val attachment: Boolean?,
     @ColumnInfo(name = "tool_call") val toolCall: Boolean?,
+    @ColumnInfo(name = "try_unknown_capabilities", defaultValue = "0") val tryUnknownCapabilities: Boolean = false,
     @ColumnInfo(name = "reasoning") val reasoning: Boolean?,
     @ColumnInfo(name = "reasoning_capabilities_json", defaultValue = "'null'")
     val reasoningCapabilitiesJson: String = "null",
@@ -246,6 +247,7 @@ private fun Model.toEntity(providerId: String): ProviderModelEntity =
         outputModalitiesJson = ProviderJson.encodeStrings(outputModalities),
         attachment = attachment,
         toolCall = toolCall,
+        tryUnknownCapabilities = tryUnknownCapabilities,
         reasoning = reasoning,
         reasoningCapabilitiesJson = ProviderJson.encodeReasoningCapabilities(reasoningCapabilities),
         reasoningOverride = reasoningOverride,
@@ -279,6 +281,7 @@ private fun ProviderModelEntity.toDomain(): Model =
         },
         attachment = attachment,
         toolCall = toolCall,
+        tryUnknownCapabilities = tryUnknownCapabilities,
         reasoning = reasoning,
         reasoningCapabilities = ProviderJson.decodeReasoningCapabilities(reasoningCapabilitiesJson),
         reasoningOverride = reasoningOverride,

@@ -25,6 +25,62 @@ import org.robolectric.annotation.Config
 @Config(sdk = [36])
 class McpProtocolValidationTest {
     @Test
+    fun firstAutoToolCallNegotiatesByReadBeforeSubmittingToolOnce() {
+        val methods = CopyOnWriteArrayList<String>()
+        val server = localServer { exchange ->
+            val body = JSONObject(exchange.requestBody.bufferedReader().use { it.readText() })
+            val method = body.getString("method")
+            methods += method
+            when (method) {
+                "tools/list" -> if (exchange.requestHeaders.getFirst("MCP-Protocol-Version") == McpProtocolMode.LATEST) {
+                    exchange.respond(400, "legacy protocol")
+                } else exchange.respond(200, """{"jsonrpc":"2.0","id":${body.getLong("id")},"result":{"tools":[]}}""")
+                "initialize" -> exchange.respond(200, """{"jsonrpc":"2.0","id":${body.getLong("id")},"result":{"protocolVersion":"2025-11-25","capabilities":{}}}""")
+                "notifications/initialized" -> exchange.respond(202, "")
+                "tools/call" -> exchange.respond(200, """{"jsonrpc":"2.0","id":${body.getLong("id")},"result":{"content":[{"type":"text","text":"done"}]}}""")
+                else -> error("Unexpected $method")
+            }
+        }
+        try {
+            McpHttpClient(McpServerSetting("first", "First", server.url()), null).use {
+                val result = it.callTool(McpToolDefinition("create_task", inputSchemaJson = """{"type":"object"}"""), JSONObject())
+                assertEquals("done", result.getJSONArray("content").getJSONObject(0).getString("text"))
+            }
+            assertEquals(listOf("tools/list", "initialize", "notifications/initialized", "tools/list", "tools/call"), methods)
+        } finally { server.stop(0) }
+    }
+
+    @Test
+    fun explicitProtocolModeOverridesStaleCachedVersion() {
+        val methods = CopyOnWriteArrayList<String>()
+        val versions = CopyOnWriteArrayList<String>()
+        val server = localServer { exchange ->
+            val body = JSONObject(exchange.requestBody.bufferedReader().use { it.readText() })
+            val method = body.getString("method")
+            methods += method
+            versions += exchange.requestHeaders.getFirst("MCP-Protocol-Version")
+            when (method) {
+                "initialize" -> exchange.respond(200, """{"jsonrpc":"2.0","id":${body.getLong("id")},"result":{"protocolVersion":"2025-11-25","capabilities":{}}}""")
+                "notifications/initialized" -> exchange.respond(202, "")
+                "tools/call" -> exchange.respond(200, """{"jsonrpc":"2.0","id":${body.getLong("id")},"result":{"resultType":"complete","content":[]}}""")
+                else -> error("Unexpected $method")
+            }
+        }
+        try {
+            val tool = McpToolDefinition("read", inputSchemaJson = """{"type":"object"}""")
+            McpHttpClient(McpServerSetting("forced", "Forced", server.url(), protocolMode = McpProtocolMode.LATEST,
+                lastProtocolVersion = McpProtocolMode.LEGACY), null).use { it.callTool(tool, JSONObject()) }
+            assertEquals(listOf("tools/call"), methods.toList())
+            assertEquals(listOf(McpProtocolMode.LATEST), versions.toList())
+            methods.clear(); versions.clear()
+            McpHttpClient(McpServerSetting("forced", "Forced", server.url(), protocolMode = McpProtocolMode.LEGACY,
+                lastProtocolVersion = McpProtocolMode.LATEST), null).use { it.callTool(tool, JSONObject()) }
+            assertEquals(listOf("initialize", "notifications/initialized", "tools/call"), methods.toList())
+            assertEquals(setOf(McpProtocolMode.LEGACY), versions.toSet())
+        } finally { server.stop(0) }
+    }
+
+    @Test
     fun modernCatalogListsResourcesAndPromptsAndReadsResource() {
         val methods = CopyOnWriteArrayList<String>()
         val server = localServer { exchange ->

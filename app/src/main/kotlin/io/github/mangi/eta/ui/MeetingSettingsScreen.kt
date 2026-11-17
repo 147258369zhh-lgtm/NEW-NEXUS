@@ -1,10 +1,14 @@
 package io.github.mangi.eta.ui
 
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -12,22 +16,29 @@ import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.fork.meeting.MeetingSettingsStore
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
-import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.NexusSettingsGroup
+import io.github.mangi.eta.ui.components.NexusSettingsSectionTitle
+import io.github.mangi.eta.ui.components.NexusSettingsTabs
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
-import top.yukonga.miuix.kmp.preference.SwitchPreference
+import io.github.mangi.eta.ui.components.NexusSettingsDropdownPreference as OverlayDropdownPreference
+import io.github.mangi.eta.ui.components.NexusSettingsSwitchPreference as SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 private val meetingParallelPresets = listOf(1, 2, 3, 4, 5, 6, 7, 8)
 private val meetingSummaryLinePresets = listOf(1, 2, 4, 6, 0)
 private val meetingTimeoutMinutePresets = listOf(2, 5, 10, 20, 30)
+private val meetingCallBudgetPresets = listOf(12, 24, 40, 64)
+private val meetingTimeBudgetPresets = listOf(5, 10, 20, 40, 60)
 
 @Composable
 internal fun MeetingSettingsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val store = remember(context.applicationContext) { MeetingSettingsStore.get(context.applicationContext) }
     val settings by store.settings.collectAsState()
+    var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    val routingListState = rememberLazyListState()
+    val contextListState = rememberLazyListState()
+    val conversationListState = rememberLazyListState()
     val parallelLabels = meetingParallelPresets.map { count ->
         stringResource(R.string.meeting_settings_parallel_value, count)
     }
@@ -45,99 +56,147 @@ internal fun MeetingSettingsScreen(onBack: () -> Unit) {
     MiuixScaffoldPage(
         title = stringResource(R.string.meeting_settings_title),
         onBack = onBack,
+        listState = when (selectedTab) {
+            1 -> contextListState
+            2 -> conversationListState
+            else -> routingListState
+        },
+        aboveContent = {
+            NexusSettingsTabs(
+                tabs = listOf(
+                    stringResource(R.string.meeting_settings_group_routing),
+                    stringResource(R.string.meeting_settings_group_context),
+                    stringResource(R.string.meeting_settings_group_conversation),
+                ),
+                selectedTab = selectedTab,
+                onTabSelected = { selectedTab = it },
+            )
+        },
     ) {
-        item(key = "meeting_routing") {
-            SmallTitle(stringResource(R.string.meeting_settings_group_routing))
-            Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                SwitchPreference(
-                    title = stringResource(R.string.meeting_settings_auto_dispatch),
-                    summary = stringResource(R.string.meeting_settings_auto_dispatch_summary),
-                    checked = settings.autoDispatchWithoutMention,
-                    onCheckedChange = { enabled ->
-                        store.update { it.copy(autoDispatchWithoutMention = enabled) }
-                    },
-                )
-                OverlayDropdownPreference(
-                    title = stringResource(R.string.meeting_settings_max_parallel),
-                    summary = stringResource(R.string.meeting_settings_max_parallel_summary),
-                    items = parallelLabels,
-                    selectedIndex = meetingParallelPresets.indexOf(settings.maxParallelParticipants)
-                        .coerceAtLeast(0),
-                    onSelectedIndexChange = { index ->
-                        meetingParallelPresets.getOrNull(index)?.let { count ->
-                            store.update { it.copy(maxParallelParticipants = count) }
-                        }
-                    },
-                )
-                SwitchPreference(
-                    title = stringResource(R.string.meeting_settings_fallback_all_agents),
-                    summary = stringResource(R.string.meeting_settings_fallback_all_agents_summary),
-                    checked = settings.fallbackToAllAgents,
-                    onCheckedChange = { enabled ->
-                        store.update { it.copy(fallbackToAllAgents = enabled) }
-                    },
-                )
+        if (selectedTab == 0) {
+            item(key = "meeting_routing") {
+                NexusSettingsSectionTitle(stringResource(R.string.meeting_settings_group_routing))
+                NexusSettingsGroup {
+                    SwitchPreference(
+                        title = stringResource(R.string.meeting_settings_auto_dispatch),
+                        summary = stringResource(R.string.meeting_settings_auto_dispatch_summary),
+                        checked = settings.autoDispatchWithoutMention,
+                        onCheckedChange = { enabled ->
+                            store.update { it.copy(autoDispatchWithoutMention = enabled) }
+                        },
+                    )
+                    OverlayDropdownPreference(
+                        title = stringResource(R.string.meeting_settings_max_parallel),
+                        summary = stringResource(R.string.meeting_settings_max_parallel_summary),
+                        items = parallelLabels,
+                        selectedIndex = meetingParallelPresets.indexOf(settings.maxParallelParticipants)
+                            .coerceAtLeast(0),
+                        onSelectedIndexChange = { index ->
+                            meetingParallelPresets.getOrNull(index)?.let { count ->
+                                store.update { it.copy(maxParallelParticipants = count) }
+                            }
+                        },
+                    )
+                    SwitchPreference(
+                        title = stringResource(R.string.meeting_settings_fallback_all_agents),
+                        summary = stringResource(R.string.meeting_settings_fallback_all_agents_summary),
+                        checked = settings.fallbackToAllAgents,
+                        onCheckedChange = { enabled ->
+                            store.update { it.copy(fallbackToAllAgents = enabled) }
+                        },
+                    )
+                    SwitchPreference(
+                        title = stringResource(R.string.meeting_settings_candidate_routing),
+                        summary = stringResource(R.string.meeting_settings_candidate_routing_summary),
+                        checked = settings.candidateRoutingEnabled,
+                        onCheckedChange = { enabled ->
+                            store.update { it.copy(candidateRoutingEnabled = enabled) }
+                        },
+                    )
+                    OverlayDropdownPreference(
+                        title = "阶段流程成员执行预算",
+                        summary = "新一轮会议读取此上限；与创建时固化的用途预算取较小值，达到即保留成果并结束。",
+                        items = meetingCallBudgetPresets.map { "$it 次成员执行" },
+                        selectedIndex = meetingCallBudgetPresets.indexOf(settings.workflowMaxCalls).coerceAtLeast(0),
+                        onSelectedIndexChange = { index -> meetingCallBudgetPresets.getOrNull(index)?.let { count ->
+                            store.update { it.copy(workflowMaxCalls = count) }
+                        } },
+                    )
+                    OverlayDropdownPreference(
+                        title = "阶段流程总时限",
+                        summary = "独立于单次请求超时；限制整个会议轮次，不自动重放已执行任务。",
+                        items = meetingTimeBudgetPresets.map { "$it 分钟" },
+                        selectedIndex = meetingTimeBudgetPresets.indexOf(settings.workflowMaxMinutes).coerceAtLeast(0),
+                        onSelectedIndexChange = { index -> meetingTimeBudgetPresets.getOrNull(index)?.let { minutes ->
+                            store.update { it.copy(workflowMaxMinutes = minutes) }
+                        } },
+                    )
+                }
             }
         }
 
-        item(key = "meeting_context") {
-            SmallTitle(stringResource(R.string.meeting_settings_group_context))
-            Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                SwitchPreference(
-                    title = stringResource(R.string.meeting_settings_auto_compaction),
-                    summary = stringResource(R.string.meeting_settings_auto_compaction_summary),
-                    checked = settings.meetingAutoCompactionEnabled,
-                    onCheckedChange = { enabled ->
-                        store.update { it.copy(meetingAutoCompactionEnabled = enabled) }
-                    },
-                )
-                OverlayDropdownPreference(
-                    title = stringResource(R.string.meeting_settings_timeout),
-                    summary = stringResource(R.string.meeting_settings_timeout_summary),
-                    items = timeoutLabels,
-                    selectedIndex = meetingTimeoutMinutePresets.indexOfFirst { minutes ->
-                        minutes * 60 == settings.requestTimeoutSeconds
-                    }.takeIf { it >= 0 } ?: meetingTimeoutMinutePresets.indexOf(10),
-                    onSelectedIndexChange = { index ->
-                        meetingTimeoutMinutePresets.getOrNull(index)?.let { minutes ->
-                            store.update { it.copy(requestTimeoutSeconds = minutes * 60) }
-                        }
-                    },
-                )
+        if (selectedTab == 1) {
+            item(key = "meeting_context") {
+                NexusSettingsSectionTitle(stringResource(R.string.meeting_settings_group_context))
+                NexusSettingsGroup {
+                    SwitchPreference(
+                        title = stringResource(R.string.meeting_settings_auto_compaction),
+                        summary = stringResource(R.string.meeting_settings_auto_compaction_summary),
+                        checked = settings.meetingAutoCompactionEnabled,
+                        onCheckedChange = { enabled ->
+                            store.update { it.copy(meetingAutoCompactionEnabled = enabled) }
+                        },
+                    )
+                    OverlayDropdownPreference(
+                        title = stringResource(R.string.meeting_settings_timeout),
+                        summary = stringResource(R.string.meeting_settings_timeout_summary),
+                        items = timeoutLabels,
+                        selectedIndex = meetingTimeoutMinutePresets.indexOfFirst { minutes ->
+                            minutes * 60 == settings.requestTimeoutSeconds
+                        }.takeIf { it >= 0 } ?: meetingTimeoutMinutePresets.indexOf(10),
+                        onSelectedIndexChange = { index ->
+                            meetingTimeoutMinutePresets.getOrNull(index)?.let { minutes ->
+                                store.update { it.copy(requestTimeoutSeconds = minutes * 60) }
+                            }
+                        },
+                    )
+                }
             }
         }
 
-        item(key = "meeting_conversation") {
-            SmallTitle(stringResource(R.string.meeting_settings_group_conversation))
-            Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                SwitchPreference(
-                    title = stringResource(R.string.meeting_settings_auto_follow),
-                    summary = stringResource(R.string.meeting_settings_auto_follow_summary),
-                    checked = settings.autoFollowMessages,
-                    onCheckedChange = { enabled ->
-                        store.update { it.copy(autoFollowMessages = enabled) }
-                    },
-                )
-                SwitchPreference(
-                    title = stringResource(R.string.meeting_settings_auto_summarize),
-                    summary = stringResource(R.string.meeting_settings_auto_summarize_summary),
-                    checked = settings.autoSummarizeResults,
-                    onCheckedChange = { enabled ->
-                        store.update { it.copy(autoSummarizeResults = enabled) }
-                    },
-                )
-                OverlayDropdownPreference(
-                    title = stringResource(R.string.meeting_settings_summary_lines),
-                    items = summaryLabels,
-                    selectedIndex = meetingSummaryLinePresets.indexOf(settings.summaryPreviewLines)
-                        .takeIf { it >= 0 }
-                            ?: meetingSummaryLinePresets.indexOf(1),
-                    onSelectedIndexChange = { index ->
-                        meetingSummaryLinePresets.getOrNull(index)?.let { lines ->
-                            store.update { it.copy(summaryPreviewLines = lines) }
-                        }
-                    },
-                )
+        if (selectedTab == 2) {
+            item(key = "meeting_conversation") {
+                NexusSettingsSectionTitle(stringResource(R.string.meeting_settings_group_conversation))
+                NexusSettingsGroup {
+                    SwitchPreference(
+                        title = stringResource(R.string.meeting_settings_auto_follow),
+                        summary = stringResource(R.string.meeting_settings_auto_follow_summary),
+                        checked = settings.autoFollowMessages,
+                        onCheckedChange = { enabled ->
+                            store.update { it.copy(autoFollowMessages = enabled) }
+                        },
+                    )
+                    SwitchPreference(
+                        title = stringResource(R.string.meeting_settings_auto_summarize),
+                        summary = stringResource(R.string.meeting_settings_auto_summarize_summary),
+                        checked = settings.autoSummarizeResults,
+                        onCheckedChange = { enabled ->
+                            store.update { it.copy(autoSummarizeResults = enabled) }
+                        },
+                    )
+                    OverlayDropdownPreference(
+                        title = stringResource(R.string.meeting_settings_summary_lines),
+                        items = summaryLabels,
+                        selectedIndex = meetingSummaryLinePresets.indexOf(settings.summaryPreviewLines)
+                            .takeIf { it >= 0 }
+                                ?: meetingSummaryLinePresets.indexOf(1),
+                        onSelectedIndexChange = { index ->
+                            meetingSummaryLinePresets.getOrNull(index)?.let { lines ->
+                                store.update { it.copy(summaryPreviewLines = lines) }
+                            }
+                        },
+                    )
+                }
             }
         }
 

@@ -1,7 +1,6 @@
 package io.github.mangi.eta.fork.meeting
 
 import io.github.mangi.eta.agent.model.AgentModelClient
-import android.util.Base64
 import java.io.File
 import android.net.Uri
 
@@ -17,11 +16,27 @@ internal object MeetingContextHistory {
     private const val MAX_MESSAGES = 80
     private const val MAX_MESSAGE_CHARS = 8_000
     private const val MAX_HISTORY_CHARS = 64_000
+    private const val MAX_HISTORY_IMAGE_BYTES = 3 * 1024 * 1024
 
-    private fun historyImage(reference: String, mime: String): String = if (reference.startsWith("data:image/")) reference else runCatching {
-        val bytes = if (reference.startsWith("file:")) File(Uri.parse(reference).path ?: "").takeIf(File::isFile)?.readBytes() else null
-        "data:$mime;base64," + Base64.encodeToString(bytes ?: byteArrayOf(0), Base64.NO_WRAP)
-    }.getOrDefault("data:$mime;base64,AA==")
+    private fun historyImage(reference: String, mime: String): String? = runCatching {
+        if (reference.startsWith("data:image/") && reference.length <= 2 * 1024 * 1024) return@runCatching reference
+        val file = if (reference.startsWith("file:")) File(Uri.parse(reference).path ?: "") else return@runCatching null
+        if (!file.isFile || file.length() !in 1..io.github.mangi.eta.agent.media.MAX_AGENT_IMAGE_BYTES.toLong()) return@runCatching null
+        val bytes = file.inputStream().use { input ->
+            val output = java.io.ByteArrayOutputStream()
+            val buffer = ByteArray(8_192)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                if (output.size() + count > io.github.mangi.eta.agent.media.MAX_AGENT_IMAGE_BYTES) return@runCatching null
+                output.write(buffer, 0, count)
+            }
+            output.toByteArray()
+        }
+        val image = io.github.mangi.eta.agent.media.AgentModelImageEncoder.attachment(bytes, "meeting_history", mime)
+            ?: return@runCatching null
+        image.reference
+    }.getOrNull()
 
     fun forParticipant(
         messages: List<MeetingMessageEntity>,
@@ -31,6 +46,8 @@ internal object MeetingContextHistory {
     ): List<AgentModelClient.ConversationMessage> {
         val selected = ArrayDeque<AgentModelClient.ConversationMessage>()
         var remainingChars = MAX_HISTORY_CHARS
+        var remainingImages = 8
+        var remainingImageBytes = MAX_HISTORY_IMAGE_BYTES
         for (message in messages.asReversed()) {
             val mentions = runCatching {
                 val array = org.json.JSONArray(message.mentionsJson)
@@ -62,7 +79,18 @@ internal object MeetingContextHistory {
             }
             val body = message.content.trim().take(MAX_MESSAGE_CHARS)
             if (body.isBlank()) continue
-            val content = prefix + body
+            val storedImages = attachments[message.id]?.images.orEmpty()
+            val images = storedImages.take(remainingImages).mapNotNull { image ->
+                historyImage(image.uri, image.mimeType)?.let { reference ->
+                    if (reference.length > remainingImageBytes) return@let null
+                    remainingImageBytes -= reference.length
+                    AgentModelClient.ModelImage(reference = reference, mimeType = reference.substringAfter("data:").substringBefore(';'),
+                        bytes = 0, source = "meeting_history")
+                }
+            }
+            remainingImages -= images.size
+            val content = prefix + body + if (images.size < storedImages.size)
+                "\n[部分历史图片无法读取或超过本轮图片限额；需要时请重新附加，未发送占位图片]" else ""
             val bounded = content.take(remainingChars)
             if (bounded.isBlank()) break
             selected.addFirst(
@@ -70,10 +98,8 @@ internal object MeetingContextHistory {
                     role = role,
                     content = bounded,
                     messageId = "meeting-history-${message.id}",
-                    contentJson = attachments[message.id]?.images?.takeIf { it.isNotEmpty() }?.let { images ->
-                        io.github.mangi.eta.agent.model.AgentConversationCodec.userMessage(bounded, images.map { image ->
-                            AgentModelClient.ModelImage(reference = historyImage(image.uri, image.mimeType), mimeType = image.mimeType, bytes = 0, source = "meeting_history")
-                        }).toString()
+                    contentJson = images.takeIf { it.isNotEmpty() }?.let {
+                        io.github.mangi.eta.agent.model.AgentConversationCodec.userMessage(bounded, images).getJSONArray("content").toString()
                     }.orEmpty(),
                 ),
             )

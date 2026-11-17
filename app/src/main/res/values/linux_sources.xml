@@ -1,0 +1,43 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+  <string name="linux_sources_title">Linux sources</string>
+  <string name="linux_sources_defaults">Sources by purpose</string>
+  <string name="linux_sources_custom_count">%1$d custom sources</string>
+  <string name="linux_sources_priority_tab">Sources &amp; priority</string>
+  <string name="linux_sources_custom_tab">Custom</string>
+  <string name="linux_sources_latest_tab">Latest stable</string>
+  <string name="linux_sources_distribution">Linux system</string>
+  <string name="linux_sources_purpose">Source purpose</string>
+  <string name="linux_sources_transport_note">Choose a preferred source for each purpose. Other sources are tried on failure. System and tool archives retain official checksum verification.</string>
+  <string name="linux_sources_china">China source</string>
+  <string name="linux_sources_overseas">Overseas official</string>
+  <string name="linux_sources_preferred">Preferred</string>
+  <string name="linux_sources_prefer">Prefer</string>
+  <string name="linux_sources_delete">Delete</string>
+  <string name="linux_sources_jdk_note">Official OpenJDK archives support Debian glibc. Alpine uses its compatible APK version. Missing mirror releases fall back to the official source.</string>
+  <string name="linux_sources_name">Source name</string>
+  <string name="linux_sources_url">HTTPS URL or archive path template</string>
+  <string name="linux_sources_security">APT security HTTPS URL</string>
+  <string name="linux_sources_template_note">Archive templates support {version}, {file}, {arch}, and {official}. For package sources, enter the mirror base URL. Commands are not accepted.</string>
+  <string name="linux_sources_latest_note">Read-only checks of the latest official stable releases. Checks do not download, install, or overwrite environments. Installation requires matching official platform archives and checksums.</string>
+  <string name="linux_sources_checking">Checking</string>
+  <string name="linux_sources_check">Check official releases</string>
+  <string name="linux_sources_failed">Check failed</string>
+  <string name="linux_sources_close">Close</string>
+  <string name="linux_sources_save">Save and prefer</string>
+  <string name="linux_sources_invalid">Invalid source</string>
+  <string name="linux_sources_rootfs">RootFS system image</string>
+  <string name="linux_sources_apk">APK packages</string>
+  <string name="linux_sources_apt">APT packages</string>
+  <string name="linux_sources_uv">uv tool archive</string>
+  <string name="linux_sources_node">Node.js archive</string>
+  <string name="linux_sources_go">Go SDK archive</string>
+  <string name="linux_sources_jdk">JDK archive</string>
+  <string name="linux_sources_npm">npm packages</string>
+  <string name="linux_sources_pypi">PyPI packages</string>
+  <string name="linux_sources_python">Python standalone archive</string>
+  <string name="linux_sources_rust">Rust toolchain</string>
+  <string name="linux_sources_generic">Generic tool archive</string>
+  <string name="linux_sources_maven">Maven archive</string>
+  <string name="linux_sources_gradle">Gradle archive</string>
+</resources>

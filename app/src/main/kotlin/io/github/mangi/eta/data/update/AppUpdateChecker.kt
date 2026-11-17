@@ -21,9 +21,10 @@ internal data class AppLatestRelease(
  */
 internal object AppUpdateChecker {
 
-    fun fetchLatest(): AppLatestRelease {
+    fun fetchLatest(sourceUrl: String = AppUpdateSourceStore.DEFAULT): AppLatestRelease {
+        val normalized = AppUpdateSourceStore.normalize(sourceUrl)
         val request = Request.Builder()
-            .url(LATEST_RELEASE_URL)
+            .url(normalized)
             .header("Accept", "application/vnd.github+json")
             .header("User-Agent", USER_AGENT)
             .build()
@@ -31,6 +32,7 @@ internal object AppUpdateChecker {
             if (!response.isSuccessful) {
                 throw IOException("GitHub Release 请求失败（HTTP ${response.code}）")
             }
+            if (response.isRedirect) throw IOException("更新源发生重定向，已拒绝")
             val json = runCatching { JSONObject(response.body.string()) }
                 .getOrElse { throw IOException("GitHub Release 响应不是有效 JSON", it) }
             val tag = json.optString("tag_name").trim()
@@ -62,10 +64,11 @@ internal object AppUpdateChecker {
     }
 
     private val client = OkHttpClient.Builder()
+        .followRedirects(false)
+        .followSslRedirects(false)
         .connectTimeout(8, TimeUnit.SECONDS)
         .readTimeout(8, TimeUnit.SECONDS)
         .build()
 
-    private const val LATEST_RELEASE_URL = "https://api.github.com/repos/147258369zhh-lgtm/NEW-NEXUS/releases/latest"
     private const val USER_AGENT = "Nexus-Update-Checker"
 }

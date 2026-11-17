@@ -21,9 +21,13 @@ internal object AgentBoundaryStore {
             AgentToolPolicy(allowedTools = allowed?.let { (0 until it.length()).map(it::getString) }, disallowedTools = (0 until denied.length()).map(denied::getString))
         }.getOrElse { AgentToolPolicy(allowedTools = emptyList()) }
     }
-    fun save(policy: AgentToolPolicy): Boolean = Prefs.localAgentPreferences()?.edit()?.putString(KEY,
-        JSONObject().put("version", 1).put("allowed", policy.allowedTools?.let { org.json.JSONArray(it) } ?: JSONObject.NULL)
-            .put("denied", org.json.JSONArray(policy.disallowedTools)).toString())?.commit() == true
+    fun save(policy: AgentToolPolicy): Boolean {
+        val saved = Prefs.localAgentPreferences()?.edit()?.putString(KEY,
+            JSONObject().put("version", 1).put("allowed", policy.allowedTools?.let { org.json.JSONArray(it) } ?: JSONObject.NULL)
+                .put("denied", org.json.JSONArray(policy.disallowedTools)).toString())?.commit() == true
+        if (saved) io.github.mangi.eta.agent.approval.ActiveRunPolicies.restrictTools(policy)
+        return saved
+    }
     fun behavior(): String = Prefs.localAgentPreferences()?.getString(PROMPT, "").orEmpty().take(4000)
     fun saveBehavior(text: String): Boolean {
         require(text.length <= 4000)

@@ -64,7 +64,7 @@ internal object HyperOsScreenSearchHooks {
                     return@intercept chain.proceed()
                 }
                 finishHandledStart(service, chain.getArg(2) as Int, hooks.logger)
-                hooks.logger.debug { "HyperOS: 导航识屏请求已交给 contextual_search" }
+                hooks.logger.debug { "HyperOS: 导航识屏请求已交给 NEXA" }
                 Service.START_NOT_STICKY
             }
         }

@@ -57,7 +57,7 @@ class MeetingMarkdownExporterTest {
 
     @Test
     fun filenameIsSafe() {
-        assertTrue(MeetingMarkdownExporter.defaultFileName("A/B: C?").contains("Eta-AB C-"))
+        assertTrue(MeetingMarkdownExporter.defaultFileName("A/B: C?").contains("Nexus-AB C-"))
     }
 
     private fun participant(name: String, display: String, isHost: Boolean = false) =

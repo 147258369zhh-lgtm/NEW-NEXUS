@@ -1,0 +1,17 @@
+<resources>
+    <string name="appearance_press_feedback">按压回弹</string>
+    <string name="appearance_press_feedback_summary">小按钮按下时提供柔和的回弹反馈</string>
+    <string name="appearance_glass_group">玻璃材质</string>
+    <string name="appearance_glass_density">玻璃浓度</string>
+    <string name="appearance_glass_density_summary">低浓度更通透，高浓度更便于阅读</string>
+    <string name="appearance_glass_softness">背景柔化</string>
+    <string name="appearance_glass_softness_summary">调整玻璃后方背景的模糊程度</string>
+    <string name="appearance_glass_refraction">玻璃折射</string>
+    <string name="appearance_glass_refraction_summary">边缘轻微折射，关闭后效果更轻量</string>
+    <string name="appearance_gesture_group">导航手势</string>
+    <string name="appearance_mode_swipe">滑动切换会话与会议室</string>
+    <string name="appearance_mode_swipe_summary">在屏幕上方区域左右滑动切换</string>
+    <string name="appearance_mode_swipe_distance">切换滑动距离</string>
+    <string name="appearance_mode_swipe_distance_summary">距离短更灵敏，距离长减少误触</string>
+    <string name="appearance_save_failed">设置未保存，请重试</string>
+</resources>

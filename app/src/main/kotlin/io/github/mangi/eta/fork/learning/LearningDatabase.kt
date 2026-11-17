@@ -17,6 +17,7 @@ import io.github.mangi.eta.agent.memory.MemoryAutomationDao
         LearningEvidenceEntity::class,
         LearningRuleEntity::class,
         LearningRuleVersionEntity::class,
+        LearningRuleChangeEntity::class,
         LearningFeedbackEntity::class,
         MemoryEntry::class,
         MemoryJob::class,
@@ -24,7 +25,7 @@ import io.github.mangi.eta.agent.memory.MemoryAutomationDao
         io.github.mangi.eta.agent.skill.SkillRecipe::class,
         io.github.mangi.eta.agent.skill.SkillRecipeVersion::class,
     ],
-    version = 3,
+    version = 5,
     exportSchema = false,
 )
 internal abstract class LearningDatabase : RoomDatabase() {
@@ -42,7 +43,7 @@ internal abstract class LearningDatabase : RoomDatabase() {
                     context.applicationContext,
                     LearningDatabase::class.java,
                     "eta_learning.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { instance = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build().also { instance = it }
             }
 
         @VisibleForTesting
@@ -53,11 +54,32 @@ internal abstract class LearningDatabase : RoomDatabase() {
             }
         }
 
+        // Never infer ownership from legacy prose/source_ref. Preserve every row and version.
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE learning_candidates ADD COLUMN scope TEXT NOT NULL DEFAULT 'global'")
+                db.execSQL("ALTER TABLE learning_rules ADD COLUMN scope TEXT NOT NULL DEFAULT 'global'")
+                db.execSQL("DROP INDEX IF EXISTS index_learning_candidates_content_hash")
+                db.execSQL("CREATE UNIQUE INDEX index_learning_candidates_scope_content_hash ON learning_candidates(scope,content_hash)")
+                db.execSQL("DROP INDEX IF EXISTS index_learning_rules_kind_title")
+                db.execSQL("CREATE UNIQUE INDEX index_learning_rules_scope_kind_title ON learning_rules(scope,kind,title)")
+            }
+        }
+
         val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("CREATE TABLE skill_experiences (runId TEXT NOT NULL PRIMARY KEY, scope TEXT NOT NULL, digest TEXT NOT NULL, tools TEXT NOT NULL, createdAt INTEGER NOT NULL, state TEXT NOT NULL, recipeId TEXT NOT NULL, detail TEXT NOT NULL)")
                 db.execSQL("CREATE TABLE skill_recipes (id TEXT NOT NULL PRIMARY KEY, scope TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL, body TEXT NOT NULL, tools TEXT NOT NULL, state TEXT NOT NULL, version INTEGER NOT NULL, revision TEXT NOT NULL, updatedAt INTEGER NOT NULL)")
                 db.execSQL("CREATE TABLE skill_recipe_versions (recipeId TEXT NOT NULL, version INTEGER NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL, body TEXT NOT NULL, tools TEXT NOT NULL, createdAt INTEGER NOT NULL, PRIMARY KEY(recipeId, version))")
+            }
+        }
+
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS learning_rule_changes (id TEXT NOT NULL PRIMARY KEY, rule_id TEXT NOT NULL, rule_version INTEGER NOT NULL, change_type TEXT NOT NULL, source_ref TEXT NOT NULL, previous_content TEXT NOT NULL, archived_rules TEXT NOT NULL, created_at INTEGER NOT NULL)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_learning_rule_changes_rule_id ON learning_rule_changes(rule_id)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_learning_rule_changes_created_at ON learning_rule_changes(created_at)")
+                db.execSQL("ALTER TABLE learning_rule_versions ADD COLUMN source_ref TEXT NOT NULL DEFAULT ''")
             }
         }
 

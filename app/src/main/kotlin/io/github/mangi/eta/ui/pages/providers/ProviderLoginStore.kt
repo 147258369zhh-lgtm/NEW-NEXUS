@@ -169,7 +169,7 @@ internal interface ProviderLoginOperations {
 
 private object RepositoryProviderLoginOperations : ProviderLoginOperations {
     override suspend fun save(provider: ProviderSetting) {
-        ProviderRepository.updateProvider(provider)
+        io.github.mangi.eta.data.repository.ProviderSettingsService(io.github.mangi.eta.data.datastore.SettingsDataStore.applicationContext()).save(provider)
         RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
     }
 

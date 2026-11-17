@@ -15,7 +15,8 @@ import io.github.mangi.eta.R
 internal class AssistantSpeechForeground(private val service: Service) {
     private val handler = Handler(Looper.getMainLooper())
     private var recordingActive = false
-    private var monitorActive = false
+    private var monitorReservations = 0
+    private val monitorActive get() = monitorReservations > 0
     private var playbackActive = false
 
     @Synchronized
@@ -27,7 +28,7 @@ internal class AssistantSpeechForeground(private val service: Service) {
     /** 朗读期间为打断而开麦：与识别共用麦克风前台类型。 */
     @Synchronized
     fun monitoring() {
-        monitorActive = true
+        monitorReservations++
         promote()
     }
 
@@ -45,7 +46,7 @@ internal class AssistantSpeechForeground(private val service: Service) {
 
     @Synchronized
     fun monitoringStopped() {
-        monitorActive = false
+        monitorReservations = (monitorReservations - 1).coerceAtLeast(0)
         releaseIfUnused()
     }
 
@@ -59,7 +60,7 @@ internal class AssistantSpeechForeground(private val service: Service) {
     fun stop() {
         handler.removeCallbacks(demote)
         recordingActive = false
-        monitorActive = false
+        monitorReservations = 0
         playbackActive = false
         runCatching { service.stopForeground(Service.STOP_FOREGROUND_REMOVE) }
     }

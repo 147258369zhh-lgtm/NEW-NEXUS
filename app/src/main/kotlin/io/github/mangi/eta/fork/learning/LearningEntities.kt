@@ -9,7 +9,7 @@ import androidx.room.PrimaryKey
 @Entity(
     tableName = "learning_candidates",
     indices = [
-        Index(value = ["content_hash"], unique = true),
+        Index(value = ["scope", "content_hash"], unique = true),
         Index("status"),
         Index("updated_at"),
     ],
@@ -27,6 +27,7 @@ internal data class LearningCandidateEntity(
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
     @ColumnInfo(name = "promoted_rule_id") val promotedRuleId: String? = null,
     @ColumnInfo(name = "confirmed_at") val confirmedAt: Long? = null,
+    @ColumnInfo(defaultValue = "'global'") val scope: String = "global",
 )
 
 @Entity(
@@ -52,7 +53,7 @@ internal data class LearningEvidenceEntity(
 
 @Entity(
     tableName = "learning_rules",
-    indices = [Index(value = ["kind", "title"], unique = true), Index("status")],
+    indices = [Index(value = ["scope", "kind", "title"], unique = true), Index("status")],
 )
 internal data class LearningRuleEntity(
     @PrimaryKey val id: String,
@@ -64,6 +65,7 @@ internal data class LearningRuleEntity(
     val pinned: Boolean = false,
     @ColumnInfo(name = "created_at") val createdAt: Long,
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
+    @ColumnInfo(defaultValue = "'global'") val scope: String = "global",
 )
 
 @Entity(
@@ -85,6 +87,27 @@ internal data class LearningRuleVersionEntity(
     val content: String,
     @ColumnInfo(name = "candidate_id") val candidateId: String?,
     val reason: String,
+    @ColumnInfo(name = "created_at") val createdAt: Long,
+    /** Immutable provenance of this version: the candidate source or the rollback target. */
+    @ColumnInfo(name = "source_ref") val sourceRef: String = "",
+)
+
+/**
+ * Append-only record of one rule change. It keeps the previous body and the rules that the change
+ * archived, so a rollback can restore them instead of deleting any version or user rule.
+ */
+@Entity(
+    tableName = "learning_rule_changes",
+    indices = [Index("rule_id"), Index("created_at")],
+)
+internal data class LearningRuleChangeEntity(
+    @PrimaryKey val id: String,
+    @ColumnInfo(name = "rule_id") val ruleId: String,
+    @ColumnInfo(name = "rule_version") val ruleVersion: Int,
+    @ColumnInfo(name = "change_type") val changeType: String,
+    @ColumnInfo(name = "source_ref") val sourceRef: String,
+    @ColumnInfo(name = "previous_content") val previousContent: String,
+    @ColumnInfo(name = "archived_rules") val archivedRules: String,
     @ColumnInfo(name = "created_at") val createdAt: Long,
 )
 

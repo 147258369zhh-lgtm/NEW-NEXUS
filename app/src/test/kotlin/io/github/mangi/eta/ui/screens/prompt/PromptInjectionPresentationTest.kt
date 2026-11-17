@@ -1,6 +1,7 @@
 package io.github.mangi.eta.ui.screens.prompt
 
 import android.app.Application
+import androidx.compose.foundation.lazy.LazyListState
 import io.github.mangi.eta.agent.prompt.PromptBlock
 import io.github.mangi.eta.agent.prompt.PromptInjectionConfig
 import io.github.mangi.eta.agent.prompt.PromptInjectionStore
@@ -45,25 +46,33 @@ class PromptInjectionPresentationTest {
                 bindings = listOf(PromptScopeBinding(templateId = template.id, target = PromptTarget.GLOBAL)),
             ),
         )
-        Panel(dark = true, fontScale = 1.3f) { PromptInjectionScreen {} }.use { panel ->
+        // Preload through the same UI owner so scrolling tests do not race an IO refresh.
+        val store = PromptInjectionUiStore(context).also { it.refresh() }
+        var libraryState: LazyListState? = null
+        Panel(dark = true, fontScale = 1.3f) {
+            PromptInjectionScreen(storeOverride = store, onLibraryState = { libraryState = it }) {}
+        }.use { panel ->
+            panel.scrollUntil("周报核对")
             panel.await { panel.texts().contains("周报核对") }
-            assertTrue(panel.texts().contains("模板库"))
+            assertTrue(panel.texts().contains("行为方案"))
             assertTrue(panel.texts().contains("作用域"))
-            assertTrue(panel.texts().contains("迁移"))
+            assertTrue(panel.texts().contains("导入与导出"))
             assertTrue(panel.texts().any { it.contains("绑定 1") || it.contains("1 个范围") })
             panel.capture("prompt-library-narrow-dark")
 
+            val beforeEditor = viewportDescription(libraryState)
             panel.click("周报核对")
             panel.await { panel.texts().contains("模板信息") }
             panel.capture("prompt-editor-narrow-dark")
             panel.scrollUntil("提示词块")
+            panel.click("提示词块")
             panel.scrollUntil("第 1 块")
             assertTrue(panel.texts().contains("第 1 块"))
             assertTrue(panel.texts().contains("插入位置"))
             panel.capture("prompt-editor-blocks-narrow-dark")
 
             panel.back()
-            panel.await { panel.texts().contains("周报核对") }
+            awaitReturnedTemplate(panel, libraryState, "周报核对", template.id, beforeEditor)
         }
     }
 
@@ -77,10 +86,13 @@ class PromptInjectionPresentationTest {
         )
         PromptInjectionStore.replace(PromptInjectionConfig(templates = listOf(template)))
 
-        Panel(dark = false, fontScale = 1.3f) { PromptInjectionScreen {} }.use { panel ->
+        val store = PromptInjectionUiStore(context).also { it.refresh() }
+        Panel(dark = false, fontScale = 1.3f) { PromptInjectionScreen(storeOverride = store) {} }.use { panel ->
+            panel.scrollUntil("全局测试")
             panel.await { panel.texts().contains("全局测试") }
             panel.click("作用域")
             panel.await { panel.texts().contains("当前已绑定 0 个范围") }
+            panel.scrollUntil("作用于所有符合条件的请求；其他命中范围会按上方顺序叠加。")
             panel.click("作用于所有符合条件的请求；其他命中范围会按上方顺序叠加。")
             panel.await { panel.texts().contains("选择模板") }
             panel.click("全局测试")
@@ -144,13 +156,40 @@ class PromptInjectionPresentationTest {
         )
         PromptInjectionStore.replace(PromptInjectionConfig(templates = listOf(template)))
 
-        Panel(dark = false, fontScale = 1.3f) { PromptInjectionScreen {} }.use { panel ->
+        val store = PromptInjectionUiStore(context).also { it.refresh() }
+        var libraryState: LazyListState? = null
+        Panel(dark = false, fontScale = 1.3f) {
+            PromptInjectionScreen(storeOverride = store, onLibraryState = { libraryState = it }) {}
+        }.use { panel ->
+            panel.scrollUntil("顺序测试")
             panel.await { panel.texts().contains("顺序测试") }
+            val beforeEditor = viewportDescription(libraryState)
             panel.click("顺序测试")
             panel.await { panel.texts().contains("编辑模板") }
             panel.back()
-            panel.await { panel.texts().contains("固定提示词模板") }
+            awaitReturnedTemplate(panel, libraryState, "顺序测试", template.id, beforeEditor)
+            assertTrue(panel.texts().contains("行为方案"))
             assertFalse(panel.texts().contains("放弃修改？"))
         }
     }
+
+    private fun awaitReturnedTemplate(panel: Panel, state: LazyListState?, name: String, id: String, before: String) {
+        try {
+            panel.await {
+                panel.texts().contains(name) && state?.layoutInfo?.let { layout ->
+                    layout.visibleItemsInfo.any { item -> item.key == "prompt_template_$id" &&
+                        item.offset < layout.viewportEndOffset && item.offset + item.size > layout.viewportStartOffset }
+                } == true
+            }
+        } catch (failure: AssertionError) {
+            throw AssertionError("Template return viewport mismatch: before=$before; after=${viewportDescription(state)}; ${failure.message}", failure)
+        }
+    }
+
+    private fun viewportDescription(state: LazyListState?): String = state?.let {
+        "index=${it.firstVisibleItemIndex},offset=${it.firstVisibleItemScrollOffset}," +
+            "viewport=${it.layoutInfo.viewportStartOffset}..${it.layoutInfo.viewportEndOffset}," +
+            "total=${it.layoutInfo.totalItemsCount},visible=" +
+            it.layoutInfo.visibleItemsInfo.joinToString { item -> "${item.key}@${item.index}:${item.offset}+${item.size}" }
+    } ?: "unattached"
 }

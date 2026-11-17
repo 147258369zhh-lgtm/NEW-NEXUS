@@ -9,7 +9,9 @@ internal data class AgentActivityDay(val date: LocalDate, val runs: Int, val tok
 internal object AgentMetricsActivity {
     fun days(records: List<AgentRunMetricsRecord>, metrics: Map<String, List<AgentRunMetrics>>,
         today: LocalDate = LocalDate.now(), zone: ZoneId = ZoneId.systemDefault(), daysBack: Int = 91): List<AgentActivityDay> {
-        val grouped = records.groupBy { date(it.startedAt, zone) }
+        // Runs whose start time could not be trusted are left out of the calendar instead of 1970.
+        val grouped = records.mapNotNull { record -> knownDate(record.startedAt, zone)?.let { it to record } }
+            .groupBy({ it.first }, { it.second })
         val start = if (daysBack == 91) {
             today.minusWeeks(12).with(java.time.DayOfWeek.MONDAY)
         } else {
@@ -23,6 +25,9 @@ internal object AgentMetricsActivity {
         }.toList()
     }
     fun date(timestamp: Long, zone: ZoneId = ZoneId.systemDefault()): LocalDate = Instant.ofEpochMilli(timestamp).atZone(zone).toLocalDate()
+    /** Null when the record only carried an untrustworthy legacy timestamp. */
+    fun knownDate(timestamp: Long, zone: ZoneId = ZoneId.systemDefault()): LocalDate? =
+        AgentMetricsTime.known(timestamp)?.let { date(it, zone) }
     fun streak(days: List<AgentActivityDay>, today: LocalDate = LocalDate.now()): Int {
         val active = days.filter { it.runs > 0 }.map { it.date }.toSet()
         var day = if (today in active) today else today.minusDays(1)

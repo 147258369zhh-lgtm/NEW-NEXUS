@@ -20,34 +20,54 @@ data class AppearanceSettings(
     val predictiveBackEnabled: Boolean = true,
     val interfaceScale: Float = DEFAULT_INTERFACE_SCALE,
     val fontFamily: AppearanceFontFamily = AppearanceFontFamily.SYSTEM,
+    val messageTypography: MessageTypographySettings = MessageTypographySettings(),
+    val glassOpacityMultiplier: Float = 1f,
+    val glassBlurMultiplier: Float = 1f,
+    val glassRefractionEnabled: Boolean = true,
+    val pressFeedbackEnabled: Boolean = true,
+    val homeModeSwipeEnabled: Boolean = true,
+    val homeModeSwipeThresholdDp: Float = 56f,
 ) {
     fun normalized(): AppearanceSettings = copy(
         interfaceScale = normalizeInterfaceScale(interfaceScale),
+        messageTypography = messageTypography.normalized(),
+        glassOpacityMultiplier = if (glassOpacityMultiplier.isFinite()) glassOpacityMultiplier.coerceIn(0.65f, 1.25f) else 1f,
+        glassBlurMultiplier = if (glassBlurMultiplier.isFinite()) glassBlurMultiplier.coerceIn(0.5f, 2f) else 1f,
+        homeModeSwipeThresholdDp = if (homeModeSwipeThresholdDp.isFinite()) homeModeSwipeThresholdDp.coerceIn(32f, 96f) else 56f,
     )
 }
 
 @Serializable
 enum class AppearanceFontFamily(val persistedValue: String) {
     SYSTEM("system"),
-    SANS_SERIF("sans_serif"),
-    SERIF("serif"),
-    MONOSPACE("monospace"),
-    JETBRAINS_MONO("jetbrains_mono");
+    HUMANIST("humanist"),
+    EDITORIAL("editorial");
 
     companion object {
-        fun fromPersistedValue(value: String?): AppearanceFontFamily =
-            entries.firstOrNull { it.persistedValue == value } ?: SYSTEM
+        fun fromPersistedValue(value: String?): AppearanceFontFamily = when (value) {
+            "sans_serif", "monospace", "jetbrains_mono" -> HUMANIST
+            "serif" -> EDITORIAL
+            else -> entries.firstOrNull { it.persistedValue == value } ?: SYSTEM
+        }
     }
 }
 
 @Serializable
 enum class AppearanceSkin(val persistedValue: String) {
     CLASSIC("classic"),
-    OMNI("omni");
+    OMNI("omni"),
+    AURORA("aurora"),
+    FROST_GLASS("frost_glass"),
+    LIQUID_GLASS("liquid_glass");
+
+    val isGlass: Boolean get() = this == FROST_GLASS || this == LIQUID_GLASS
 
     companion object {
-        fun fromPersistedValue(value: String?): AppearanceSkin =
-            entries.firstOrNull { it.persistedValue == value } ?: CLASSIC
+        fun fromPersistedValue(value: String?): AppearanceSkin = when (value) {
+            "omni", "aurora" -> CLASSIC
+            "frost_glass" -> LIQUID_GLASS
+            else -> entries.firstOrNull { it.persistedValue == value } ?: CLASSIC
+        }
     }
 }
 

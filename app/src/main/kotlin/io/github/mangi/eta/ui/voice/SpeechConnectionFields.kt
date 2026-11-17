@@ -35,12 +35,12 @@ import io.github.mangi.eta.data.repository.LocalModelRepository
 import io.github.mangi.eta.data.repository.LocalRuntimeBackendPolicy
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.BasicComponent
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.preference.ArrowPreference
-import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
-import top.yukonga.miuix.kmp.preference.SwitchPreference
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle as SmallTitle
+import io.github.mangi.eta.ui.components.NexusSettingsArrowPreference as ArrowPreference
+import io.github.mangi.eta.ui.components.NexusSettingsDropdownPreference as OverlayDropdownPreference
+import io.github.mangi.eta.ui.components.NexusSettingsSwitchPreference as SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
@@ -51,6 +51,12 @@ internal fun SpeechConnectionSection(
 ) {
     if (!synthesis) {
         when (store.settings.asr) {
+            AsrProvider.DEEPSEEK -> DeepSeekSpeechConnectionSection(store, synthesis = false)
+            AsrProvider.AZURE -> AzureConnectionSection(store, synthesis = false)
+            AsrProvider.BAIDU -> BaiduConnectionSection(store, synthesis = false)
+            AsrProvider.IFLYTEK -> IflytekConnectionSection(store, synthesis = false)
+            AsrProvider.TENCENT -> TencentConnectionSection(store, synthesis = false)
+            AsrProvider.XIAOMI -> XiaomiMiMoConnectionSection(store, synthesis = false)
             AsrProvider.LOCAL -> LocalSpeechModelSection(
                 store = store,
                 kind = LocalSpeechKind.ASR,
@@ -61,10 +67,16 @@ internal fun SpeechConnectionSection(
         return
     }
     when (store.settings.tts) {
+        TtsProvider.DEEPSEEK -> DeepSeekSpeechConnectionSection(store, synthesis = true)
         TtsProvider.NONE -> Unit
         TtsProvider.QWEN, TtsProvider.DOUBAO -> QwenDoubaoConnectionSection(store, synthesis = true)
         TtsProvider.GEMINI -> GeminiConnectionSection(store)
         TtsProvider.MINIMAX -> MiniMaxConnectionSection(store)
+        TtsProvider.AZURE -> AzureConnectionSection(store, synthesis = true)
+        TtsProvider.BAIDU -> BaiduConnectionSection(store, synthesis = true)
+        TtsProvider.IFLYTEK -> IflytekConnectionSection(store, synthesis = true)
+        TtsProvider.TENCENT -> TencentConnectionSection(store, synthesis = true)
+        TtsProvider.XIAOMI -> XiaomiMiMoConnectionSection(store, synthesis = true)
         TtsProvider.LOCAL -> LocalSpeechModelSection(
             store = store,
             kind = LocalSpeechKind.TTS,
@@ -81,11 +93,10 @@ private fun LocalSpeechModelSection(
 ) {
     val context = LocalContext.current.applicationContext
     val scope = rememberCoroutineScope()
-    LocalModelRepository.init(context)
-    val records by LocalModelRepository.models.collectAsState()
+    val records by rememberLocalModelRecords()
     val runtimeStates by LocalSpeechRuntime.states.collectAsState()
     val available = records.filter { record ->
-        record.format == LocalModelFormat.LITERT_LM && localSpeechKind(record) == kind
+        record.format in setOf(LocalModelFormat.LITERT_LM, LocalModelFormat.ONNX) && localSpeechKind(record) == kind
     }
     val selectedId = if (kind == LocalSpeechKind.TTS) {
         store.settings.localTtsModelId
@@ -113,8 +124,8 @@ private fun LocalSpeechModelSection(
         SmallTitle(stringResource(R.string.speech_group_connection))
         Card(
             modifier = Modifier
-                .padding(horizontal = 12.dp)
-                .padding(bottom = 12.dp),
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 8.dp),
         ) {
             if (available.isEmpty()) {
                 BasicComponent(
@@ -152,6 +163,7 @@ private fun LocalSpeechModelSection(
                             runtime.phase == LocalSpeechRuntimePhase.READY ->
                                 "已就绪 · ${runtime.activeBackend.ifBlank { record.runtimeSettings.backend.name }}"
                             runtime.phase == LocalSpeechRuntimePhase.STARTING -> "正在启动"
+                            runtime.phase == LocalSpeechRuntimePhase.STOPPING -> stringResource(R.string.local_models_runtime_stopping)
                             runtime.phase == LocalSpeechRuntimePhase.FAILED -> "启动失败"
                             else -> null
                         },
@@ -208,8 +220,8 @@ private fun QwenDoubaoConnectionSection(store: SpeechSettingsStore, synthesis: B
         SmallTitle(stringResource(R.string.speech_group_connection))
         Card(
             modifier = Modifier
-                .padding(horizontal = 12.dp)
-                .padding(bottom = 12.dp),
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 8.dp),
         ) {
             if (qwen) {
                 val config = if (synthesis) settings.qwenTts else settings.qwenAsr

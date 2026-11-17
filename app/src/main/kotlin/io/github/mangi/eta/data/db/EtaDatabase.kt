@@ -7,7 +7,7 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 
-internal const val ETA_DATABASE_VERSION = 27
+internal const val ETA_DATABASE_VERSION = 31
 
 @Database(
     entities = [
@@ -75,6 +75,10 @@ internal abstract class EtaDatabase : RoomDatabase() {
                         MIGRATION_24_25,
                         MIGRATION_25_26,
                         MIGRATION_26_27,
+                        MIGRATION_27_28,
+                        MIGRATION_28_29,
+                        MIGRATION_29_30,
+                        MIGRATION_30_31,
                     )
                     .addCallback(object : Callback() {
                         override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) { createTextChunkCleanup(db) }
@@ -102,6 +106,25 @@ internal abstract class EtaDatabase : RoomDatabase() {
             database.execSQL("UPDATE conversation_context_checkpoints SET journal_json = history_json")
             HistoryPayloadMigration.migrate(database)
             createTextChunkCleanup(database)
+        }
+
+        /** Old MCP connections remain explicitly Android; all other tables are unchanged. */
+        internal val MIGRATION_30_31 = Migration(30, 31) { database ->
+            database.execSQL("ALTER TABLE provider_models ADD COLUMN try_unknown_capabilities INTEGER NOT NULL DEFAULT 0")
+        }
+
+        internal val MIGRATION_29_30 = Migration(29, 30) { database ->
+            database.execSQL("ALTER TABLE mcp_servers ADD COLUMN execution_target TEXT NOT NULL DEFAULT 'android'")
+            database.execSQL("ALTER TABLE mcp_servers ADD COLUMN linux_backend TEXT NOT NULL DEFAULT 'chroot'")
+        }
+
+        internal val MIGRATION_27_28 = Migration(27, 28) { database ->
+            database.execSQL("ALTER TABLE conversation_messages ADD COLUMN content_parts_json TEXT NOT NULL DEFAULT '[]'")
+        }
+
+        /** 终态 outbox 保存有界暂停摘要，断连后的 drain 才能恢复待答/待批详情。 */
+        internal val MIGRATION_28_29 = Migration(28, 29) { database ->
+            database.execSQL("ALTER TABLE runtime_results ADD COLUMN pause_json TEXT")
         }
 
         internal val MIGRATION_20_21 = Migration(20, 21) { database ->

@@ -68,6 +68,21 @@ internal object VirtualDisplayCommandMain {
     const val READY_PREFIX = "ETA_VD_READY:"
     const val RESULT_PREFIX = "ETA_VD_RESULT:"
 
+    internal data class DisplayReady(val displayId: Int, val flags: Int)
+
+    internal fun parseDisplayReadyLine(line: String): DisplayReady? {
+        if (!line.startsWith(READY_PREFIX)) return null
+        val parts = line.removePrefix(READY_PREFIX).trim().split(':', limit = 2)
+        val displayId = parts.firstOrNull()?.toIntOrNull()?.takeIf { it > Display.INVALID_DISPLAY } ?: return null
+        val flags = parts.getOrNull(1)?.toIntOrNull() ?: return null
+        return DisplayReady(displayId, flags)
+    }
+
+    private data class CreatedDisplay(
+        val display: android.hardware.display.VirtualDisplay,
+        val flags: Int,
+    )
+
     @JvmStatic
     @Suppress("DEPRECATION")
     fun main(args: Array<String>) {
@@ -125,13 +140,14 @@ internal object VirtualDisplayCommandMain {
             }
         }
 
-        val virtualDisplay = createTrustedVirtualDisplay(surface, width, height, densityDpi)
-        if (virtualDisplay == null) {
+        val created = createTrustedVirtualDisplay(surface, width, height, densityDpi)
+        if (created == null) {
             surface.release()
             println(RESULT_PREFIX + JSONObject().put("ok", false).put("code", "CREATE_DISPLAY_FAILED"))
             exitProcess(1)
         }
 
+        val virtualDisplay = created.display
         val displayId = virtualDisplay.display?.displayId ?: Display.INVALID_DISPLAY
         if (displayId <= 0) {
             runCatching { virtualDisplay.release() }
@@ -140,7 +156,7 @@ internal object VirtualDisplayCommandMain {
             exitProcess(1)
         }
 
-        println("$READY_PREFIX$displayId")
+        println("$READY_PREFIX$displayId:${created.flags}")
         System.out.flush()
 
         try {
@@ -222,7 +238,7 @@ internal object VirtualDisplayCommandMain {
         width: Int,
         height: Int,
         densityDpi: Int,
-    ): android.hardware.display.VirtualDisplay? {
+    ): CreatedDisplay? {
         val activityThreadClass = Class.forName("android.app.ActivityThread")
         val thread = activityThreadClass.getMethod("systemMain").invoke(null)
         val systemContext = activityThreadClass.getMethod("getSystemContext").invoke(thread) as android.content.Context
@@ -274,7 +290,7 @@ internal object VirtualDisplayCommandMain {
                 }
             }.getOrNull()
             val displayId = display?.display?.displayId ?: Display.INVALID_DISPLAY
-            if (display != null && displayId > 0) return display
+            if (display != null && displayId > 0) return CreatedDisplay(display, flags)
             display?.let { runCatching { it.release() } }
         }
         return null

@@ -24,11 +24,11 @@ internal object MemoryMaintenanceScheduler {
         if (!manual && !s.idleEnabled) return
         val request = OneTimeWorkRequestBuilder<MemoryMaintenanceWorker>()
             .setInputData(workDataOf("manual" to manual))
-            .setConstraints(if (manual) Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build() else constraints(s))
+            .setConstraints(if (manual) Constraints.NONE else constraints(s))
             .setInitialDelay(if (manual) 0 else s.quietMinutes.toLong(), TimeUnit.MINUTES).build()
         WorkManager.getInstance(context).enqueueUniqueWork(if (manual) "$QUEUE-manual" else QUEUE, ExistingWorkPolicy.KEEP, request)
     }
-    private fun constraints(s: MemoryAutomationSettings) = Constraints.Builder()
+    internal fun constraints(s: MemoryAutomationSettings) = Constraints.Builder()
         .setRequiresBatteryNotLow(true).setRequiresCharging(s.chargingOnly)
-        .setRequiredNetworkType(if (s.unmeteredOnly) NetworkType.UNMETERED else NetworkType.CONNECTED).build()
+        .setRequiredNetworkType(NetworkType.NOT_REQUIRED).build()
 }

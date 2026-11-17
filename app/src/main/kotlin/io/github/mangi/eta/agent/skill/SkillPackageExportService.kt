@@ -30,7 +30,7 @@ internal class SkillPackageExportService(context: Context) {
         skillId: String,
         destination: File,
         isCancelled: () -> Boolean = { false },
-    ): SkillPackageExport {
+    ): SkillPackageExport = index.withMutationLock {
         val entry = index.listSkillsForManagement(forceRefresh = true)
             .firstOrNull { it.id == skillId && it.installed }
             ?: throw IllegalArgumentException("未找到已安装的 Skill：$skillId")
@@ -39,7 +39,7 @@ internal class SkillPackageExportService(context: Context) {
         require(sourceRoot.toPath().startsWith(managedRoot.toPath()) && sourceRoot != managedRoot) {
             "Skill 目录不在受管理范围内"
         }
-        return SkillPackageArchive.export(
+        SkillPackageArchive.export(
             skillId = entry.id,
             displayName = entry.name,
             sourceRoot = sourceRoot,
@@ -92,11 +92,10 @@ internal object SkillPackageArchive {
                                     require(fileCount <= MAX_FILES) { "Skill 文件过多，无法导出" }
                                     val size = Files.size(path)
                                     require(size <= MAX_SINGLE_FILE_BYTES) { "Skill 单文件过大，无法导出" }
-                                    totalBytes += size
-                                    require(totalBytes <= MAX_TOTAL_BYTES) { "Skill 内容过大，无法导出" }
+                                    require(size <= MAX_TOTAL_BYTES - totalBytes) { "Skill 内容过大，无法导出" }
                                     zip.putNextEntry(ZipEntry(zipName))
                                     path.toFile().inputStream().buffered().use { input ->
-                                        copyBounded(input, zip, isCancelled)
+                                        totalBytes += copyBounded(input, zip, minOf(MAX_SINGLE_FILE_BYTES, MAX_TOTAL_BYTES - totalBytes), isCancelled)
                                     }
                                     zip.closeEntry()
                                 }
@@ -121,18 +120,24 @@ internal object SkillPackageArchive {
         }
     }
 
+
     private fun copyBounded(
         input: InputStream,
         output: ZipOutputStream,
+        maxBytes: Long,
         isCancelled: () -> Boolean,
-    ) {
+    ): Long {
         val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        var total = 0L
         while (true) {
             if (isCancelled()) throw CancellationException("Skill 导出已取消")
             val count = input.read(buffer)
             if (count < 0) break
+            require(count <= maxBytes - total) { "Skill 内容在导出期间超过大小限制" }
             output.write(buffer, 0, count)
+            total += count
         }
+        return total
     }
 
     private fun moveIntoPlace(source: File, destination: File) {

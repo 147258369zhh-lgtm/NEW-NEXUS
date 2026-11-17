@@ -1,6 +1,6 @@
 package io.github.mangi.eta.agent.subagent
 
-import io.github.mangi.eta.agent.context.PersonalSearchTools
+import io.github.mangi.eta.agent.model.AgentCloudToolCatalog
 import io.github.mangi.eta.agent.model.AgentFileToolCatalog
 import io.github.mangi.eta.agent.model.AgentPhoneToolCatalog
 import io.github.mangi.eta.agent.model.AgentTerminalToolCatalog
@@ -17,10 +17,8 @@ internal data class SubagentPermissionCategory(
 }
 
 internal object SubagentPermissionCatalog {
-    private val fileWrites = AgentFileToolCatalog.names.filterTo(linkedSetOf()) {
-        it == "write_file" || it == "edit_file"
-    }
-    private val fileReads = (AgentFileToolCatalog.names - fileWrites).toSet()
+    private val fileWrites = AgentFileToolCatalog.writeNames + "project_workspace_publish"
+    private val fileReads = (AgentFileToolCatalog.names - fileWrites).toSet() + "project_workspace_status"
     private val webTools = setOf("web_search", "fetch_url")
     private val memoryTools = SubagentProfile.READ_ONLY_TOOLS.filterTo(linkedSetOf()) {
         it.startsWith("memory_") || it.startsWith("character_memory_") || it.startsWith("skills_")
@@ -35,13 +33,7 @@ internal object SubagentPermissionCatalog {
     )
     private val learningTools = setOf("learning_feedback")
     private val voiceTools = setOf("voice_synthesize")
-    private val personalReadTools = (
-        PersonalSearchTools.names +
-            AgentPhoneToolCatalog.entries.filter { it.personal && !it.write }.map { it.name } +
-            SubagentProfile.READ_ONLY_TOOLS.filter {
-                it.startsWith("search_") || it == "read_personal_item" || it == "summarize_bills"
-            }
-        ).toSet()
+    private val personalReadTools = SubagentProfile.PERSONAL_READ_TOOLS
     private val deviceReadTools = AgentPhoneToolCatalog.entries
         .filter { !it.write && !it.personal }
         .mapTo(linkedSetOf()) { it.name }
@@ -113,6 +105,13 @@ internal object SubagentPermissionCatalog {
             title = "语音生成",
             summary = "使用当前语音设置把文本合成为 WAV 音频文件",
             tools = voiceTools,
+            risk = SubagentPermissionCategory.Risk.WRITE,
+        ),
+        SubagentPermissionCategory(
+            id = "cloud-tools",
+            title = "云文档与媒体",
+            summary = "调用已配置的云文档、图片、视频和语音服务，可能上传内容并产生费用",
+            tools = AgentCloudToolCatalog.names,
             risk = SubagentPermissionCategory.Risk.WRITE,
         ),
         SubagentPermissionCategory(

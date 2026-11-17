@@ -71,6 +71,62 @@ class OpenAiResponsesProviderTest {
     }
 
     @Test
+    fun nonToolHttp400NeverSilentlyDropsToolsOrMasksTheConfigurationError() {
+        val requests = mutableListOf<JSONObject>()
+        val attempts = AtomicInteger()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.executor = Executors.newSingleThreadExecutor()
+        server.createContext("/responses") { exchange ->
+            val request = JSONObject(exchange.requestBody.use { it.readBytes().toString(Charsets.UTF_8) })
+            synchronized(requests) { requests += request }
+            val message = if (attempts.getAndIncrement() == 0) {
+                "reasoning is not supported"
+            } else {
+                "response format is invalid"
+            }
+            val body = "{\"error\":{\"message\":\"$message\"}}"
+            exchange.responseHeaders.add("Content-Type", "application/json")
+            exchange.sendResponseHeaders(400, body.toByteArray().size.toLong())
+            exchange.responseBody.use { it.write(body.toByteArray()) }
+        }
+        server.start()
+        try {
+            val tool = JSONObject().put("type", "function").put(
+                "function",
+                JSONObject().put("name", "device_info").put("parameters", JSONObject().put("type", "object")),
+            )
+            val failure = runCatching {
+                OpenAiResponsesProvider.complete(
+                    ProviderRequest(
+                        config("http://127.0.0.1:${server.address.port}").copy(
+                            reasoningCapabilities = ModelReasoningCapabilities(
+                                supportedEfforts = listOf(ReasoningEffort.HIGH),
+                                canDisable = true,
+                            ),
+                            reasoningEffort = ReasoningEffort.HIGH,
+                            thinkingEnabled = true,
+                        ),
+                        JSONArray().put(JSONObject().put("role", "user").put("content", "test")),
+                        JSONArray().put(tool),
+                    ),
+                    AgentRunController(),
+                )
+            }.exceptionOrNull()
+
+            assertNotNull(failure)
+            assertEquals(2, requests.size)
+            assertTrue(requests.all { request ->
+                request.getJSONArray("tools").let { tools ->
+                    (0 until tools.length()).any { tools.getJSONObject(it).optString("name") == "device_info" }
+                }
+            })
+            assertTrue(failure?.message.orEmpty().contains("结构化输出参数无效"))
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun hostedSearchDeclarationExcludesSameNamedFunctionAndPreservesOtherTools() {
         val functions = JSONArray().also { AgentWebToolCatalog.appendTo(it) }
         for (enabled in listOf(false, true)) {

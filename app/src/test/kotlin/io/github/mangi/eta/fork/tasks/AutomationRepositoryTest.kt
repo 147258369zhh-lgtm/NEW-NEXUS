@@ -22,6 +22,18 @@ class AutomationRepositoryTest {
         AutomationRepository(db).save(null, "整理项目文件", "检查输入并生成报告", spec, trigger, null)
     private fun trigger(type: AutomationTrigger = AutomationTrigger.CHARGING, source: String = "") = AutomationTriggerEntity("", "", type.name, source)
 
+    @Test fun nonLocalWorkflowIsRejectedWithoutCreatingDefinition() = runBlocking {
+        val repo = AutomationRepository(db)
+        for (kind in listOf(AgentTaskRunKind.A2A, AgentTaskRunKind.MEETING)) {
+            assertTrue(runCatching {
+                repo.save(null, "远程任务", "任务", AutomationSpec(listOf(
+                    WorkflowStep("one", WorkflowStepKind.AGENT, "执行", prompt = "处理"),
+                )), null, null, kind)
+            }.isFailure)
+        }
+        assertTrue(db.agentTaskDao().definitionsNow().isEmpty())
+    }
+
     @Test fun manualQueueIsAtomicAndPausedTaskCannotBeClaimed() = runBlocking {
         val id = create(); val repo = AgentTaskRepository(db.agentTaskDao())
         val results = coroutineScope { List(10) { async(Dispatchers.IO) { repo.runNow(id) } }.awaitAll() }
@@ -35,9 +47,12 @@ class AutomationRepositoryTest {
     @Test fun eventChecksConditionsAndDeduplicatesDelivery() = runBlocking {
         val id = create(trigger(), AutomationSpec(condition = AutomationCondition(charging = true)))
         val t = db.triggerDao().all().single()
-        assertFalse(AutomationTriggers.fire(context, t, "event-1", JSONObject(), AutomationState(false, true, true, 90), "event-1"))
+        assertTrue(AutomationTriggers.fire(context, t, "event-1", JSONObject(), AutomationState(false, true, true, 90), "event-1"))
+        val detail = db.triggerDao().all().single().detail
+        assertTrue(detail.startsWith("事件已记录，等待设备条件满足"))
+        assertTrue(detail.contains("充电状态"))
         val pending = db.triggerDao().all().single()
-        assertTrue(AutomationTriggers.fire(context, pending, "event-1", JSONObject(), AutomationState(true, true, true, 90), "event-1"))
+        assertFalse(AutomationTriggers.fire(context, pending, "event-1", JSONObject(), AutomationState(true, true, true, 90), "event-1"))
         assertFalse(AutomationTriggers.fire(context, pending, "event-1", JSONObject(), AutomationState(true, true, true, 90), "event-1"))
         assertEquals(1, db.agentTaskDao().runsForDefinition(id).size)
         assertEquals("TRIGGER", db.agentTaskDao().events(db.agentTaskDao().runsForDefinition(id).single().id).single().eventType)
@@ -65,12 +80,15 @@ class AutomationRepositoryTest {
 
     @Test fun conditionsDeferSameRunWithoutReplayOrLease() = runBlocking {
         val id = create(); val dao = db.agentTaskDao(); AgentTaskRepository(dao, clock = { 1000L }).runNow(id)
-        val coordinator = AgentTaskCoordinator(dao, AgentTaskRunner { AgentTaskExecutionResult.Deferred() }, clock = { 1100L })
+        val coordinator = AgentTaskCoordinator(dao, AgentTaskRunner {
+            AgentTaskExecutionResult.Deferred(reason = "充电状态应为充电中，当前未充电")
+        }, clock = { 1100L })
         coordinator.tick()
         val run = dao.runsForDefinition(id).single()
         assertEquals(AgentTaskState.QUEUED, run.state); assertEquals(61100L, run.scheduledFor)
         assertNull(dao.lease(run.id)); assertEquals(1, run.attempt)
-        assertTrue(dao.events(run.id).any { it.eventType == "WAITING_CONDITIONS" })
+        val waiting = dao.events(run.id).single { it.eventType == "WAITING_CONDITIONS" }
+        assertTrue(JSONObject(waiting.payloadJson).getString("reason").contains("充电状态"))
     }
 
     @Test fun monthlyCadenceClampsToShortMonths() {
@@ -89,5 +107,55 @@ class AutomationRepositoryTest {
         assertTrue(db.agentTaskDao().schedulesNow().isEmpty())
         repo.setEnabled(id, false); repo.setEnabled(id, true)
         assertTrue(db.agentTaskDao().schedulesNow().isEmpty())
+    }
+
+    @Test fun newEventsQueueWhileThePriorTaskRunsWithoutConcurrentExecutionOrDuplicates() = runBlocking {
+        val id = create(trigger(AutomationTrigger.FILE_CREATED, "content://folder/tree/one").copy(cooldownSeconds = 60))
+        val dao = db.agentTaskDao()
+        val ready = AutomationState(true, true, true, 90)
+        assertTrue(AutomationTriggers.fire(context, db.triggerDao().all().single(), "file-1", JSONObject(), ready, "file-1"))
+        val now = System.currentTimeMillis()
+        val first = dao.claimNextQueued("worker", now, now + 60_000)!!
+        assertTrue(dao.markRunning(first.runId, "worker", "runtime-first", now, now + 60_000))
+        val trigger = db.triggerDao().all().single().copy(lastFiredAt = now - 60_001)
+        db.triggerDao().save(trigger)
+        assertTrue(AutomationTriggers.fire(context, trigger, "file-2", JSONObject(), ready, "file-2"))
+        assertEquals(2, dao.runsForDefinition(id).size)
+        assertNull(dao.claimNextQueued("other-worker", now + 1, now + 60_000))
+        assertTrue(dao.complete(first.runId, "worker", "result:first", now + 2))
+        val second = dao.claimNextQueued("other-worker", System.currentTimeMillis() + 1, now + 60_000)!!
+        assertNotEquals(first.runId, second.runId)
+        assertFalse(AutomationTriggers.fire(context, trigger, "file-2", JSONObject(), ready, "file-2"))
+        assertEquals(2, dao.runsForDefinition(id).size)
+    }
+
+    @Test fun eventWaitsInTheSameDurableRunBeforeTheRealRunnerCanEnterAnyModelOrTool() = runBlocking {
+        val id = create(trigger(), AutomationSpec(condition = AutomationCondition(charging = true)))
+        val dao = db.agentTaskDao()
+        assertTrue(AutomationTriggers.fire(context, db.triggerDao().all().single(), "plug-event", JSONObject().put("source", "fixture"),
+            AutomationState(false, true, true, 90), "plug-event"))
+        val original = dao.runsForDefinition(id).single()
+        val runner = DefaultAgentTaskRunner(context, stateProvider = { AutomationState(false, true, true, 90) })
+        val tick = AgentTaskCoordinator(dao, runner, clock = { original.createdAt + 1 })
+        tick.tick()
+        val deferred = dao.run(original.id)!!
+        assertEquals(AgentTaskState.QUEUED, deferred.state)
+        assertEquals(1, deferred.attempt)
+        assertEquals(1, dao.runsForDefinition(id).size)
+        assertNull(dao.lease(original.id))
+        assertTrue(dao.events(original.id).any { it.eventType == "WAITING_CONDITIONS" })
+        var calls = 0
+        AgentTaskCoordinator(dao, AgentTaskRunner { calls++; AgentTaskExecutionResult.Succeeded("report-result") },
+            clock = { deferred.scheduledFor + 1 }).tick()
+        assertEquals(1, calls)
+        assertEquals(AgentTaskState.SUCCEEDED, dao.run(original.id)?.state)
+        assertEquals(1, dao.runsForDefinition(id).size)
+    }
+
+    @Test fun repositoryCannotPersistBothATimeScheduleAndAnEventSource() = runBlocking {
+        assertTrue(runCatching { AutomationRepository(db).save(null, "双重触发", "任务内容", AutomationSpec(), trigger(),
+            AgentScheduleRule(AgentScheduleKind.DAILY, System.currentTimeMillis(), localHour = 8, localMinute = 0)) }.isFailure)
+        assertTrue(db.agentTaskDao().schedulesNow().isEmpty())
+        assertTrue(db.triggerDao().all().isEmpty())
     }
 }

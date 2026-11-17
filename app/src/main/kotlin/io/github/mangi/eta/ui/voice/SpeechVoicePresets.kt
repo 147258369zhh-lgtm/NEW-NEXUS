@@ -82,12 +82,45 @@ internal object SpeechVoicePresets {
         SpeechVoicePreset("zm_yunyang", R.string.speech_voice_local_yunyang, R.string.speech_voice_male),
     )
 
+    private val baidu = listOf(
+        SpeechVoicePreset("0", R.string.speech_voice_baidu_0, R.string.speech_voice_female),
+        SpeechVoicePreset("1", R.string.speech_voice_baidu_1, R.string.speech_voice_male),
+        SpeechVoicePreset("3", R.string.speech_voice_baidu_3, R.string.speech_voice_male),
+        SpeechVoicePreset("4", R.string.speech_voice_baidu_4, R.string.speech_voice_female),
+    )
+    private val iflytek = listOf(
+        SpeechVoicePreset("xiaoyan", R.string.speech_voice_iflytek_xiaoyan, R.string.speech_voice_female),
+    )
+    private val tencent = listOf(
+        SpeechVoicePreset("1001", R.string.speech_voice_tencent_1001, R.string.speech_voice_female),
+    )
+    private val xiaomi = listOf(
+        SpeechVoicePreset("mimo_default", R.string.speech_voice_xiaomi_default, R.string.speech_tts_xiaomi),
+        SpeechVoicePreset("冰糖", R.string.speech_voice_xiaomi_bingtang, R.string.speech_tts_xiaomi),
+        SpeechVoicePreset("茉莉", R.string.speech_voice_xiaomi_moli, R.string.speech_tts_xiaomi),
+        SpeechVoicePreset("苏打", R.string.speech_voice_xiaomi_suda, R.string.speech_tts_xiaomi),
+        SpeechVoicePreset("白桦", R.string.speech_voice_xiaomi_baihua, R.string.speech_tts_xiaomi),
+        SpeechVoicePreset("Mia", R.string.speech_voice_xiaomi_mia, R.string.speech_tts_xiaomi),
+        SpeechVoicePreset("Chloe", R.string.speech_voice_xiaomi_chloe, R.string.speech_tts_xiaomi),
+        SpeechVoicePreset("Milo", R.string.speech_voice_xiaomi_milo, R.string.speech_tts_xiaomi),
+        SpeechVoicePreset("Dean", R.string.speech_voice_xiaomi_dean, R.string.speech_tts_xiaomi),
+    )
+    private val deepSeek = listOf(
+        SpeechVoicePreset("stella", R.string.speech_voice_deepseek_stella, R.string.speech_tts_deepseek),
+        SpeechVoicePreset("tide", R.string.speech_voice_deepseek_tide, R.string.speech_tts_deepseek),
+    )
+
     fun forProvider(provider: TtsProvider): List<SpeechVoicePreset> = when (provider) {
         TtsProvider.QWEN -> qwen
         TtsProvider.DOUBAO -> doubao
         TtsProvider.GEMINI -> gemini
         TtsProvider.MINIMAX -> minimax
         TtsProvider.LOCAL -> local
-        TtsProvider.NONE -> emptyList()
+        TtsProvider.BAIDU -> baidu
+        TtsProvider.IFLYTEK -> iflytek
+        TtsProvider.TENCENT -> tencent
+        TtsProvider.XIAOMI -> xiaomi
+        TtsProvider.DEEPSEEK -> deepSeek
+        TtsProvider.NONE, TtsProvider.AZURE -> emptyList()
     }
 }

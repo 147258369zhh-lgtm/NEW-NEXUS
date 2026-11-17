@@ -1,6 +1,7 @@
 package io.github.zhh_lgtm.nexus.application.api
 
 import io.github.zhh_lgtm.nexus.kernel.api.GoalSpec
+import io.github.zhh_lgtm.nexus.kernel.api.GoalCompletionNote
 import io.github.zhh_lgtm.nexus.kernel.api.GoalState
 import io.github.zhh_lgtm.nexus.kernel.api.SessionId
 import io.github.zhh_lgtm.nexus.kernel.api.GoalId
@@ -22,7 +23,21 @@ class WorkflowStateEngineTest {
             WorkflowStateEngine.transition(running, GoalTransition.Complete)
         }
         val verifying = WorkflowStateEngine.transition(running, GoalTransition.StartVerification)
-        assertEquals(GoalState.COMPLETED, WorkflowStateEngine.transition(verifying, GoalTransition.Complete).state)
+        assertThrows(IllegalArgumentException::class.java) {
+            WorkflowStateEngine.transition(verifying, GoalTransition.Complete)
+        }
+        val documented = verifying.copy(completionNote = GoalCompletionNote(
+            coreCriteriaVerified = true,
+            missingNoncriticalItems = listOf("optional appendix"),
+            impact = "Core delivery is usable",
+            evidence = listOf("verification report"),
+        ))
+        assertEquals(GoalState.COMPLETED, WorkflowStateEngine.transition(documented, GoalTransition.Complete).state)
+        val completed = WorkflowStateEngine.transition(documented, GoalTransition.Complete)
+        assertEquals(GoalState.COMPLETED, WorkflowStateEngine.transition(completed, GoalTransition.Complete).state)
+        assertThrows(IllegalArgumentException::class.java) {
+            WorkflowStateEngine.transition(documented.copy(state = GoalState.WAITING_USER), GoalTransition.Complete)
+        }
     }
 
     @Test

@@ -80,6 +80,7 @@ internal data class AgentTaskScheduleEntity(
         Index(value = ["state", "scheduled_for"]),
         Index(value = ["idempotency_key"], unique = true),
         Index(value = ["local_run_id"], unique = true),
+        Index(value = ["a2a_agent_id", "a2a_task_id"]),
     ],
 )
 internal data class AgentTaskRunEntity(
@@ -98,6 +99,20 @@ internal data class AgentTaskRunEntity(
     @ColumnInfo(name = "started_at") val startedAt: Long? = null,
     @ColumnInfo(name = "finished_at") val finishedAt: Long? = null,
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
+    /** Remote A2A peer bound to this logical run; survives restarts and re-dispatch. */
+    @ColumnInfo(name = "a2a_agent_id") val a2aAgentId: String? = null,
+    /** Remote A2A task id used when this run is resumed instead of re-sending its prompt. */
+    @ColumnInfo(name = "a2a_task_id") val a2aTaskId: String? = null,
+    @ColumnInfo(name = "a2a_context_id") val a2aContextId: String? = null,
+    /** Stable id of the A2A message sent for this run; never the per-dispatch runtime id. */
+    @ColumnInfo(name = "a2a_message_id") val a2aMessageId: String? = null,
+    /** Sequence of the last recorded A2A message so continuations keep one stable message id. */
+    @ColumnInfo(name = "a2a_message_seq", defaultValue = "0") val a2aMessageSeq: Int = 0,
+    @ColumnInfo(name = "a2a_deadline_at") val a2aDeadlineAt: Long? = null,
+    @ColumnInfo(name = "a2a_review_decision") val a2aReviewDecision: String? = null,
+    /** Bounded step cursor, variables and absolute WAIT deadline; never transcript/tool arguments. */
+    @ColumnInfo(name = "workflow_checkpoint_json", defaultValue = "'{}'")
+    val workflowCheckpointJson: String = "{}",
 )
 
 @Entity(
@@ -168,4 +183,8 @@ internal data class AgentTaskAttentionEntity(
 internal data class AgentTaskExpiredLeaseRow(
     @ColumnInfo(name = "run_id") val runId: String,
     val state: AgentTaskState,
+    @ColumnInfo(name = "local_run_id") val localRunId: String? = null,
+    @ColumnInfo(name = "a2a_task_id") val a2aTaskId: String? = null,
+    @ColumnInfo(name = "a2a_message_id") val a2aMessageId: String? = null,
+    @ColumnInfo(name = "workflow_checkpoint_json") val workflowCheckpointJson: String = "{}",
 )

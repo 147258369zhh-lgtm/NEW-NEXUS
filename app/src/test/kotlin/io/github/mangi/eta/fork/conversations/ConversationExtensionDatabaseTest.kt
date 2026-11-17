@@ -48,7 +48,7 @@ class ConversationExtensionDatabaseTest {
             ConversationExtensionDatabase::class.java,
             databaseName,
         )
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
             .allowMainThreadQueries()
             .build()
         val dao = database.conversationExtensionDao()
@@ -66,6 +66,11 @@ class ConversationExtensionDatabaseTest {
         assertFalse(extension.autoArchiveExempt)
         assertNull(extension.archivedAt)
         assertNull(extension.contextWindowOverride)
+        assertNull(extension.compactionModelId)
+        assertNull(extension.compactionProviderId)
+        dao.setCompactionBinding("legacy", "summary-model", "summary-provider", 80L)
+        assertEquals("summary-model", dao.extension("legacy")!!.compactionModelId)
+        assertEquals("summary-provider", dao.extension("legacy")!!.compactionProviderId)
 
         dao.upsertArchiveSettings(ConversationArchiveSettingsEntity(enabled = false, idleDays = 14))
         assertEquals(14, dao.archiveSettings()!!.idleDays)
@@ -84,7 +89,7 @@ class ConversationExtensionDatabaseTest {
     fun migrationFromV2PreservesArchiveDataAndNestedFoldersPersistAcrossReopen() = runBlocking {
         createVersionOneDatabase(version = 2)
         fun open() = Room.databaseBuilder(context, ConversationExtensionDatabase::class.java, databaseName)
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).allowMainThreadQueries().build()
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).allowMainThreadQueries().build()
         database = open()
         val dao = database.conversationExtensionDao()
         assertEquals("Legacy folder", dao.folder("folder-legacy")!!.name)

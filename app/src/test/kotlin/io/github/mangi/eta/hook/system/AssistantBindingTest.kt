@@ -57,7 +57,7 @@ class AssistantBindingTest {
     }
 
     @Test
-    fun `preference changes configure managed targets and restore OEM`() {
+    fun `automatic configuration never restores OEM without module ownership`() {
         assertEquals(
             AssistantSelectionAction.CONFIGURE_MANAGED,
             assistantSelectionAction(true, PowerAssistantTarget.GEMINI),
@@ -71,8 +71,43 @@ class AssistantBindingTest {
             assistantSelectionAction(false, PowerAssistantTarget.GEMINI),
         )
         assertEquals(
-            AssistantSelectionAction.RESTORE_OEM,
+            AssistantSelectionAction.NONE,
             assistantSelectionAction(false, PowerAssistantTarget.OEM),
         )
+        assertEquals(AssistantSelectionAction.NONE, assistantSelectionAction(true, PowerAssistantTarget.OEM))
+        assertEquals(
+            AssistantSelectionAction.NONE,
+            assistantSelectionAction(false, PowerAssistantTarget.OEM, hasManagedOwnership = true),
+        )
+        assertEquals(
+            AssistantSelectionAction.RESTORE_OEM,
+            assistantSelectionAction(true, PowerAssistantTarget.OEM, hasManagedOwnership = true),
+        )
+    }
+
+    @Test
+    fun `explicit selection configures once even when automatic repair is disabled`() {
+        assertEquals(
+            AssistantSelectionAction.CONFIGURE_MANAGED,
+            assistantSelectionAction(false, PowerAssistantTarget.ETA, explicitSelection = true),
+        )
+        assertEquals(
+            AssistantSelectionAction.RESTORE_OEM,
+            assistantSelectionAction(false, PowerAssistantTarget.OEM, explicitSelection = true),
+        )
+        assertTrue(isAssistantConfigurationCurrent(false, PowerAssistantTarget.ETA, PowerAssistantTarget.ETA, explicitSelection = true))
+        assertFalse(isAssistantConfigurationCurrent(false, PowerAssistantTarget.ETA, PowerAssistantTarget.OEM, explicitSelection = true))
+    }
+
+    @Test
+    fun `selection requests cannot replay in a different Android user`() {
+        assertEquals("0:request", assistantSelectionRequestForUser("0:request", 0))
+        assertNull(assistantSelectionRequestForUser("0:request", 10))
+        assertEquals("10:request", assistantSelectionRequestForUser("10:request", 10))
+        assertNull(assistantSelectionRequestForUser("10:request", 0))
+        assertNull(assistantSelectionRequestForUser("10:", 10))
+        assertNull(assistantSelectionRequestForUser("", 0))
+        assertEquals("legacy-request", assistantSelectionRequestForUser("legacy-request", 0))
+        assertNull(assistantSelectionRequestForUser("legacy-request", 10))
     }
 }

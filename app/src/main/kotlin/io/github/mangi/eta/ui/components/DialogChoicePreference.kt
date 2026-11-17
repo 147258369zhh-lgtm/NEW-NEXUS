@@ -1,5 +1,6 @@
 package io.github.mangi.eta.ui.components
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -14,7 +15,6 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.layout.Box
@@ -25,7 +25,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -47,14 +46,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.github.mangi.eta.R
 import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
@@ -79,15 +78,11 @@ fun DialogChoicePreference(
     onSelectedIndexChange: (Int) -> Unit,
 ) {
     var expanded by rememberSaveable(title, enabled) { mutableStateOf(false) }
+    BackHandler(enabled = expanded) { expanded = false }
+    val currentValueDescription = stringResource(R.string.dialog_choice_current_value, title, value)
     val safeIndex = selectedIndex.takeIf { options.isNotEmpty() }?.coerceIn(options.indices)
     val bringIntoViewRequester = remember { BringIntoViewRequester() }
     val triggerInteraction = remember { MutableInteractionSource() }
-    val triggerPressed by triggerInteraction.collectIsPressedAsState()
-    val triggerScale by animateFloatAsState(
-        targetValue = if (enabled && triggerPressed) 0.993f else 1f,
-        animationSpec = EtaMotion.pressSpring(),
-        label = "dialog-choice-trigger-scale",
-    )
     val arrowRotation by animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
         animationSpec = EtaMotion.layoutSpring(),
@@ -111,36 +106,40 @@ fun DialogChoicePreference(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .graphicsLayer { scaleX = triggerScale; scaleY = triggerScale }
+                .heightIn(min = 48.dp)
+                .etaPressScale(
+                    interactionSource = triggerInteraction,
+                    enabled = enabled,
+                    pressedScale = 0.993f,
+                    label = "dialog-choice-trigger-scale",
+                )
                 .clickable(
                     enabled = enabled,
                     interactionSource = triggerInteraction,
                     indication = etaRippleIndication(),
                 ) { expanded = !expanded }
-                .semantics { contentDescription = "$title，当前 $value" }
+                .semantics { contentDescription = currentValueDescription }
                 .padding(start = EtaUiMetrics.cardPadding, end = 14.dp, top = 12.dp, bottom = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = title,
-                modifier = Modifier.weight(1f),
-                style = MiuixTheme.textStyles.body2.copy(fontSize = 15.sp, lineHeight = 21.sp),
-                fontWeight = FontWeight.Medium,
-                color = if (enabled) MiuixTheme.colorScheme.onSurface else MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                text = value,
-                modifier = Modifier.widthIn(max = 164.dp).padding(start = 12.dp),
-                style = MiuixTheme.textStyles.footnote1.copy(fontSize = 13.sp, lineHeight = 18.sp),
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MiuixTheme.textStyles.body2.copy(fontSize = 15.sp, lineHeight = 21.sp),
+                    fontWeight = FontWeight.Medium,
+                    color = if (enabled) MiuixTheme.colorScheme.onSurface else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+                Text(
+                    text = value,
+                    style = MiuixTheme.textStyles.footnote1.copy(fontSize = 13.sp, lineHeight = 18.sp),
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+            }
             Icon(
                 imageVector = Icons.Rounded.ExpandMore,
-                contentDescription = if (expanded) "收起选项" else "展开选项",
+                contentDescription = stringResource(
+                    if (expanded) R.string.dialog_choice_collapse else R.string.dialog_choice_expand,
+                ),
                 modifier = Modifier.padding(start = 6.dp).size(18.dp).rotate(arrowRotation),
                 tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             )
@@ -178,7 +177,7 @@ fun DialogChoicePreference(
             ) {
                 if (options.isEmpty()) {
                     Text(
-                        text = "暂无可选项",
+                        text = stringResource(R.string.dialog_choice_empty),
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 14.dp),
                         style = MiuixTheme.textStyles.footnote1,
                         color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
@@ -196,16 +195,16 @@ fun DialogChoicePreference(
                             label = "dialog-choice-option",
                         )
                         val optionInteraction = remember(option) { MutableInteractionSource() }
-                        val optionPressed by optionInteraction.collectIsPressedAsState()
-                        val optionScale by animateFloatAsState(
-                            targetValue = if (enabled && optionPressed) 0.985f else 1f,
-                            animationSpec = EtaMotion.pressSpring(),
-                            label = "dialog-choice-option-scale",
-                        )
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .graphicsLayer { scaleX = optionScale; scaleY = optionScale }
+                                .heightIn(min = 48.dp)
+                                .etaPressScale(
+                                    interactionSource = optionInteraction,
+                                    enabled = enabled,
+                                    pressedScale = 0.985f,
+                                    label = "dialog-choice-option-scale",
+                                )
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(container)
                                 .then(
@@ -235,8 +234,6 @@ fun DialogChoicePreference(
                                 style = MiuixTheme.textStyles.body2.copy(fontSize = 14.sp, lineHeight = 20.sp),
                                 fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
                                 color = if (selected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurface,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
                             )
                             AnimatedVisibility(
                                 visible = selected,
@@ -254,7 +251,7 @@ fun DialogChoicePreference(
                                 ) {
                                     Icon(
                                         imageVector = Icons.Rounded.Check,
-                                        contentDescription = "已选择",
+                                        contentDescription = stringResource(R.string.dialog_choice_selected),
                                         modifier = Modifier.size(14.dp),
                                         tint = MiuixTheme.colorScheme.primary,
                                     )

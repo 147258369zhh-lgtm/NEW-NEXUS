@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.Add
@@ -22,6 +24,7 @@ import androidx.compose.material.icons.rounded.Search
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -29,6 +32,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,8 +56,10 @@ import io.github.mangi.eta.ui.components.EtaStatusPill
 import io.github.mangi.eta.ui.components.EtaStatusTone
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.NexusSettingsTabs
 import io.github.mangi.eta.ui.components.etaGlassSurface
 import io.github.mangi.eta.ui.pages.providers.TagChip
+import io.github.mangi.eta.ui.screens.skills.BoundaryToolsScreen
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
@@ -60,7 +67,6 @@ import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Switch
-import top.yukonga.miuix.kmp.basic.TabRow
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
@@ -81,7 +87,17 @@ private sealed interface PromptPage {
     data class Targets(val type: PromptScopeType) : PromptPage
     data class Picker(val target: PromptTarget) : PromptPage
     data object ExportPicker : PromptPage
+    data object Boundary : PromptPage
+    data object Audit : PromptPage
+    data object Preview : PromptPage
 }
+
+private data class PromptLibraryViewport(
+    val tab: Int,
+    val index: Int,
+    val offset: Int,
+    val firstKey: Any?,
+)
 
 private val PromptPageSaver = Saver<MutableState<PromptPage>, String>(
     save = { state -> promptPageToWire(state.value) },
@@ -107,6 +123,9 @@ private fun promptPageToWire(page: PromptPage): String = when (page) {
         .put("target", page.target.toJson())
         .toString()
     PromptPage.ExportPicker -> JSONObject().put("page", "export").toString()
+    PromptPage.Boundary -> JSONObject().put("page", "boundary").toString()
+    PromptPage.Audit -> JSONObject().put("page", "audit").toString()
+    PromptPage.Preview -> JSONObject().put("page", "preview").toString()
 }
 
 private fun promptPageFromWire(raw: String): PromptPage = runCatching {
@@ -126,18 +145,54 @@ private fun promptPageFromWire(raw: String): PromptPage = runCatching {
             ?.let(PromptPage::Picker)
             ?: PromptPage.Library
         "export" -> PromptPage.ExportPicker
+        "boundary" -> PromptPage.Boundary
+        "audit" -> PromptPage.Audit
+        "preview" -> PromptPage.Preview
         else -> PromptPage.Library
     }
 }.getOrDefault(PromptPage.Library)
 
 @Composable
-internal fun PromptInjectionScreen(onBack: () -> Unit) {
+internal fun PromptInjectionScreen(
+    onOpenCharacters: (() -> Unit)? = null,
+    storeOverride: PromptInjectionUiStore? = null,
+    onLibraryState: ((LazyListState) -> Unit)? = null,
+    onBack: () -> Unit,
+) {
     val context = LocalContext.current
-    val store = remember(context.applicationContext) {
+    val ownedStore = remember(context.applicationContext) {
         PromptInjectionUiStore(context.applicationContext)
     }
+    val store = storeOverride ?: ownedStore
     var tab by rememberSaveable { mutableIntStateOf(TAB_TEMPLATES) }
     var page by rememberSaveable(saver = PromptPageSaver) { mutableStateOf<PromptPage>(PromptPage.Library) }
+    // Secondary pages replace the library composition; keep its scroll owners alive here.
+    val templateListState = rememberLazyListState()
+    val bindingsListState = rememberLazyListState()
+    val transferListState = rememberLazyListState()
+    val governanceListState = rememberLazyListState()
+    val libraryStates = listOf(templateListState, bindingsListState, transferListState, governanceListState)
+    val libraryStateHolder = rememberSaveableStateHolder()
+    var returnViewport by remember { mutableStateOf<PromptLibraryViewport?>(null) }
+    val openFromLibrary: (PromptPage) -> Unit = { destination ->
+        val currentState = libraryStates[tab]
+        returnViewport = PromptLibraryViewport(tab, currentState.firstVisibleItemIndex,
+            currentState.firstVisibleItemScrollOffset, currentState.layoutInfo.visibleItemsInfo.firstOrNull()?.key)
+        page = destination
+    }
+    // A newly attached LazyColumn can clamp its retained offset during its first measurement.
+    // Reapply the captured viewport once the library has attached and its first layout has run.
+    LaunchedEffect(page, returnViewport) {
+        val viewport = returnViewport
+        if (page == PromptPage.Library && viewport != null) {
+            withFrameNanos { }
+            val restoredState = libraryStates[viewport.tab]
+            val anchor = restoredState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == viewport.firstKey }
+            restoredState.scrollToItem(anchor?.index ?: viewport.index, viewport.offset)
+            returnViewport = null
+        }
+    }
+    SideEffect { onLibraryState?.invoke(libraryStates[tab]) }
     LaunchedEffect(store) { store.refresh() }
     val finishPicker: (PromptTarget) -> Unit = { target ->
         if (target.type == PromptScopeType.GLOBAL) {
@@ -149,17 +204,31 @@ internal fun PromptInjectionScreen(onBack: () -> Unit) {
     }
 
     when (val current = page) {
-        PromptPage.Library -> PromptLibraryScaffold(
+        PromptPage.Library -> libraryStateHolder.SaveableStateProvider("prompt-library") { PromptLibraryScaffold(
             store = store,
             tab = tab,
+            listState = when (tab) {
+                TAB_BINDINGS -> bindingsListState
+                TAB_TRANSFER -> transferListState
+                TAB_GOVERNANCE -> governanceListState
+                else -> templateListState
+            },
             onTabChange = { tab = it },
             onBack = onBack,
-            onCreate = { page = PromptPage.Editor(newPromptTemplate()) },
-            onEdit = { page = PromptPage.Editor(it) },
-            onOpenTargets = { page = PromptPage.Targets(it) },
-            onOpenGlobal = { page = PromptPage.Picker(PromptTarget.GLOBAL) },
-            onOpenExportPicker = { page = PromptPage.ExportPicker },
-        )
+            onCreate = { openFromLibrary(PromptPage.Editor(newPromptTemplate())) },
+            onEdit = { openFromLibrary(PromptPage.Editor(it)) },
+            onOpenTargets = { openFromLibrary(PromptPage.Targets(it)) },
+            onOpenGlobal = { openFromLibrary(PromptPage.Picker(PromptTarget.GLOBAL)) },
+            onOpenExportPicker = { openFromLibrary(PromptPage.ExportPicker) },
+            onOpenBoundary = { openFromLibrary(PromptPage.Boundary) },
+            onOpenAudit = { openFromLibrary(PromptPage.Audit) },
+            onOpenPreview = { openFromLibrary(PromptPage.Preview) },
+            onOpenCharacters = onOpenCharacters,
+        ) }
+        PromptPage.Boundary -> BoundaryToolsScreen(onBack = { page = PromptPage.Library })
+        PromptPage.Audit -> PromptAssemblyAuditScreen(store,
+            onEdit = { page = PromptPage.Editor(it) }, onBack = { page = PromptPage.Library })
+        PromptPage.Preview -> PromptAssemblyPreviewScreen(store, onBack = { page = PromptPage.Library })
         is PromptPage.Editor -> {
             PromptTemplateEditorScreen(
                 template = current.template,
@@ -201,6 +270,7 @@ internal fun PromptInjectionScreen(onBack: () -> Unit) {
 private fun PromptLibraryScaffold(
     store: PromptInjectionUiStore,
     tab: Int,
+    listState: LazyListState,
     onTabChange: (Int) -> Unit,
     onBack: () -> Unit,
     onCreate: () -> Unit,
@@ -208,9 +278,14 @@ private fun PromptLibraryScaffold(
     onOpenTargets: (PromptScopeType) -> Unit,
     onOpenGlobal: () -> Unit,
     onOpenExportPicker: () -> Unit,
+    onOpenBoundary: () -> Unit,
+    onOpenAudit: () -> Unit,
+    onOpenPreview: () -> Unit,
+    onOpenCharacters: (() -> Unit)?,
 ) {
     val scope = rememberCoroutineScope()
     var query by rememberSaveable { mutableStateOf("") }
+    val transferState = remember { PromptTransferPanelState() }
     var deleteTarget by remember { mutableStateOf<PromptTemplate?>(null) }
     val duplicateSuccess = stringResource(R.string.prompt_injection_duplicate_success)
     val deleteSuccess = stringResource(R.string.prompt_injection_delete_success)
@@ -218,8 +293,21 @@ private fun PromptLibraryScaffold(
     val deleteFailed = stringResource(R.string.prompt_injection_delete_failed)
 
     MiuixScaffoldPage(
-        title = "提示词与工具边界",
+        title = "角色与指令",
         onBack = onBack,
+        listState = listState,
+        aboveContent = {
+            NexusSettingsTabs(
+                tabs = listOf(
+                    stringResource(R.string.prompt_injection_tab_templates),
+                    stringResource(R.string.prompt_injection_tab_bindings),
+                    "导入与导出",
+                    stringResource(R.string.settings_tab_governance),
+                ),
+                selectedTab = tab,
+                onTabSelected = onTabChange,
+            )
+        },
         actions = {
             if (tab == TAB_TEMPLATES) {
                 IconButton(onClick = onCreate) {
@@ -228,18 +316,26 @@ private fun PromptLibraryScaffold(
             }
         },
     ) {
-        item(key = "prompt_tabs") {
-            TabRow(
-                tabs = listOf(
-                    stringResource(R.string.prompt_injection_tab_templates),
-                    stringResource(R.string.prompt_injection_tab_bindings),
-                    stringResource(R.string.prompt_injection_tab_transfer),
-                    "治理",
-                ),
-                selectedTabIndex = tab,
-                onTabSelected = onTabChange,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            )
+        item(key = "prompt_usage_guide_$tab") {
+            PromptUsageGuide(tab)
+        }
+        if (tab == TAB_GOVERNANCE) item(key = "behavior_modules") {
+            Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+                DetailListRow(title = "真实工具边界", subtitle = "在此编辑全局结构化权限；与本轮、Agent 及审批策略取交集",
+                    icon = Icons.Rounded.Public, onClick = onOpenBoundary)
+                DetailListRow(title = "本轮生效记录", subtitle = "查看实际请求的来源、阶段、位置、继承、预算省略与公开工具",
+                    icon = Icons.Rounded.Description, onClick = onOpenAudit)
+                DetailListRow(title = "组装预览", subtitle = "选择模型、范围对象与阶段，查看完整片段及省略原因，不调用模型",
+                    icon = Icons.Rounded.Description, onClick = onOpenPreview)
+            }
+        }
+        if (tab == TAB_TEMPLATES) onOpenCharacters?.let { open ->
+            item(key = "character_module") {
+                Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+                    DetailListRow(title = "剧情人物与背景", subtitle = "角色卡 · 人设 · 世界书 · 剧情记忆",
+                        icon = Icons.Rounded.Description, onClick = open)
+                }
+            }
         }
         if (store.status != null) {
             item(key = "prompt_status") {
@@ -249,7 +345,7 @@ private fun PromptLibraryScaffold(
                 )
             }
         }
-        item(key = "prompt_library_hero") {
+        if (tab == TAB_TEMPLATES) item(key = "prompt_library_hero") {
             PromptLibraryHero(store = store, onCreate = onCreate)
         }
         when (tab) {
@@ -282,6 +378,8 @@ private fun PromptLibraryScaffold(
             TAB_TRANSFER -> item(key = "prompt_transfer") {
                 PromptTransferPanel(
                     store = store,
+                    state = transferState,
+                    scope = scope,
                     onOpenExportPicker = onOpenExportPicker,
                 )
             }
@@ -316,6 +414,31 @@ private fun PromptLibraryScaffold(
     }
 }
 
+@Composable
+private fun PromptUsageGuide(tab: Int) {
+    val guide = when (tab) {
+        TAB_BINDINGS -> Triple("让指令在正确的位置生效", "选择范围 → 绑定方案 → 选择继承方式",
+            "全局用于通用偏好，项目与会话用于具体任务。指令块可指定普通对话、会议阶段或子 Agent；替换继承前可先到治理查看组装预览。")
+        TAB_TRANSFER -> Triple("备份与交换方案", "导入先检查 → 选择保留内容 → 导出所需方案",
+            "这里管理指令方案的导入、导出与旧配置迁移。剧情角色卡的 PNG/JSON、世界书和人物资料仍在“剧情人物与背景”内管理。")
+        TAB_GOVERNANCE -> Triple("核对实际生效与权限", "组装预览 → 本轮记录 → 结构检查",
+            "预览使用实际组装规则，不调用模型；本轮记录反映真实请求的来源、阶段和预算。文字指令不能扩大工具权限，权限单独在真实工具边界中设置。")
+        else -> Triple("先建立可复用的行为方案", "创建方案 → 按阶段写指令 → 到应用范围绑定",
+            "身份、职责、工作规则与阶段指令集中在方案中。剧情角色是可选模块；启用方案后还需绑定范围才会使用，具体纳入情况可在治理核对。")
+    }
+    var expanded by rememberSaveable(tab) { mutableStateOf(false) }
+    Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            Text(guide.first, style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Medium)
+            Text(guide.second, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.primary)
+            androidx.compose.animation.AnimatedVisibility(expanded) {
+                Text(guide.third, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+            }
+            TextButton(text = if (expanded) "收起用法" else "查看用法", onClick = { expanded = !expanded })
+        }
+    }
+}
+
 private fun LazyListScope.templateLibraryItems(
     store: PromptInjectionUiStore,
     query: String,
@@ -333,7 +456,7 @@ private fun LazyListScope.templateLibraryItems(
         }
         .sortedWith(compareByDescending<PromptTemplate> { it.updatedAt })
 
-    if (templates.isNotEmpty()) {
+    if (store.config.templates.isNotEmpty() || query.isNotBlank()) {
         item(key = "prompt_search") {
             TextField(
                 value = query,
@@ -344,6 +467,8 @@ private fun LazyListScope.templateLibraryItems(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
             )
         }
+    }
+    if (templates.isNotEmpty()) {
         templates.forEach { template ->
             item(key = "prompt_template_${template.id}") {
                 PromptTemplateCard(
@@ -421,12 +546,12 @@ private fun PromptLibraryHero(store: PromptInjectionUiStore, onCreate: () -> Uni
                 )
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(
-                        "提示词与工具边界",
+                        "行为方案",
                         style = MiuixTheme.textStyles.title3,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        "先固定权限合同，再按作用域组装指令",
+                        "集中配置身份、职责与规则，按范围和阶段应用",
                         style = MiuixTheme.textStyles.footnote1,
                         color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     )
@@ -450,7 +575,7 @@ private fun PromptLibraryHero(store: PromptInjectionUiStore, onCreate: () -> Uni
             ) {
                 TagChip("$enabled 个启用模板")
                 TagChip("${store.boundScopeCount()} 个作用域")
-                TagChip(if (issues == 0) "无冲突" else "$issues 项检查")
+                TagChip(if (issues == 0) "结构检查通过" else "$issues 项检查")
             }
             if (store.config.templates.isEmpty()) {
                 TextButton(text = "新建第一条指令", onClick = onCreate)
@@ -791,7 +916,7 @@ private fun LazyListScope.bindingOverviewItems(
     item(key = "binding_priority") {
         Column {
             SmallTitle(stringResource(R.string.prompt_injection_priority_title))
-            PromptSectionNote(stringResource(R.string.prompt_injection_priority_body))
+            PromptSectionNote("全局 → 模型 → 项目 → 会议 → 角色 → 子 Agent → 自动任务 → 会话 → 成员/主持。相同方案仅注入一次；具体范围优先分配完整指令块预算。明确替换或停用仅控制模板继承，当前用户要求和运行时合同仍优先；结构检查不能裁决自由文本的语义冲突。")
         }
     }
     item(key = "binding_global") {
@@ -818,6 +943,7 @@ private fun LazyListScope.bindingOverviewItems(
     }
     val editableScopes = listOf(
         PromptScopeType.MODEL,
+        PromptScopeType.PROJECT,
         PromptScopeType.CONVERSATION,
         PromptScopeType.SUBAGENT,
         PromptScopeType.MEETING,
@@ -840,6 +966,7 @@ private fun LazyListScope.bindingOverviewItems(
                         title = stringResource(type.titleRes()),
                         subtitle = when (type) {
                             PromptScopeType.MODEL -> stringResource(R.string.prompt_injection_scope_model_summary)
+                            PromptScopeType.PROJECT -> "仅在绑定项目的运行中生效，并由子 Agent 继承合法项目范围"
                             PromptScopeType.CONVERSATION -> stringResource(R.string.prompt_injection_scope_conversation_summary)
                             PromptScopeType.SUBAGENT -> stringResource(R.string.prompt_injection_scope_subagent_summary)
                             PromptScopeType.MEETING -> stringResource(R.string.prompt_injection_scope_meeting_summary)

@@ -16,6 +16,7 @@ import io.github.mangi.eta.agent.runtime.AgentRuntimeWire
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -70,10 +71,8 @@ class SubagentTest {
             assertTrue("read_file" in allowed)
             assertTrue("glob_files" in allowed)
             assertTrue("grep_files" in allowed)
-            assertTrue("web_search" in allowed)
-            assertTrue("skills_list_curated" in allowed)
-            assertTrue("skills_inspect_github" in allowed)
-            assertTrue("schedule_list" in allowed)
+            assertFalse("schedule_create" in allowed)
+            if (profile.name != "personal-assistant") assertFalse("search_messages" in allowed)
         }
 
         val exploreTools = SubagentProfile.EXPLORE.filterTools(fullCatalog).toolNames()
@@ -90,6 +89,21 @@ class SubagentTest {
         assertTrue("write_file" in coderTools)
         assertTrue("edit_file" in coderTools)
         assertTrue("terminal" in coderTools)
+        assertEquals(13, SubagentProfile.BUILTIN_PROFILES.size)
+        assertTrue(SubagentProfile.BUILTIN_NAMES.containsAll(setOf("explore", "coder", "plan", "meeting-host")))
+        assertTrue(SubagentProfile.resolve("research").isToolAllowed("web_search"))
+        assertFalse(SubagentProfile.EXPLORE.isToolAllowed("web_search"))
+        assertTrue(SubagentProfile.resolve("personal-assistant").isToolAllowed("search_messages"))
+        val personalTools = SubagentProfile.resolve("personal-assistant").filterTools(fullCatalog).toolNames()
+        assertTrue(personalTools.containsAll(setOf("search_messages", "search_contacts", "search_calendar_events", "summarize_bills")))
+        assertTrue(SubagentPermissionCatalog.category("personal-read")!!.tools.containsAll(personalTools -
+            setOf("read_file", "stat_file", "list_directory", "glob_files", "grep_files", "read_image",
+                "project_workspace_status", "memory_get", "memory_search", "character_memory_get",
+                "skills_list", "skills_read", "skills_read_resource")))
+        assertFalse("set_alarm" in personalTools)
+        assertFalse("set_setting" in personalTools)
+        assertFalse(SubagentProfile.resolve("device-diagnostics").isToolAllowed("search_messages"))
+        assertTrue(SubagentProfile.CODER.isToolAllowed("mcp_repository_edit"))
     }
 
     @Test
@@ -101,6 +115,26 @@ class SubagentTest {
         assertTrue(properties.has("provider_id"))
         assertTrue(properties.has("model_id"))
         assertTrue(properties.has("reasoning_effort"))
+    }
+
+    @Test
+    fun newBuiltinNamesDoNotHideOrPreventEditingOlderCustomProfiles() {
+        val directory = java.nio.file.Files.createTempDirectory("nexa-profile-compat").toFile()
+        try {
+            java.io.File(directory, "research.md").writeText("""
+                ---
+                name: research
+                description: 原有用户研究员
+                tools: read_file
+                ---
+                保留用户职责。
+            """.trimIndent())
+            val old = SubagentProfileCatalog.listAll(directory).single { it.name == "research" }
+            assertFalse(old.builtin)
+            assertEquals("保留用户职责。", old.roleInstruction)
+            SubagentProfileCatalog.saveCustomProfile("research", "原有用户研究员", "已更新用户职责。", agentsDir = directory)
+            assertEquals("已更新用户职责。", SubagentProfileCatalog.listAll(directory).single { it.name == "research" }.roleInstruction)
+        } finally { directory.deleteRecursively() }
     }
 
     @Test
@@ -294,6 +328,82 @@ class SubagentTest {
         finishedEvents.forEach { finished ->
             assertNotNull(SubagentActivitySnapshot.decode(finished.command))
         }
+    }
+
+    @Test
+    fun agentLoopQueuesExcessSubagentsAboveConfiguredConcurrency() {
+        val releaseLatch = CountDownLatch(1)
+        val events = mutableListOf<AgentEvent>()
+        val running = AtomicInteger(0)
+        val peak = AtomicInteger(0)
+        val provider = object : AgentProviderClient {
+            override val id: String = "concurrency-provider"
+            override val capabilities = ProviderCapabilities(
+                endpoint = EndpointKind.CHAT_COMPLETIONS,
+                streamingText = true,
+                streamingToolCalls = true,
+                imageInput = false,
+                toolResultImages = false,
+                strictTools = false,
+                parallelToolCalls = true,
+            )
+            private var calls = 0
+            override fun complete(
+                request: ProviderRequest,
+                runController: AgentRunController,
+                onEvent: (ProviderEvent) -> Unit,
+            ): ProviderResponse {
+                calls += 1
+                if (calls == 1) {
+                    val toolCalls = JSONArray()
+                    for (index in 1..4) {
+                        toolCalls.put(JSONObject()
+                            .put("id", "call_$index")
+                            .put("type", "function")
+                            .put("function", JSONObject()
+                                .put("name", "subagent")
+                                .put("arguments", JSONObject()
+                                    .put("subagent_type", "explore")
+                                    .put("description", "task-$index")
+                                    .put("prompt", "run-$index")
+                                    .toString())))
+                    }
+                    return ProviderResponse(assistantMessage = JSONObject()
+                        .put("role", "assistant").put("content", "")
+                        .put("finish_reason", "tool_calls").put("tool_calls", toolCalls))
+                }
+                return ProviderResponse(assistantMessage = JSONObject()
+                    .put("role", "assistant").put("content", "done").put("finish_reason", "stop"))
+            }
+        }
+        val loop = AgentLoop(
+            config = AgentModelClient.ModelConfig(
+                baseUrl = "https://example.com/v1", apiKey = "test-key", model = "test-model", systemPrompt = "",
+            ),
+            messages = JSONArray().put(JSONObject().put("role", "user").put("content", "start")),
+            tools = JSONArray().put(AgentSubagentToolCatalog.schema()),
+            provider = provider,
+            toolExecutor = AgentModelClient.ToolExecutor { call ->
+                val count = running.incrementAndGet()
+                peak.accumulateAndGet(count, ::maxOf)
+                try {
+                    if (count == 3) releaseLatch.countDown()
+                    releaseLatch.await(3, TimeUnit.SECONDS)
+                    Thread.sleep(25)
+                    AgentModelClient.ToolResult(JSONObject().put("ok", true).put("id", call.id).toString())
+                } finally {
+                    running.decrementAndGet()
+                }
+            },
+            runController = AgentRunController(),
+            traceFormatter = AgentTraceFormatter(),
+            onEvent = { synchronized(events) { events += it } },
+            maxParallelAgents = 3,
+        )
+        assertEquals("done", loop.run().content)
+        assertEquals(3, peak.get())
+        assertEquals(1, events.count { it is AgentEvent.SubagentQueued })
+        assertEquals(1, events.count { it is AgentEvent.SubagentAdmitted })
     }
 
     @Test

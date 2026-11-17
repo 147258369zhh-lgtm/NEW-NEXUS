@@ -65,9 +65,38 @@ class SkillEvolutionTest {
         assertTrue(index.listInstalledSkills().any { it.id == recipe.id && it.enabled })
         index.setSkillEnabled(recipe.id, false)
         dao.save(active.copy(state = "paused"))
+        assertTrue(runCatching { SkillEvolution.publish(context, recipe.id, active.updatedAt, recipe.body + "\n重新检查输出。") }.isFailure)
+        for (i in 4..6) dao.insert(source.copy(runId = "run-$i", recipeId = recipe.id, state = "accepted", createdAt = active.updatedAt + i))
         SkillEvolution.publish(context, recipe.id, active.updatedAt, recipe.body + "\n重新检查输出。")
         assertEquals(2, dao.recipe(recipe.id)!!.version); assertEquals(2, dao.versions(recipe.id).size)
         assertTrue(SkillVersionService(context).listForSkill(recipe.id).isNotEmpty())
+    }
+
+    @Test fun approvedCandidatePublishesAutomaticallyOnlyWhenTheSettingIsEnabled() = runBlocking {
+        val dao = LearningDatabase.get(context).skillEvolutionDao(); val recipe = SkillEvolution.parse(raw, source)!!
+        dao.save(recipe)
+        dao.insert(source)
+        dao.insert(source.copy(runId = "run-2", recipeId = recipe.id, state = "accepted"))
+        dao.insert(source.copy(runId = "run-3", recipeId = recipe.id, state = "accepted"))
+        SkillEvolution.acceptProposal(context, source, recipe)
+        val approved = dao.recipe(recipe.id)!!
+        assertEquals("butler_approved", approved.state)
+
+        SkillEvolution.setAutoPublish(context, false)
+        io.github.mangi.eta.data.repository.EtaBackupOperations.exclusive {
+            SkillEvolution.autoPublishApprovedLocked(context, dao)
+        }
+        assertEquals("butler_approved", dao.recipe(recipe.id)!!.state)
+
+        SkillEvolution.setAutoPublish(context, true)
+        io.github.mangi.eta.data.repository.EtaBackupOperations.exclusive {
+            SkillEvolution.autoPublishApprovedLocked(context, dao)
+        }
+        val active = dao.recipe(recipe.id)!!
+        assertEquals("active", active.state)
+        assertEquals(1, active.version)
+        assertTrue(SkillEvolution.notice(context).orEmpty().contains("已自动发布"))
+        assertTrue(SkillRuntime.createIndexService(context).listInstalledSkills().any { it.id == recipe.id && it.enabled })
     }
 
     @Test fun publicationJournalRecoversExactInstalledBody() = runBlocking {
@@ -98,5 +127,85 @@ class SkillEvolutionTest {
         val project = original.copy(id = "auto-project", scope = "project:one")
         dao.save(project)
         assertTrue(runCatching { SkillEvolution.merge(context, project.id, original.id, project.updatedAt) }.isFailure)
+    }
+
+    @Test fun actualExperienceExtractionWaitsForThreeSourcesAndKeepsPublishedSkillUntilAnUpdateIsApproved() = runBlocking {
+        runCatching { androidx.work.WorkManager.getInstance(context) }.getOrElse {
+            androidx.work.WorkManager.initialize(context, androidx.work.Configuration.Builder().build())
+            androidx.work.WorkManager.getInstance(context)
+        }
+        val db = LearningDatabase.get(context); val dao = db.skillEvolutionDao()
+        io.github.mangi.eta.data.repository.NexusExecutionStore(context).use { executions ->
+            var reply = raw
+            val runtime = io.github.mangi.eta.agent.runtime.RuntimeModelTaskHarness(context, executions) {
+                object : io.github.mangi.eta.agent.model.AgentProviderClient {
+                    override val id = "skill-extraction-fixture"
+                    override val capabilities = io.github.mangi.eta.agent.model.OpenAiChatCompletionsProvider.capabilities
+                    override fun complete(request: io.github.mangi.eta.agent.model.ProviderRequest,
+                        runController: io.github.mangi.eta.agent.runtime.AgentRunController,
+                        onEvent: (io.github.mangi.eta.agent.model.ProviderEvent) -> Unit): io.github.mangi.eta.agent.model.ProviderResponse {
+                        assertEquals(0, request.effectiveTools.length())
+                        onEvent(io.github.mangi.eta.agent.model.ProviderEvent.RequestStarted)
+                        return io.github.mangi.eta.agent.model.ProviderResponse(JSONObject().put("role", "assistant").put("content", reply).put("finish_reason", "stop"))
+                    }
+                }
+            }
+            val config = io.github.mangi.eta.agent.model.AgentModelClient.ModelConfig(baseUrl = "https://fixture.invalid", apiKey = "fixture", model = "fixture", systemPrompt = "")
+            var recipeId = ""
+            for (number in 1..3) {
+                val runId = "actual-source-$number"
+                SkillEvolution.capture(context, runId, "global", "检查项目文件并写入可核对的结构化报告", listOf(
+                    io.github.mangi.eta.agent.runtime.AgentEvent.ToolStarted(1, "read", "read_file", "reports/input.md"),
+                    io.github.mangi.eta.agent.runtime.AgentEvent.ToolFinished(1, "read", "read_file", "已读取项目内容", 0, 0, true),
+                    io.github.mangi.eta.agent.runtime.AgentEvent.ToolStarted(2, "write", "write_file", "reports/output.md"),
+                    io.github.mangi.eta.agent.runtime.AgentEvent.ToolFinished(2, "write", "write_file", "已保存并核对报告", 0, 0, true)))
+                val captured = dao.experience(runId)!!
+                val request = io.github.mangi.eta.agent.runtime.RuntimeModelTasks.request(io.github.mangi.eta.agent.runtime.RuntimeModelTaskKind.SKILL,
+                    config, "只从验证的工具结果提炼步骤", captured.digest, captured.runId)
+                val result = runtime.run(request, io.github.mangi.eta.agent.runtime.AgentRunController())
+                assertTrue(result.error, result.ok)
+                val proposal = SkillEvolution.parse(result.content, captured)!!
+                recipeId = proposal.id
+                SkillEvolution.acceptProposal(context, captured, proposal)
+                val candidate = dao.recipe(recipeId)!!
+                assertEquals(number, SkillEvolution.evidenceForDraft(context, candidate).size)
+                assertEquals(if (number < 3) "collecting" else "butler_approved", candidate.state)
+                assertNull(SkillEvolution.runtimeRecipe(context, recipeId))
+                assertTrue(SkillRuntime.createIndexService(context).listInstalledSkills().none { it.id == recipeId })
+            }
+            val candidate = dao.recipe(recipeId)!!
+            SkillEvolution.publish(context, recipeId, candidate.updatedAt, candidate.body)
+            val published = SkillEvolution.runtimeRecipe(context, recipeId)!!
+            assertEquals(1, published.version)
+            val installed = SkillRuntime.createIndexService(context).listInstalledSkills().single { it.id == recipeId }
+            val installedBody = SkillRuntime.createLoader(context).load(installed, "检查来源")!!.bodyMarkdown
+            assertTrue(installedBody.contains("run:actual-source-1"))
+            val publishedAt = dao.recipe(recipeId)!!.updatedAt
+            for (number in 1..3) {
+                val update = source.copy(runId = "update-$number", createdAt = publishedAt + number,
+                    digest = JSONObject().put("task", "重新核对项目报告").toString())
+                dao.insert(update)
+                val proposal = SkillEvolution.parse(raw.replace("write_file", "read_file"), update)!!
+                SkillEvolution.acceptProposal(context, update, proposal)
+                val draft = dao.recipe(recipeId)!!
+                assertEquals(if (number < 3) "update_collecting" else "update_butler_approved", draft.state)
+                assertEquals("read_file", draft.tools)
+                assertEquals(published.tools, SkillEvolution.runtimeRecipe(context, recipeId)!!.tools)
+                assertEquals(published.body, SkillEvolution.runtimeRecipe(context, recipeId)!!.body)
+                if (number < 3) assertTrue(runCatching { SkillEvolution.publish(context, recipeId, draft.updatedAt, draft.body) }.isFailure)
+            }
+            val updated = dao.recipe(recipeId)!!
+            SkillEvolution.publish(context, recipeId, updated.updatedAt, updated.body)
+            assertEquals(2, SkillEvolution.runtimeRecipe(context, recipeId)!!.version)
+            assertEquals("read_file", SkillEvolution.runtimeRecipe(context, recipeId)!!.tools)
+            assertEquals(2, dao.versions(recipeId).size)
+            assertEquals(3, runtime.requests.size)
+        }
+    }
+
+    @Test fun lateExtractionCannotResurrectASourceRemovedByRestore() = runBlocking {
+        val proposal = SkillEvolution.parse(raw, source)!!
+        SkillEvolution.acceptProposal(context, source, proposal)
+        assertNull(LearningDatabase.get(context).skillEvolutionDao().recipe(proposal.id))
     }
 }

@@ -9,10 +9,13 @@ internal data class WakeWordConfig(
     val words: List<String> = listOf("Nexus"),
     val voiceprintEnabled: Boolean = false,
     val voiceprintThreshold: Float = 0.72f,
+    val modelId: String = "",
+    val speakerModelId: String = "",
 ) {
     fun sanitized(): WakeWordConfig = copy(
-        words = words.map(::normalizeWakeWord).filter { it.length >= 2 }.distinct().take(8),
-        voiceprintThreshold = voiceprintThreshold.coerceIn(0.5f, 0.95f),
+        words = words.map(::normalizeWakeWord).filter { it.length in 2..64 }.distinct().take(8),
+        voiceprintThreshold = (voiceprintThreshold.takeIf(Float::isFinite) ?: .72f).coerceIn(0.5f, 0.95f),
+        modelId = modelId.take(190), speakerModelId = speakerModelId.take(190),
     )
 }
 
@@ -21,7 +24,9 @@ internal object WakeWordMatcher {
         if (!config.enabled) return true
         val text = normalizeWakeWord(transcript)
         return config.sanitized().words.any { word ->
-            text == word || text.startsWith("$word ") || text.contains(" $word ")
+            val cjk = word.any { Character.UnicodeScript.of(it.code) == Character.UnicodeScript.HAN }
+            if (cjk) text.startsWith(word) || text.contains(" $word") else
+                Regex("(?:^| )${Regex.escape(word)}(?: |$)").containsMatchIn(text)
         }
     }
 }
@@ -39,6 +44,8 @@ internal class WakeWordStore(context: Context) {
         words = prefs.getStringSet(KEY_WORDS, setOf("Nexus")).orEmpty().toList().sorted(),
         voiceprintEnabled = prefs.getBoolean(KEY_VOICEPRINT, false),
         voiceprintThreshold = prefs.getFloat(KEY_THRESHOLD, 0.72f),
+        modelId = prefs.getString("model_id", "").orEmpty(),
+        speakerModelId = prefs.getString("speaker_model_id", "").orEmpty(),
     ).sanitized()
 
     fun write(config: WakeWordConfig) {
@@ -48,6 +55,7 @@ internal class WakeWordStore(context: Context) {
             .putStringSet(KEY_WORDS, value.words.toSet())
             .putBoolean(KEY_VOICEPRINT, value.voiceprintEnabled)
             .putFloat(KEY_THRESHOLD, value.voiceprintThreshold)
+            .putString("model_id", value.modelId).putString("speaker_model_id", value.speakerModelId)
             .apply()
     }
 

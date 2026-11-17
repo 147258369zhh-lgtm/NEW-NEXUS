@@ -192,10 +192,7 @@ internal object PowerHooks {
                 action = Intent.ACTION_VOICE_COMMAND,
             )
             PowerAssistantTarget.ETA -> {
-                if (!AssistantManager.isAssistantConfigured(context, target)) {
-                    false
-                } else {
-                    startAssistantActivity(
+                startAssistantActivity(
                         context = context,
                         binding = binding,
                         logger = logger,
@@ -203,8 +200,7 @@ internal object PowerHooks {
                         source = source,
                         now = now,
                         action = Intent.ACTION_ASSIST,
-                    )
-                }
+                )
             }
         }
     }

@@ -5,6 +5,7 @@ import android.content.Intent
 import androidx.core.net.toUri
 import io.github.mangi.eta.agent.runtime.AgentExecutionService
 import io.github.mangi.eta.agent.terminal.DetachedTaskSupervisor
+import io.github.mangi.eta.agent.terminal.LinuxExecutionBackend
 import io.github.mangi.eta.agent.terminal.LinuxEnvironmentPaths
 import io.github.mangi.eta.agent.terminal.TerminalEnvironment
 import io.github.mangi.eta.agent.terminal.TerminalRuntime
@@ -32,6 +33,7 @@ internal sealed interface KimiWebLaunchResult {
 internal class KimiWebLauncher(
     private val context: Context,
     private val daemonSupervisor: DetachedTaskSupervisor,
+    private val backend: LinuxExecutionBackend? = null,
 ) {
     private val session = KimiWebSession(
         tasks = object : KimiWebSession.Tasks {
@@ -57,7 +59,7 @@ internal class KimiWebLauncher(
     suspend fun launch(environment: TerminalEnvironment): KimiWebLaunchResult = launchMutex.withLock {
         withContext(Dispatchers.IO) {
             val distribution = environment.linuxDistribution ?: return@withContext KimiWebLaunchResult.Failed("INVALID_ENVIRONMENT")
-            val rootfs = LinuxEnvironmentPaths.rootfsDir(context, distribution)
+            val rootfs = backend?.let { LinuxEnvironmentPaths.rootfsDir(context, distribution, it) } ?: LinuxEnvironmentPaths.rootfsDir(context, distribution)
             if (!LinuxEnvironmentPaths.rootfsReady(rootfs.absolutePath)) return@withContext KimiWebLaunchResult.Failed("LINUX_ENVIRONMENT_NOT_READY")
             val identity = TerminalRuntime.defaultIdentity(environment, rootfs.absolutePath)
             val job = currentCoroutineContext().job
@@ -75,7 +77,7 @@ internal class KimiWebLauncher(
 
     suspend fun status(environment: TerminalEnvironment): KimiWebRuntimeStatus = withContext(Dispatchers.IO) {
         val distribution = environment.linuxDistribution ?: return@withContext KimiWebRuntimeStatus(code = "INVALID_ENVIRONMENT")
-        val rootfs = LinuxEnvironmentPaths.rootfsDir(context, distribution)
+        val rootfs = backend?.let { LinuxEnvironmentPaths.rootfsDir(context, distribution, it) } ?: LinuxEnvironmentPaths.rootfsDir(context, distribution)
         if (!LinuxEnvironmentPaths.rootfsReady(rootfs.path)) return@withContext KimiWebRuntimeStatus(code = "LINUX_ENVIRONMENT_NOT_READY")
         val identity = TerminalRuntime.defaultIdentity(environment, rootfs.path)
         if (identity == "root" && !TerminalRuntime.rootAvailable) return@withContext KimiWebRuntimeStatus(code = "ROOT_REQUIRED")

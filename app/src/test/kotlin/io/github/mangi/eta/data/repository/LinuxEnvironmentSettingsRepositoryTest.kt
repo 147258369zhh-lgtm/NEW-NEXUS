@@ -21,6 +21,29 @@ import org.robolectric.annotation.Config
 @Config(application = EtaApp::class, sdk = [36])
 class LinuxEnvironmentSettingsRepositoryTest {
     @Test
+    fun firstExecutionReadsPersistedSelectionEvenWhenStartupCacheIsStale() = runBlocking {
+        val context = RuntimeEnvironment.getApplication().applicationContext as Context
+        val beforeDistribution = SettingsDataStore.linuxDistributionFlow().first()
+        val beforeBackend = SettingsDataStore.linuxBackendFlow(LinuxDistribution.ALPINE.wireName).first()
+        try {
+            LinuxEnvironmentSettingsRepository.select(LinuxDistribution.DEBIAN)
+            LinuxEnvironmentSettingsRepository.selectBackend(LinuxDistribution.ALPINE, LinuxExecutionBackend.CHROOT)
+            // Persisted settings exist before asynchronous application warm-up has refreshed caches.
+            SettingsDataStore.setLinuxDistribution(LinuxDistribution.ALPINE.wireName)
+            SettingsDataStore.setLinuxBackend(LinuxDistribution.ALPINE.wireName, LinuxExecutionBackend.PROOT.wireName)
+            val selected = LinuxEnvironmentSettingsRepository.executionSelection(context)
+            assertEquals(LinuxDistribution.ALPINE, selected.distribution)
+            assertEquals(LinuxExecutionBackend.PROOT, selected.backend)
+            assertEquals(LinuxDistribution.ALPINE, LinuxEnvironmentSettingsRepository.current(context))
+            assertEquals(LinuxExecutionBackend.PROOT, LinuxEnvironmentSettingsRepository.backend(context, LinuxDistribution.ALPINE))
+        } finally {
+            SettingsDataStore.setLinuxDistribution(beforeDistribution)
+            SettingsDataStore.setLinuxBackend(LinuxDistribution.ALPINE.wireName, beforeBackend)
+            LinuxEnvironmentSettingsRepository.initialize(context)
+        }
+    }
+
+    @Test
     fun backendSelectionPersistsWithoutMovingOrDeletingEitherEnvironment() = runBlocking {
         val context = RuntimeEnvironment.getApplication().applicationContext as Context
         val distribution = LinuxDistribution.DEBIAN

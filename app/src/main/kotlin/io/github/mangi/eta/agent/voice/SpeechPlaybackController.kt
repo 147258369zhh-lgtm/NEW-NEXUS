@@ -8,6 +8,7 @@ import io.github.mangi.eta.data.repository.SpeechSettingsRepository
 import java.io.Closeable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -36,6 +37,7 @@ internal class SpeechPlaybackController(
     /** 整篇单会话流式合成；为 null 时只用逐段请求。 */
     private val streamSynthesize: (suspend (SpeechSettings, SpeechCredentials, List<String>, (ByteArray) -> Unit) -> Unit)? = ::streamSpeech,
     private val createOutput: () -> SpeechAudioOutput = ::SpeechPcmOutput,
+    private val duplexAudioGroup: Any? = null,
 ) {
     private val mutableState = MutableStateFlow(SpeechPlaybackState())
     val state = mutableState.asStateFlow()
@@ -44,6 +46,7 @@ internal class SpeechPlaybackController(
     private var output: SpeechAudioOutput? = null
     private var lease: SpeechAudioLease? = null
     private var playbackActive = false
+    private var cleanupGeneration = 0L
 
     fun speak(messageId: String, text: String, settings: SpeechSettings? = null, credentials: SpeechCredentials? = null) {
         stop()
@@ -51,7 +54,7 @@ internal class SpeechPlaybackController(
         mutableState.value = SpeechPlaybackState(messageId, loading = true)
         job = scope.launch(Dispatchers.Main.immediate) {
             try {
-                lease = SpeechAudioLease(context, interruptOnScreenOff) { stop() }.also { it.acquire(playback = false) }
+                lease = SpeechAudioLease(context, interruptOnScreenOff, duplexAudioGroup) { stop() }.also { it.acquire(playback = false) }
                 val config = settings ?: SpeechSettingsRepository.settings()
                 val secrets = credentials ?: SpeechSettingsRepository.credentials(context)
                 validateSpeechSettings(config, secrets, synthesis = true)
@@ -104,9 +107,41 @@ internal class SpeechPlaybackController(
         player: SpeechAudioOutput,
         onFirstAudio: () -> Unit,
     ) = coroutineScope {
-        val queue = Channel<SpeechQueueItem>(Channel.UNLIMITED)
+        val queueLock = Object()
+        var queuedAudioBytes = 0L
+        val queue = Channel<SpeechQueueItem>(Channel.UNLIMITED, onUndeliveredElement = { item ->
+            if (item is SpeechQueueItem.Audio) synchronized(queueLock) {
+                queuedAudioBytes -= item.queuedBytes
+                queueLock.notifyAll()
+            }
+        })
         val ahead = Semaphore(PREFETCH_CHUNKS)
-        launch {
+        lateinit var producerJob: Job
+        fun enqueueAudio(bytes: ByteArray) {
+            val size = bytes.size.toLong()
+            if (size == 0L) return
+            if (size > MAX_QUEUED_AUDIO_BYTES) {
+                throw SpeechFailure(SpeechErrorCode.BACKPRESSURE, "单个语音块超过播放缓冲限制")
+            }
+            synchronized(queueLock) {
+                while (queuedAudioBytes + size > MAX_QUEUED_AUDIO_BYTES) {
+                    producerJob.ensureActive()
+                    queueLock.wait(QUEUE_CAPACITY_WAIT_MS)
+                }
+                producerJob.ensureActive()
+                queuedAudioBytes += size
+            }
+            val sent = queue.trySend(SpeechQueueItem.Audio(bytes, size))
+            if (sent.isFailure) {
+                synchronized(queueLock) {
+                    queuedAudioBytes -= size
+                    queueLock.notifyAll()
+                }
+                sent.exceptionOrNull()?.let { throw it }
+                throw SpeechFailure(SpeechErrorCode.BACKPRESSURE, "语音播放已停止，音频未能入队")
+            }
+        }
+        producerJob = launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
             try {
                 var streamed = false
                 val stream = streamSynthesize
@@ -115,7 +150,7 @@ internal class SpeechPlaybackController(
                         ahead.acquire()
                         stream(config, secrets, chunks) { bytes ->
                             streamed = true
-                            queue.trySend(SpeechQueueItem.Audio(bytes))
+                            enqueueAudio(bytes)
                         }
                         queue.send(SpeechQueueItem.ChunkEnd)
                         streamed = true
@@ -128,7 +163,7 @@ internal class SpeechPlaybackController(
                 }
                 if (!streamed) for (chunk in chunks) {
                     ahead.acquire()
-                    synthesize(config, secrets, chunk) { bytes -> queue.trySend(SpeechQueueItem.Audio(bytes)) }
+                    synthesize(config, secrets, chunk, ::enqueueAudio)
                     queue.send(SpeechQueueItem.ChunkEnd)
                 }
                 queue.close()
@@ -137,33 +172,51 @@ internal class SpeechPlaybackController(
                 queue.close(error)
             }
         }
-        withContext(Dispatchers.IO) {
-            var announced = false
-            val fade = SpeechSegmentFade()
-            // 音轨写满时 write 会休眠重试；可中断才能让宿主取消立即结束这里，随后关闭音轨。
-            suspend fun play(bytes: ByteArray) {
-                if (bytes.isNotEmpty()) runInterruptible { player.write(bytes) }
-            }
-            for (item in queue) when (item) {
-                is SpeechQueueItem.Audio -> {
-                    if (!announced) { announced = true; onFirstAudio() }
-                    play(fade.write(item.bytes))
+        producerJob.start()
+        try {
+            withContext(Dispatchers.IO) {
+                var announced = false
+                val fade = SpeechSegmentFade()
+                // 音轨写满时 write 会休眠重试；可中断才能让宿主取消立即结束这里，随后关闭音轨。
+                suspend fun play(bytes: ByteArray) {
+                    if (bytes.isNotEmpty()) runInterruptible { player.write(bytes) }
                 }
-                SpeechQueueItem.ChunkEnd -> {
-                    play(fade.end())
-                    ahead.release()
+                for (item in queue) when (item) {
+                    is SpeechQueueItem.Audio -> {
+                        try {
+                            if (!announced) { announced = true; onFirstAudio() }
+                            play(fade.write(item.bytes))
+                        } finally {
+                            synchronized(queueLock) {
+                                queuedAudioBytes -= item.queuedBytes
+                                queueLock.notifyAll()
+                            }
+                        }
+                    }
+                    SpeechQueueItem.ChunkEnd -> {
+                        play(fade.end())
+                        ahead.release()
+                    }
                 }
             }
+        } finally {
+            queue.cancel()
         }
     }
 
     fun stop() {
         generation++
+        cleanupGeneration++
         val player = output
         output = null
+        val oldLease = lease
+        lease = null
+        val stopPlayback = playbackActive
+        playbackActive = false
         job?.cancel(); job = null
         if (player != null) runCatching { player.close() }
-        finishStop()
+        finishStop(oldLease, stopPlayback)
+        mutableState.value = SpeechPlaybackState()
     }
 
     /**
@@ -172,9 +225,16 @@ internal class SpeechPlaybackController(
      */
     suspend fun stopSmoothly(fadeMs: Int = BARGE_IN_FADE_MS) {
         generation++
+        val cleanup = ++cleanupGeneration
         val player = output
         output = null
+        val oldLease = lease
+        lease = null
+        val stopPlayback = playbackActive
         job?.cancel(); job = null
+        // Let a replacement playback take over the shared foreground claim while the old track fades.
+        // Close the old audio lease now so user input can acquire the duplex group immediately.
+        runCatching { oldLease?.close() }
         try {
             if (player != null) {
                 val fade = fadeMs.coerceIn(0, MAX_FADE_MS)
@@ -186,17 +246,23 @@ internal class SpeechPlaybackController(
             // Timeout/cancellation must never strand an AudioTrack, focus request, or foreground service.
             withContext(NonCancellable) {
                 if (player != null) runCatching { player.close() }
-                finishStop()
+                if (cleanup == cleanupGeneration) {
+                    if (stopPlayback && playbackActive) {
+                        playbackActive = false
+                        runCatching { afterPlayback() }
+                    }
+                    mutableState.value = SpeechPlaybackState()
+                }
             }
         }
     }
 
-    private fun finishStop() {
-        runCatching { lease?.close() }
-        lease = null
-        if (playbackActive) runCatching { afterPlayback() }
-        playbackActive = false
-        mutableState.value = SpeechPlaybackState()
+    private fun finishStop(ownedLease: SpeechAudioLease?, ownedPlayback: Boolean) {
+        runCatching { ownedLease?.close() }
+        if (ownedPlayback) {
+            playbackActive = false
+            runCatching { afterPlayback() }
+        }
     }
 
     private companion object {
@@ -206,11 +272,13 @@ internal class SpeechPlaybackController(
 }
 
 private sealed interface SpeechQueueItem {
-    class Audio(val bytes: ByteArray) : SpeechQueueItem
+    class Audio(val bytes: ByteArray, val queuedBytes: Long) : SpeechQueueItem
     data object ChunkEnd : SpeechQueueItem
 }
 
 private const val PREFETCH_CHUNKS = 2
+private const val MAX_QUEUED_AUDIO_BYTES = 1L * 1024 * 1024
+private const val QUEUE_CAPACITY_WAIT_MS = 20L
 
 internal interface SpeechAudioOutput : Closeable {
     fun write(bytes: ByteArray)

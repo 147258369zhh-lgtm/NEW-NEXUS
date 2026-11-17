@@ -7,6 +7,7 @@ import org.json.JSONObject
 internal object AgentFileResultFormatter {
     fun summarize(toolName: String, json: JSONObject): String? = when (toolName) {
         "write_file" -> summarizeWrite(json)
+        "deliver_file" -> json.nonNegativeLong("bytes")?.let { "已交付 ${formatBytes(it)}" }
         "read_file" -> summarizeRead(json)
         "stat_file" -> summarizeStat(json)
         "edit_file" -> json.nonNegativeLong("replacements")?.let { "已替换 $it 处" }

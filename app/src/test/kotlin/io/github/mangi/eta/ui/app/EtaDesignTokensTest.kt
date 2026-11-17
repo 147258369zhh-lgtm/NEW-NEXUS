@@ -53,6 +53,16 @@ class EtaDesignTokensTest {
         assertNotEquals(classic.densityMultiplier, omni.densityMultiplier)
     }
 
+    @Test
+    fun auroraTokensUseCompactMaterialInspiredMetrics() {
+        val aurora = tokens(::auroraDesignTokens)
+        assertEquals(AppearanceSkin.AURORA, aurora.skin)
+        assertEquals(8.dp, aurora.cornerSmall)
+        assertEquals(12.dp, aurora.cornerMedium)
+        assertEquals(0.82f, aurora.glassAlpha)
+        assertEquals(0.94f, aurora.densityMultiplier)
+    }
+
     private fun tokens(factory: TokenFactory): EtaDesignTokens =
         factory(colors[0], colors[1], colors[2], colors[3], colors[4], colors[5], colors[6])
 }

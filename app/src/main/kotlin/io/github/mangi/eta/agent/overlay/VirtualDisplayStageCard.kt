@@ -142,6 +142,7 @@ internal fun VirtualDisplayMicroLens(
 @Composable
 internal fun VirtualDisplayStageSection(
     snapshot: VirtualDisplaySnapshot,
+    sessions: List<VirtualDisplaySnapshot> = emptyList(),
     accent: Color,
     isPaused: Boolean,
     onTakeOver: () -> Unit,
@@ -149,6 +150,7 @@ internal fun VirtualDisplayStageSection(
     onFullscreen: () -> Unit,
     onTapCanvas: (Float, Float, Boolean) -> Unit,
     onSwipeCanvas: (Float, Float, Float, Float, Int) -> Unit,
+    onSelectSession: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val frameShape = RoundedCornerShape(StageCanvasCorner)
@@ -164,6 +166,29 @@ internal fun VirtualDisplayStageSection(
             .padding(horizontal = StageMattePadding, vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        if (sessions.size > 1) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                sessions.forEachIndexed { index, session ->
+                    val selected = session.sessionId == snapshot.sessionId
+                    Text(
+                        text = (session.appName.ifBlank { "画面 ${index + 1}" }) + if (selected) " · 当前" else "",
+                        color = if (selected) MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface,
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (selected) accent else MiuixTheme.colorScheme.surfaceContainerHigh)
+                            .clickable(enabled = !selected) { onSelectSession(session.sessionId) }
+                            .padding(horizontal = 9.dp, vertical = 5.dp),
+                    )
+                }
+            }
+        }
         // ── 画廊留白内衬画布（Concentric 18.dp Corner） ────────────────────
         Box(
             modifier = Modifier
@@ -252,6 +277,27 @@ internal fun VirtualDisplayStageSection(
         }
 
         Spacer(Modifier.height(10.dp))
+
+        val capabilityLabel = when {
+            snapshot.failureReason == "FRAME_STREAM_STALLED" -> stringResource(R.string.overlay_virtual_frame_stalled)
+            snapshot.focusObservation == io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayFocusObservation.FOCUSED_APPLICATION_WINDOW ->
+                stringResource(R.string.overlay_virtual_focus_observed)
+            snapshot.focusObservation == io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayFocusObservation.NO_FOCUSED_APPLICATION_WINDOW ->
+                stringResource(R.string.overlay_virtual_focus_not_observed)
+            snapshot.flagProfile == io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayFlagProfile.TRUSTED_INTERACTIVE ->
+                stringResource(R.string.overlay_virtual_focus_unverified)
+            snapshot.flagProfile == io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayFlagProfile.CAPTURE_COMPAT ->
+                stringResource(R.string.overlay_virtual_capture_only)
+            else -> stringResource(R.string.overlay_virtual_focus_not_requested)
+        }
+        Text(
+            text = capabilityLabel,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            fontSize = 10.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp),
+        )
 
         // ── 极简画廊信息与接管栏 ───────────────────────────────────────────
         Row(
@@ -461,12 +507,13 @@ internal fun VirtualDisplayMaterializeOverlay(
     )
     val density = LocalDensity.current
     val screenCornerDp = with(density) { corners.radius.toDp() }
-    val currentCorner = lerp(StageCanvasCorner, screenCornerDp, expandProgress)
-    val scale = lerp(0.68f, 1f, expandProgress)
-    val fadeAlpha = if (expandProgress < 0.82f) {
+    val boundedProgress = materializeProgress(expandProgress)
+    val currentCorner = lerp(StageCanvasCorner, screenCornerDp, boundedProgress)
+    val scale = lerp(0.68f, 1f, boundedProgress)
+    val fadeAlpha = if (boundedProgress < 0.82f) {
         1f
     } else {
-        (1f - (expandProgress - 0.82f) / 0.18f).coerceIn(0f, 1f)
+        (1f - (boundedProgress - 0.82f) / 0.18f).coerceIn(0f, 1f)
     }
 
     Box(
@@ -488,6 +535,8 @@ internal fun VirtualDisplayMaterializeOverlay(
         )
     }
 }
+
+internal fun materializeProgress(progress: Float): Float = if (progress.isFinite()) progress.coerceIn(0f, 1f) else 0f
 
 private val StageMattePadding = 10.dp
 private val StageCanvasCorner = 18.dp

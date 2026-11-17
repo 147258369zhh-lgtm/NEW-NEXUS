@@ -29,6 +29,7 @@ class AuthorizedProviderHttpTest {
         val oldToken = CodexOAuthFixture.accessToken("old-workspace")
         val newToken = CodexOAuthFixture.accessToken("new-workspace")
         val rejected = mutableListOf<String?>()
+        var retries = 0
         val client = OkHttpClient.Builder().addInterceptor { chain ->
             authorizations += chain.request().header("Authorization")
             accounts += chain.request().header("ChatGPT-Account-Id")
@@ -40,11 +41,13 @@ class AuthorizedProviderHttpTest {
                 rejected += previous
                 if (previous == null) oldToken else newToken
             },
+            onAuthenticationRetry = { retries++ },
         ) { it.code }
         assertEquals(listOf("old-workspace", "new-workspace"), accounts)
         assertEquals(200, value)
         assertEquals(listOf(null, oldToken), rejected)
         assertEquals(listOf("Bearer $oldToken", "Bearer $newToken"), authorizations)
+        assertEquals(1, retries)
     }
 
     @Test

@@ -1,0 +1,43 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+  <string name="linux_sources_title">Linux 下载源</string>
+  <string name="linux_sources_defaults">按用途选择来源</string>
+  <string name="linux_sources_custom_count">%1$d 个自定义源</string>
+  <string name="linux_sources_priority_tab">来源与优先级</string>
+  <string name="linux_sources_custom_tab">自定义</string>
+  <string name="linux_sources_latest_tab">最新正式版本</string>
+  <string name="linux_sources_distribution">Linux 系统</string>
+  <string name="linux_sources_purpose">来源用途</string>
+  <string name="linux_sources_transport_note">按用途选择优先来源；失败后尝试其他来源。系统与工具归档保持官方摘要校验。</string>
+  <string name="linux_sources_china">中国源</string>
+  <string name="linux_sources_overseas">海外官方源</string>
+  <string name="linux_sources_preferred">优先</string>
+  <string name="linux_sources_prefer">设为优先</string>
+  <string name="linux_sources_delete">删除</string>
+  <string name="linux_sources_jdk_note">OpenJDK 官方归档仅支持 Debian glibc；Alpine 使用其 APK 兼容版本。镜像缺少对应正式版本时回退官方源。</string>
+  <string name="linux_sources_name">来源名称</string>
+  <string name="linux_sources_url">HTTPS 地址或归档路径模板</string>
+  <string name="linux_sources_security">APT security HTTPS 地址</string>
+  <string name="linux_sources_template_note">归档模板支持 {version}、{file}、{arch}、{official}；软件包来源填写镜像根地址。不能输入命令。</string>
+  <string name="linux_sources_latest_note">只读检查官方最新正式版本；检查不会下载、安装或覆盖已有环境。安装版本需有匹配平台的官方归档与摘要。</string>
+  <string name="linux_sources_checking">正在检查</string>
+  <string name="linux_sources_check">检查官方最新版本</string>
+  <string name="linux_sources_failed">检查失败</string>
+  <string name="linux_sources_close">关闭</string>
+  <string name="linux_sources_save">保存并优先使用</string>
+  <string name="linux_sources_invalid">来源无效</string>
+  <string name="linux_sources_rootfs">RootFS 系统镜像</string>
+  <string name="linux_sources_apk">APK 软件包</string>
+  <string name="linux_sources_apt">APT 软件包</string>
+  <string name="linux_sources_uv">uv 工具归档</string>
+  <string name="linux_sources_node">Node.js 归档</string>
+  <string name="linux_sources_go">Go SDK 归档</string>
+  <string name="linux_sources_jdk">JDK 归档</string>
+  <string name="linux_sources_npm">npm 软件包</string>
+  <string name="linux_sources_pypi">PyPI 软件包</string>
+  <string name="linux_sources_python">Python 独立归档</string>
+  <string name="linux_sources_rust">Rust 工具链</string>
+  <string name="linux_sources_generic">通用工具归档</string>
+  <string name="linux_sources_maven">Maven 归档</string>
+  <string name="linux_sources_gradle">Gradle 归档</string>
+</resources>

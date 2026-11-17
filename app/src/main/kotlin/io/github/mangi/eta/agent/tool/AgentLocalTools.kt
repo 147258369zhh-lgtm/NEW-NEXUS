@@ -24,7 +24,7 @@ import io.github.mangi.eta.agent.model.AgentScreenObservationContract
 import io.github.mangi.eta.agent.model.AgentSensitiveToolPolicy
 import io.github.mangi.eta.agent.model.AgentTerminalToolCatalog
 import io.github.mangi.eta.agent.model.AgentFileToolCatalog
-import io.github.mangi.eta.agent.workflow.GoalPlanNotepadStore
+import io.github.mangi.eta.agent.workflow.WorkflowToolExecutor
 import io.github.mangi.eta.agent.overlay.AgentHapticFeedback
 import io.github.mangi.eta.agent.overlay.AgentOverlayClearance
 import io.github.mangi.eta.agent.overlay.GestureIndicator
@@ -33,6 +33,7 @@ import io.github.mangi.eta.agent.runtime.AgentRunCancelledException
 import io.github.mangi.eta.agent.runtime.GuiControlCoordinator
 import io.github.mangi.eta.agent.virtualdisplay.CanvasRoutingPolicy
 import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayController
+import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayLease
 import io.github.mangi.eta.agent.skill.SkillCompatibilityChecker
 import io.github.mangi.eta.agent.skill.SkillIndexService
 import io.github.mangi.eta.agent.skill.SkillInstallErrorCode
@@ -88,6 +89,7 @@ internal class AgentLocalTools(
     private val context: Context,
     private val logger: AgentLogger,
     private val browserRunId: String = "",
+    executionSelection: io.github.mangi.eta.agent.terminal.LinuxExecutionSelection? = null,
     private val browserToolsEnabled: () -> Boolean = {
         Prefs.isEnabled(Prefs.Keys.AGENT_BROWSER_TOOLS)
     },
@@ -111,6 +113,8 @@ internal class AgentLocalTools(
     private val projectMemoryScope: AgentMemoryScope? = null,
     private val runMemoryScope: AgentMemoryScope? = null,
     private val workflowScopeId: String? = null,
+    private val artifactSubjectType: String? = null,
+    private val artifactSubjectId: String? = workflowScopeId,
     private val screenshotExcludedPackages: () -> Set<String> = { emptySet() },
     private val screenObservationProvider: (
         (AgentScreenObservationContract.Options) -> RootShellDeviceController.Observation
@@ -137,14 +141,29 @@ internal class AgentLocalTools(
     private val guiControl: GuiControlCoordinator.RunControl? = null,
     browserSession: AgentBrowserSession? = null,
     private val automationWritesAllowed: () -> Boolean = { true },
+    private val projectWorkspace: io.github.mangi.eta.fork.projects.ProjectWorkspace? = null,
 ) : AgentModelClient.ToolExecutor, AutoCloseable {
 
     private val closed = AtomicBoolean(false)
     @Volatile
     private var activeDisplayId: Int = Display.DEFAULT_DISPLAY
+    private val ownedDisplayLeases = ConcurrentHashMap<String, VirtualDisplayLease>()
+    @Volatile
+    private var activeDisplayLease: VirtualDisplayLease? = null
+        set(value) {
+            field = value
+            if (value != null) ownedDisplayLeases[value.sessionId] = value
+        }
     private class DisplayRoutingException : IllegalStateException("虚拟屏已断开；本次未操作主屏，请重新打开目标应用并观察")
+    private class DisplayOwnedByAnotherRunException : IllegalStateException(
+        "虚拟屏正由另一个运行使用；本次未操作屏幕，请等待该运行结束或由用户释放。",
+    )
     private val browserSessionRef = lazy { browserSession ?: AgentBrowserSession() }
-    private val deviceController = RootShellDeviceController(logger, screenshotExcludedPackages, rootAvailable)
+    private val deviceController = RootShellDeviceController(
+        logger,
+        screenshotExcludedPackages,
+        rootAvailable,
+    )
     private val rootCommandExecutor = BoundedRootCommandExecutor(logger, rootAvailable = rootAvailable)
     private val structuredDeviceTools = AgentStructuredDeviceTools(
         context = context,
@@ -159,16 +178,26 @@ internal class AgentLocalTools(
         localNetworkAccess = { LocalNetworkPermission.accessState(context).name.lowercase(Locale.ROOT) },
         runtimeConfig = { runBlocking { WebToolsSettingsRepository.resolveRuntimeConfig(context) } },
     )
-    val terminalExecutionContext = LinuxEnvironmentSettingsRepository.current(context).terminalEnvironment.let { environment ->
+    private val linuxLimits = io.github.mangi.eta.agent.terminal.LinuxExecutionSettings.read(context)
+    private val selectedLinux = executionSelection ?: LinuxEnvironmentSettingsRepository.current(context).let { distribution ->
+        io.github.mangi.eta.agent.terminal.LinuxExecutionSelection(distribution, LinuxEnvironmentSettingsRepository.backend(context, distribution))
+    }
+    val terminalExecutionContext = selectedLinux.distribution.terminalEnvironment.let { environment ->
         TerminalExecutionContext(
             linuxEnvironment = environment,
-            linuxRootfsPath = LinuxEnvironmentPaths.rootfsDir(context, checkNotNull(environment.linuxDistribution)).absolutePath,
+            linuxRootfsPath = LinuxEnvironmentPaths.rootfsDir(context, selectedLinux.distribution, selectedLinux.backend).absolutePath,
             sharedMounts = SharedFolderMounts.current(),
+            userWorkspacePath = projectWorkspace?.binding?.hostPath ?: io.github.mangi.eta.agent.terminal.TerminalRuntime.userWorkspacePath,
+            workspaceBinding = projectWorkspace?.binding,
+            limits = linuxLimits,
         )
     }
+    private val shellSupervisor = io.github.mangi.eta.agent.terminal.ShellProcessSupervisor(workspacePath = projectWorkspace?.binding?.hostPath, linuxLimits = linuxLimits)
     private val terminalController = RootShellTerminalController(
         logger = logger,
         rootAvailable = rootAvailable,
+        processSupervisor = shellSupervisor,
+        linuxMemoryPressure = { io.github.mangi.eta.agent.terminal.LinuxExecutionSettings.memoryPressure(context) },
         executionContext = terminalExecutionContext,
         backgroundJobs = io.github.mangi.eta.agent.terminal.TerminalRuntime.backgroundJobs(context),
         detachedSupervisor = DetachedTaskSupervisor(
@@ -177,11 +206,16 @@ internal class AgentLocalTools(
             linuxRootfsPath = terminalExecutionContext.linuxRootfsPath,
             linuxSharedMountsProvider = { SharedFolderMounts.current() },
             rootAvailable = rootAvailable,
+            workspacePath = projectWorkspace?.binding?.hostPath,
+            linuxLimits = linuxLimits,
         ),
         linuxSharedMountsProvider = { SharedFolderMounts.current() },
     )
 
     private val publishedObservation = AtomicReference(PublishedObservation())
+    fun linuxHost(directory: io.github.zhh_lgtm.nexus.application.api.CapabilityDirectory) =
+        io.github.mangi.eta.agent.terminal.LinuxRunHost.binding(terminalExecutionContext, linuxLimits, directory,
+            closed::get, rootAvailable, terminalController::sessionEnvironment, activeProcesses = shellSupervisor::activeProcessCount)
     private val observationPlanner = AgentObservationPlanner()
     private val runAvailableSkillIds = runAvailableSkillIds
         .mapTo(mutableSetOf(), SkillParser::normalizeSkillLookup)
@@ -198,6 +232,11 @@ internal class AgentLocalTools(
         webTools.close()
         terminalController.interruptAll()
         deviceController.close()
+        // A late close of an old executor must not drop a newer session of the same Run.
+        VirtualDisplayController.releaseLease(activeDisplayLease)
+        ownedDisplayLeases.values.forEach(VirtualDisplayController::releaseLease)
+        ownedDisplayLeases.clear()
+        activeDisplayLease = null
         rootCommandExecutor.close()
         githubSkillSource?.close()
         inspectedGitHubSnapshots.clear()
@@ -245,9 +284,10 @@ internal class AgentLocalTools(
             if (closed.get()) throw AgentRunCancelledException()
             val args = JSONObject(toolCall.argumentsJson.ifBlank { "{}" })
             preflightPermissionError(toolCall.name, args)?.let { return@runCatching it }
+            requireAccessibleDisplayIfActive()
             if (guiGeneration != null && (publishedObservation.get().generation != guiGeneration ||
                     publishedObservation.get().disconnectCount != accessibilityDisconnectCount() ||
-                    CanvasRoutingPolicy.isVirtualDisplay(activeDisplayId) && publishedObservation.get().manualInputGeneration != VirtualDisplayController.snapshots.value.manualInputGeneration)) {
+                    CanvasRoutingPolicy.isVirtualDisplay(activeDisplayId) && publishedObservation.get().manualInputGeneration != currentDisplaySnapshot().manualInputGeneration)) {
                 publishedObservation.set(PublishedObservation())
                 if (AgentToolRequirements.requiresFreshObservation(toolCall.name)) {
                     return@runCatching textResult(errorResult(
@@ -292,6 +332,8 @@ internal class AgentLocalTools(
                     if (!browserToolsEnabled()) textResult(errorResult("BROWSER_TOOLS_DISABLED", "请先启用网页搜索、读取与浏览器工具"))
                     else textResult(webTools.execute(toolCall.name, args))
                 }
+                "cloud_document", "cloud_media" -> AgentCloudTools.execute(context, toolCall, args,
+                    artifactSubjectType, artifactSubjectId, projectWorkspace?.binding?.hostPath)
                 "observe_screen" -> observeScreen(args, guiGeneration)
                 "release_gui" -> {
                     publishedObservation.set(PublishedObservation())
@@ -304,7 +346,7 @@ internal class AgentLocalTools(
                 "long_press" -> afterAction(longPress(args))
                 "long_press_element" -> afterAction(longPressElement(args))
                 "swipe" -> afterAction(swipe(args))
-                "scroll" -> afterAction(deviceController.scroll(args.optString("direction"), args.optString("amount"), currentActiveDisplayId()))
+                "scroll" -> afterAction(scroll(args))
                 "scroll_element" -> afterAction(scrollElement(args))
                 "type_text" -> afterAction(typeText(args))
                 // 旧会话或旧入口仍可能请求这些工具名；保留执行路径，但不再出现在模型目录里。
@@ -321,23 +363,66 @@ internal class AgentLocalTools(
                 "open_system_panel" -> {
                     publishedObservation.set(PublishedObservation())
                     activeDisplayId = Display.DEFAULT_DISPLAY
+                    activeDisplayLease = null
+                    deviceController.updateDisplayLease(null)
                     textResult(deviceController.openSystemPanel(args.optString("panel")))
                 }
                 in DEVICE_TOOL_NAMES ->
                     structuredDeviceTools.execute(toolCall.name, args)
                         ?: textResult(errorResult("UNKNOWN_TOOL", "未知设备工具"))
                 "read_image" -> fileVisionTool { imageTools.readImage(args) }
+                "deliver_file" -> textResult(terminalTool { deliverFile(toolCall, args) })
+                "download_media" -> if (!terminalToolsEnabled()) textResult(errorResult("TERMINAL_TOOLS_DISABLED", "请先启用终端/文件工具"))
+                    else AgentMediaDownloadTool.execute(context, toolCall, args, artifactSubjectType, artifactSubjectId)
                 in AgentTerminalToolCatalog.names -> textResult(terminalTool {
                     if (toolCall.name == "terminal" && args.optString("action").equals("check_root", ignoreCase = true)) checkRoot()
-                    else terminalController.executeTool(toolCall.name, args)
+                    else {
+                        if (toolCall.name == "terminal" && args.optString("action", "exec") in setOf("open", "exec") ||
+                            toolCall.name != "terminal" && args.optString("action") == "start") projectWorkspace?.ensurePrepared()
+                        val roots = buildList {
+                            add(io.github.mangi.eta.data.repository.RunArtifactCapture.TerminalScanRoot(
+                                "android", io.github.mangi.eta.agent.terminal.TerminalPrivateStorage.workspace(context.filesDir)))
+                            projectWorkspace?.binding?.hostPath?.takeIf(String::isNotBlank)?.let {
+                                add(io.github.mangi.eta.data.repository.RunArtifactCapture.TerminalScanRoot("android", java.io.File(it)))
+                            }
+                            terminalExecutionContext.linuxHostWorkspacePath.takeIf(String::isNotBlank)?.let {
+                                add(io.github.mangi.eta.data.repository.RunArtifactCapture.TerminalScanRoot(
+                                    "linux", java.io.File(it), terminalExecutionContext.linuxWorkspacePath))
+                            }
+                        }
+                        val startedAt = System.currentTimeMillis()
+                        val snapshot = if (toolCall.name == "terminal" && args.optString("action", "exec") == "exec") {
+                            io.github.mangi.eta.data.repository.RunArtifactCapture.snapshotTerminalRoots(roots)
+                        } else null
+                        val raw = terminalController.executeTool(toolCall.name, args)
+                        io.github.mangi.eta.data.repository.RunArtifactCapture.terminalResult(
+                            toolCall.name, args, raw, startedAt, roots, snapshot,
+                        )
+                    }
                 })
-                in AgentFileToolCatalog.names -> textResult(terminalTool { terminalController.fileTool(toolCall.name, args) })
+                in AgentFileToolCatalog.names -> textResult(io.github.mangi.eta.data.repository.RunArtifactCapture.fileResult(
+                    context, toolCall, terminalTool { projectWorkspace?.ensurePrepared(); terminalController.fileTool(toolCall.name, args) }, artifactSubjectType, artifactSubjectId,
+                    if (args.optString("environment", "android").equals("linux", ignoreCase = true))
+                        terminalExecutionContext.linuxWorkspacePath to terminalExecutionContext.linuxHostWorkspacePath else null))
+                "project_workspace_status", "project_workspace_publish" -> textResult(terminalTool {
+                    val workspace = projectWorkspace ?: return@terminalTool JSONObject().put("ok", false).put("code", "NO_PROJECT_WORKSPACE").toString()
+                    workspace.ensurePrepared()
+                    if (toolCall.name == "project_workspace_status") workspace.status(args.optInt("offset", 0), args.optInt("limit", 50)).toString()
+                    else {
+                        val paths = args.getJSONArray("paths")
+                        workspace.publish((0 until paths.length()).map(paths::getString), args.getString("change_fingerprint"),
+                            "${io.github.mangi.eta.agent.runtime.RuntimeInvocationScope.controller?.executionIdentity?.runId?.value}:" + toolCall.id).toString()
+                    }
+                })
                 "memory_get" -> textResult(memoryGet(args))
                 "memory_write" -> textResult(memoryWrite(args))
+                "request_user_input" -> AgentModelClient.ToolResult(
+                    io.github.mangi.eta.agent.runtime.RunUserInput.execute(context, args).toString(), sensitive = true)
                 "goal_manage" -> textResult(workflowTool("goal_manage", args))
                 "plan_manage" -> textResult(workflowTool("plan_manage", args))
                 "notepad_manage" -> textResult(workflowTool("notepad_manage", args))
-                "voice_synthesize" -> textResult(VoiceSynthesisTool.execute(context, args).toString())
+                "voice_synthesize" -> textResult(io.github.mangi.eta.data.repository.RunArtifactCapture.fileResult(
+                    context, toolCall, VoiceSynthesisTool.execute(context, args).toString(), artifactSubjectType, artifactSubjectId))
                 "learning_feedback" -> textResult(learningFeedback(args))
                 "schedule_create" -> {
                     require(automationWritesAllowed()) { "后台任务不能创建新计划" }
@@ -352,6 +437,7 @@ internal class AgentLocalTools(
                 "skills_list" -> textResult(skillsList(args))
                 "skills_read" -> textResult(skillsRead(args))
                 "skills_read_resource" -> textResult(skillsReadResource(args))
+                "skills_prepare_runtime" -> textResult(terminalTool { skillsPrepareRuntime(args) })
                 "skills_list_curated" -> textResult(skillsListCurated())
                 "skills_inspect_github" -> textResult(skillsInspectGitHub(args))
                 "skills_install_from_github" -> textResult(skillsInstallFromGitHub(args))
@@ -370,6 +456,7 @@ internal class AgentLocalTools(
                         is InvalidToolArgumentException, is org.json.JSONException -> "INVALID_ARGUMENT"
                         is DeviceControlUnavailableException -> "ACCESSIBILITY_UNAVAILABLE"
                         is DisplayRoutingException -> "DISPLAY_GONE"
+                        is DisplayOwnedByAnotherRunException -> "DISPLAY_OWNED_BY_ANOTHER_RUN"
                         else -> "TOOL_ERROR"
                     },
                     message = throwable.message ?: throwable.javaClass.simpleName
@@ -472,17 +559,7 @@ internal class AgentLocalTools(
     private fun workflowTool(name: String, args: JSONObject): String {
         val scope = workflowScopeId?.takeIf(String::isNotBlank)
             ?: return errorResult("WORKFLOW_SCOPE_REQUIRED", "当前运行没有可绑定的会话、会议或任务作用域")
-        return runCatching {
-            val store = GoalPlanNotepadStore.get(context)
-            when (name) {
-                "goal_manage" -> store.goalManage(scope, args)
-                "plan_manage" -> store.planManage(scope, args)
-                "notepad_manage" -> store.notepadManage(scope, args)
-                else -> error("UNKNOWN_WORKFLOW_TOOL")
-            }.toString()
-        }.getOrElse { failure ->
-            errorResult("WORKFLOW_ERROR", failure.message ?: failure.javaClass.simpleName)
-        }
+        return WorkflowToolExecutor.execute(context, scope, name, args).toString()
     }
 
     private fun learningFeedback(args: JSONObject): String {
@@ -561,6 +638,81 @@ internal class AgentLocalTools(
         return block()
     }
 
+    private fun deliverFile(toolCall: AgentModelClient.ToolCall, args: JSONObject): String {
+        val settings = io.github.mangi.eta.data.repository.GeneratedFilesArchiveSettingsStore.read(context)
+        val owner = io.github.mangi.eta.agent.runtime.RuntimeInvocationScope.controller?.executionIdentity
+            ?: return errorResult("RUN_CONTEXT_REQUIRED", "当前没有可记录的运行上下文")
+        val root = io.github.mangi.eta.agent.terminal.TerminalPrivateStorage.workspace(context.filesDir).canonicalFile
+        val raw = args.requiredText("path")
+        val environment = args.optString("environment", "android").trim().lowercase(Locale.ROOT)
+        if (environment !in setOf("android", "linux")) {
+            throw InvalidToolArgumentException("environment 必须是 android 或 linux")
+        }
+        val candidate = when {
+            environment == "linux" && raw == terminalExecutionContext.linuxWorkspacePath ->
+                java.io.File(terminalExecutionContext.linuxHostWorkspacePath)
+            environment == "linux" && raw.startsWith(terminalExecutionContext.linuxWorkspacePath + "/") ->
+                java.io.File(
+                    terminalExecutionContext.linuxHostWorkspacePath,
+                    raw.removePrefix(terminalExecutionContext.linuxWorkspacePath + "/"),
+                )
+            java.io.File(raw).isAbsolute -> java.io.File(raw)
+            else -> java.io.File(root, raw)
+        }.canonicalFile
+        require(candidate.toPath().startsWith(root.toPath())) {
+            "deliver_file 只接受当前 Nexus 私密工作区内的文件；请先把成果复制到工作区"
+        }
+        require(candidate.isFile && !java.nio.file.Files.isSymbolicLink(candidate.toPath())) {
+            "交付目标必须是工作区内的普通文件"
+        }
+        require(candidate.length() in 1..MAX_DELIVERABLE_BYTES) { "交付文件必须在 1 字节到 32 MiB 之间" }
+        val relative = root.toPath().relativize(candidate.toPath()).toString().replace(java.io.File.separatorChar, '/')
+        require(relative.length in 1..1024) { "交付文件路径过长" }
+        val id = "artifact-" + java.security.MessageDigest.getInstance("SHA-256")
+            .digest("${owner.runId.value}\u0000${toolCall.id}\u0000$relative".toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        val now = System.currentTimeMillis()
+        val label = args.optString("label").trim().take(255).ifBlank { candidate.name }
+            .substringAfterLast('/').substringAfterLast('\\').ifBlank { candidate.name }
+        val mime = android.webkit.MimeTypeMap.getSingleton()
+            .getMimeTypeFromExtension(candidate.extension.lowercase(Locale.ROOT))
+        val artifact = io.github.mangi.eta.data.repository.NexusArtifactLedger(context).record(
+            io.github.zhh_lgtm.nexus.application.api.ArtifactRecord(
+                id = id,
+                runId = owner.runId.value,
+                path = relative,
+                label = label,
+                kind = "file",
+                status = io.github.zhh_lgtm.nexus.application.api.ArtifactStatus.VERIFIED,
+                createdAt = now,
+                verifiedAt = now,
+                projectId = owner.projectId,
+                subjectType = artifactSubjectType.takeIf { artifactSubjectId != null },
+                subjectId = artifactSubjectId,
+                location = "workspace",
+                mediaType = mime,
+                sizeBytes = candidate.length(),
+            ),
+        )
+        if (!settings.enabled || !settings.configured) {
+            return JSONObject().put("ok", true).put("artifact_id", artifact.id).put("path", relative)
+                .put("label", label).put("bytes", candidate.length()).put("mime_type", artifact.mediaType ?: JSONObject.NULL)
+                .put("publication", "not_configured")
+                .put("message", "文件已记录到当前会话或会议，可在项目文件中预览、导出和分享；系统可见目录尚未配置")
+                .toString()
+        }
+        val published = io.github.mangi.eta.data.repository.GeneratedFilesPublicationStore.read(context, artifact.id)
+            ?: return JSONObject().put("ok", true).put("artifact_id", artifact.id).put("path", relative)
+                .put("label", label).put("bytes", candidate.length()).put("mime_type", artifact.mediaType ?: JSONObject.NULL)
+                .put("publication", "failed")
+                .put("message", "文件已记录到当前会话或会议，系统可见目录写入失败；请检查目录授权")
+                .toString()
+        return JSONObject().put("ok", true).put("artifact_id", artifact.id).put("path", relative)
+            .put("label", label).put("bytes", candidate.length()).put("mime_type", artifact.mediaType ?: JSONObject.NULL)
+            .put("publication", "published")
+            .put("visible_uri", published.uri).put("visible_path", published.relativePath).toString()
+    }
+
     private fun fileVisionTool(block: () -> AgentModelClient.ToolResult): AgentModelClient.ToolResult {
         if (!terminalToolsEnabled()) {
             return textResult(errorResult("TERMINAL_TOOLS_DISABLED", "请先启用终端/文件工具"))
@@ -583,14 +735,16 @@ internal class AgentLocalTools(
     }
 
     private fun memoryGet(args: JSONObject): String = try {
+        val targetScope = resolveMemoryScope(args.optString("scope"))
         val result = AgentMemoryRepository.read(
-            scope = resolveMemoryScope(args.optString("scope")),
+            scope = targetScope,
             query = args.optString("query").takeIf(String::isNotBlank),
             startLine = args.optInt("start_line", 1),
             maxChars = args.optInt("max_chars", 12_000),
         )
         JSONObject()
             .put("ok", true)
+            .put("scope", targetScope.key)
             .put("revision", result.snapshot.revision)
             .put("bytes", result.snapshot.byteSize)
             .put("line_count", result.snapshot.lineCount)
@@ -606,13 +760,20 @@ internal class AgentLocalTools(
 
     private fun memoryWrite(args: JSONObject): String = try {
         val revision = args.getString("revision")
+        val mode = args.getString("mode")
         val layer = args.optString("layer").trim().takeIf { it.isNotBlank() }
-        val targetScope = when (layer?.lowercase(Locale.ROOT)) {
-            "project" -> projectMemoryScope ?: throw InvalidToolArgumentException("当前运行没有可用项目记忆作用域")
-            "task", "working" -> runMemoryScope ?: memoryScope
-            else -> resolveMemoryScope(args.optString("scope"))
+        val requestedScope = args.optString("scope").trim()
+        val targetScope = if (requestedScope.isNotEmpty() || mode != "append") {
+            resolveMemoryScope(requestedScope)
+        } else {
+            // Preserve legacy append defaults without overriding an explicit target scope.
+            when (layer?.lowercase(Locale.ROOT)) {
+                "project" -> projectMemoryScope ?: throw InvalidToolArgumentException("当前运行没有可用项目记忆作用域")
+                "task", "working" -> runMemoryScope ?: memoryScope
+                else -> resolveMemoryScope(requestedScope)
+            }
         }
-        val mutation = when (args.getString("mode")) {
+        val mutation = when (mode) {
             "replace_range" -> AgentMemoryMutation.ReplaceRange(
                 revision = revision,
                 startLine = args.getInt("start_line"),
@@ -629,7 +790,7 @@ internal class AgentLocalTools(
                     val parsed = LayeredMemoryDocument.fromLegacy(current.content)
                     val existing = parsed.sections[target].orEmpty().trim()
                     val merged = listOf(existing, content.trim()).filter { it.isNotBlank() }.joinToString("\n\n")
-                    val next = LayeredMemoryDocument(parsed.sections + (target to merged)).render()
+                    val next = parsed.copy(sections = parsed.sections + (target to merged)).render()
                     if (current.lineCount == 0) {
                         AgentMemoryMutation.Append(revision = revision, content = next)
                     } else {
@@ -648,12 +809,14 @@ internal class AgentLocalTools(
         when (val result = AgentMemoryRepository.mutate(targetScope, mutation)) {
             is AgentMemoryWriteResult.Success -> JSONObject()
                 .put("ok", true)
+                .put("scope", targetScope.key)
                 .put("revision", result.snapshot.revision)
                 .put("bytes", result.snapshot.byteSize)
                 .put("line_count", result.snapshot.lineCount)
                 .toString()
             is AgentMemoryWriteResult.Conflict -> JSONObject()
                 .put("ok", false)
+                .put("scope", targetScope.key)
                 .put("code", "MEMORY_CONFLICT")
                 .put("message", "记忆已发生变化，请先调用 memory_get 获取最新内容")
                 .put("revision", result.snapshot.revision)
@@ -679,8 +842,10 @@ internal class AgentLocalTools(
         return when (value.trim().lowercase(Locale.ROOT)) {
             "", "global" -> memoryScope
             "project" -> projectMemoryScope ?: throw InvalidToolArgumentException("当前运行没有可用项目记忆作用域")
-            "current", "conversation", "meeting", "task" -> runMemoryScope
+            "current" -> runMemoryScope?.takeIf { it != AgentMemoryScope.GLOBAL }
                 ?: throw InvalidToolArgumentException("当前运行没有可用的局部记忆作用域")
+            "conversation", "meeting", "task" -> runMemoryScope?.takeIf { it.type.path == value.trim().lowercase(Locale.ROOT) }
+                ?: throw InvalidToolArgumentException("当前运行没有对应类型的记忆作用域")
             else -> throw InvalidToolArgumentException("未知记忆作用域：$value")
         }
     }
@@ -715,17 +880,117 @@ internal class AgentLocalTools(
     private fun currentActiveDisplayId(): Int {
         val id = activeDisplayId
         if (!CanvasRoutingPolicy.isVirtualDisplay(id)) return Display.DEFAULT_DISPLAY
-        val vd = VirtualDisplayController.snapshots.value
-        return if (virtualDisplayEnabled() && vd.active && vd.displayId == id) {
-            id
-        } else {
+        val lease = reacquireActiveDisplayLease()
+        // Recovery may hand the replacement session a new numeric displayId, so trust the lease.
+        if (virtualDisplayEnabled() && lease != null &&
+            lease.ownerRunId == browserRunId && VirtualDisplayController.validate(lease)
+        ) {
+            activeDisplayId = lease.displayId
+            return lease.displayId
+        }
+        publishedObservation.set(PublishedObservation())
+        activeDisplayLease = null
+        deviceController.updateDisplayLease(null)
+        throw DisplayRoutingException()
+    }
+
+    /** Snapshot the exact lease for one gesture; the service revalidates it when dispatching. */
+    private fun displayLeaseForAction(displayId: Int): VirtualDisplayLease? =
+        if (!CanvasRoutingPolicy.isVirtualDisplay(displayId)) null else activeDisplayLease?.takeIf {
+            it.ownerRunId == browserRunId && it.displayId == displayId
+        }
+
+    /**
+     * Lease for a display this Run already drives. A health recovery recreates the session under the
+     * same owner, so reacquire only while this Run still owns the display; an owner transfer stays
+     * rejected. Callers must keep using the lease they already handed to a queued action.
+     */
+    private fun currentDisplaySnapshot(): io.github.mangi.eta.agent.virtualdisplay.VirtualDisplaySnapshot =
+        activeDisplayLease?.let(VirtualDisplayController::snapshotFor)
+            ?: VirtualDisplayController.snapshotForRun(browserRunId)
+            ?: io.github.mangi.eta.agent.virtualdisplay.VirtualDisplaySnapshot.Inactive
+
+    private fun selectRequestedSession(args: JSONObject): String? {
+        val sessionId = args.optString("session_id").trim()
+        if (sessionId.isBlank()) return null
+        if (args.optBoolean("new_session")) return errorResult("INVALID_ARGUMENT", "new_session 与 session_id 不能同时使用")
+        val lease = VirtualDisplayController.chooseSession(browserRunId, sessionId)
+            ?: return errorResult("DISPLAY_LEASE_EXPIRED", "该虚拟屏不存在、已恢复替换或不属于当前运行，请使用当前运行返回的 session_id")
+        if (activeDisplayLease != lease) publishedObservation.set(PublishedObservation())
+        activeDisplayLease = lease
+        activeDisplayId = lease.displayId
+        deviceController.updateDisplayLease(lease)
+        return null
+    }
+
+    private fun addDisplaySessions(result: JSONObject): JSONObject = result.apply {
+        activeDisplayLease?.takeIf(VirtualDisplayController::validate)?.let { put("session_id", it.sessionId) }
+        put("display_sessions", org.json.JSONArray().apply {
+            VirtualDisplayController.snapshotsForRun(browserRunId).forEach { snapshot ->
+                put(JSONObject().put("session_id", snapshot.sessionId).put("display_id", snapshot.displayId)
+                    .put("app_name", snapshot.appName).put("package_name", snapshot.packageName)
+                    .put("lifecycle", snapshot.lifecycle.name.lowercase()))
+            }
+        })
+    }
+
+    private fun reacquireActiveDisplayLease(): VirtualDisplayLease? {
+        if (!virtualDisplayEnabled()) return activeDisplayLease
+        val vd = currentDisplaySnapshot()
+        if (!vd.active) return activeDisplayLease
+        val lease = activeDisplayLease
+        if (lease != null && VirtualDisplayController.validate(lease)) {
+            val selected = VirtualDisplayController.currentLease(browserRunId)
+            if (selected != null && selected != lease) {
+                publishedObservation.set(PublishedObservation())
+                activeDisplayLease = selected
+                activeDisplayId = selected.displayId
+                deviceController.updateDisplayLease(selected)
+                return selected
+            }
+            return lease
+        }
+        // Renew only a lease this Run already held for a session that was replaced; never claim a
+        // display this Run never used, and never follow an owner transfer.
+        if (lease == null || lease.ownerRunId != browserRunId) return lease
+        if (vd.ownerRunId.isBlank() || vd.ownerRunId != browserRunId) return lease
+        val renewed = VirtualDisplayController.claimLease(browserRunId) ?: return lease
+        activeDisplayLease = renewed
+        activeDisplayId = renewed.displayId
+        deviceController.updateDisplayLease(renewed)
+        return renewed
+    }
+
+    /** The launch may have created a fresh session, so take the lease this Run just established. */
+    private fun resolveLeaseAfterLaunch(previous: VirtualDisplayLease?): VirtualDisplayLease? {
+        val current = VirtualDisplayController.currentLease(browserRunId)
+        if (current != null) return current.takeIf { it.ownerRunId == browserRunId }
+        return previous?.takeIf(VirtualDisplayController::validate)
+    }
+
+    /** A failed attempt by a non-owner cannot replace the active Run's observation state. */
+    private fun preservePublishedObservationUntilOwnerRejects() {
+        val vd = currentDisplaySnapshot()
+        if (vd.active && CanvasRoutingPolicy.isVirtualDisplay(activeDisplayId) &&
+            vd.ownerRunId.isNotBlank() && vd.ownerRunId != browserRunId
+        ) return
+        publishedObservation.set(PublishedObservation())
+    }
+
+    /** Reject before a protected tool reads or acts on another Run's display. */
+    private fun requireAccessibleDisplayIfActive(expectedDisplayId: Int? = null) {
+        val vd = currentDisplaySnapshot()
+        if (!vd.active || expectedDisplayId != null && vd.displayId != expectedDisplayId) return
+        val lease = reacquireActiveDisplayLease()
+        if (lease == null || lease.ownerRunId != browserRunId || !VirtualDisplayController.validate(lease)) {
             publishedObservation.set(PublishedObservation())
-            throw DisplayRoutingException()
+            throw DisplayOwnedByAnotherRunException()
         }
     }
 
     private fun observeScreen(args: JSONObject, generation: Long?): AgentModelClient.ToolResult {
-        publishedObservation.set(PublishedObservation())
+        selectRequestedSession(args)?.let { return textResult(it) }
+        preservePublishedObservationUntilOwnerRejects()
         val startedAt = SystemClock.elapsedRealtime()
         val disconnectCount = accessibilityDisconnectCount()
         val options = AgentScreenObservationContract.resolve(args)
@@ -746,7 +1011,7 @@ internal class AgentLocalTools(
                 elements = observation.elementObservation,
                 coordinateSpace = observation.coordinateSpace,
                 generation = generation.takeIf { JSONObject(observation.content).optBoolean("ok") },
-                manualInputGeneration = VirtualDisplayController.snapshots.value.manualInputGeneration,
+                manualInputGeneration = currentDisplaySnapshot().manualInputGeneration,
             ),
         )
         observation.elementObservation?.let { observationPlanner.record(observationSignature(it), changed = true) }
@@ -758,7 +1023,7 @@ internal class AgentLocalTools(
                 "coordinate=${observation.coordinateSpace?.summary()}"
         }
         return AgentModelClient.ToolResult(
-            content = observation.content,
+            content = addDisplaySessions(JSONObject(observation.content)).toString(),
             images = listOfNotNull(observation.image)
         )
     }
@@ -774,7 +1039,16 @@ internal class AgentLocalTools(
         if (result == null || !result.optBoolean("ok")) return textResult(raw)
         val before = publishedObservation.get().elements
         val disconnectCount = accessibilityDisconnectCount()
-        val displayId = currentActiveDisplayId()
+        val actionLease = activeDisplayLease
+        val displayId = activeDisplayId
+        if (CanvasRoutingPolicy.isVirtualDisplay(displayId) &&
+            (actionLease == null || !VirtualDisplayController.validate(actionLease) ||
+                VirtualDisplayController.currentLease(browserRunId) != actionLease)) {
+            publishedObservation.set(PublishedObservation())
+            result.put("after_observation_error", "DISPLAY_SESSION_CHANGED")
+            actionLease?.let { result.put("source_session_id", it.sessionId).put("source_display_id", it.displayId) }
+            return textResult(result.toString())
+        }
         val after = runCatching {
             screenObservationProvider?.invoke(AFTER_ACTION_OPTIONS)
                 ?: deviceController.observe(
@@ -791,6 +1065,12 @@ internal class AgentLocalTools(
             publishedObservation.set(PublishedObservation())
             result.put("after_observation_error", "ACCESSIBILITY_OBSERVATION_INTERRUPTED")
             return textResult(result.toString()) // 动作已成功，不因后续观察失败诱发模型重放。
+        }
+        if (actionLease != null && (!VirtualDisplayController.validate(actionLease) ||
+                VirtualDisplayController.currentLease(browserRunId) != actionLease)) {
+            publishedObservation.set(PublishedObservation())
+            result.put("after_observation_error", "DISPLAY_SESSION_CHANGED")
+            return textResult(result.toString())
         }
         val elements = after.elementObservation ?: return textResult(raw)
         // 新快照取代动作前的快照：旧 index 在界面变化后本就不可靠，继续保留只会让模型误用。
@@ -813,6 +1093,7 @@ internal class AgentLocalTools(
 
     private fun tap(args: JSONObject): String {
         val displayId = currentActiveDisplayId()
+        val expectedLease = displayLeaseForAction(displayId)
         val point = convertPoint(
             x = args.getInt("x"),
             y = args.getInt("y"),
@@ -824,12 +1105,13 @@ internal class AgentLocalTools(
                 AgentHapticFeedback.perform(context, AgentHapticFeedback.Type.TAP)
             }
             showTap(point.x, point.y, displayId)
-            deviceController.tap(point.x, point.y, displayId)
+            deviceController.tap(point.x, point.y, displayId, expectedLease)
         }
     }
 
     private fun tapArea(args: JSONObject): String {
         val displayId = currentActiveDisplayId()
+        val expectedLease = displayLeaseForAction(displayId)
         val x1 = args.getInt("x1")
         val y1 = args.getInt("y1")
         val x2 = args.getInt("x2")
@@ -846,12 +1128,13 @@ internal class AgentLocalTools(
                 AgentHapticFeedback.perform(context, AgentHapticFeedback.Type.TAP)
             }
             showTap(point.x, point.y, displayId)
-            deviceController.tap(point.x, point.y, displayId)
+            deviceController.tap(point.x, point.y, displayId, expectedLease)
         }
     }
 
     private fun tapElement(args: JSONObject): String {
         val displayId = currentActiveDisplayId()
+        val expectedLease = displayLeaseForAction(displayId)
         val index = args.optInt("index", -1)
         val observation = requireElementObservation(args) ?: return observationError(args)
         val node = observation.nodes.firstOrNull { it.index == index }
@@ -859,7 +1142,7 @@ internal class AgentLocalTools(
             return errorResult("INVALID_NODE_INDEX", "观察快照中不存在节点 index=$index")
         }
         val result = clearOverlay(displayId, ScreenPoint(node.centerX, node.centerY)) {
-            deviceController.tapElement(observation, index)
+            deviceController.tapElement(observation, index, displayId, expectedLease)
         }
         if (result.isOkJson()) {
             if (!CanvasRoutingPolicy.isVirtualDisplay(displayId)) {
@@ -872,6 +1155,7 @@ internal class AgentLocalTools(
 
     private fun longPressElement(args: JSONObject): String {
         val displayId = currentActiveDisplayId()
+        val expectedLease = displayLeaseForAction(displayId)
         val index = args.optInt("index", -1)
         val observation = requireElementObservation(args) ?: return observationError(args)
         val node = observation.nodes.firstOrNull { it.index == index }
@@ -880,7 +1164,7 @@ internal class AgentLocalTools(
             return errorResult("INVALID_NODE_INDEX", "观察快照中不存在节点 index=$index")
         }
         val result = clearOverlay(displayId, ScreenPoint(node.centerX, node.centerY)) {
-            deviceController.longPressElement(observation, index, durationMs)
+            deviceController.longPressElement(observation, index, durationMs, displayId, expectedLease)
         }
         if (result.isOkJson()) {
             if (!CanvasRoutingPolicy.isVirtualDisplay(displayId)) {
@@ -893,6 +1177,7 @@ internal class AgentLocalTools(
 
     private fun longPress(args: JSONObject): String {
         val displayId = currentActiveDisplayId()
+        val expectedLease = displayLeaseForAction(displayId)
         val point = convertPoint(
             x = args.getInt("x"),
             y = args.getInt("y"),
@@ -905,12 +1190,13 @@ internal class AgentLocalTools(
                 AgentHapticFeedback.perform(context, AgentHapticFeedback.Type.LONG_PRESS)
             }
             showLongPress(point.x, point.y, durationMs, displayId)
-            deviceController.longPress(point.x, point.y, durationMs, displayId)
+            deviceController.longPress(point.x, point.y, durationMs, displayId, expectedLease)
         }
     }
 
     private fun swipe(args: JSONObject): String {
         val displayId = currentActiveDisplayId()
+        val expectedLease = displayLeaseForAction(displayId)
         val start = convertPoint(
             x = args.getInt("x1"),
             y = args.getInt("y1"),
@@ -936,17 +1222,30 @@ internal class AgentLocalTools(
                 end.y,
                 durationMs,
                 displayId,
+                expectedLease,
             )
         }
     }
 
     private fun scrollElement(args: JSONObject): String {
+        val displayId = currentActiveDisplayId()
+        val expectedLease = displayLeaseForAction(displayId)
         val observation = requireElementObservation(args) ?: return observationError(args)
         return deviceController.scrollElement(
             observation = observation,
             index = args.optInt("index", -1),
             direction = args.optString("direction"),
             amount = args.optString("amount"),
+            displayId = displayId,
+            expectedLease = expectedLease,
+        )
+    }
+
+    private fun scroll(args: JSONObject): String {
+        val displayId = currentActiveDisplayId()
+        return deviceController.scroll(
+            args.optString("direction"), args.optString("amount"), displayId,
+            displayLeaseForAction(displayId),
         )
     }
 
@@ -1117,11 +1416,19 @@ internal class AgentLocalTools(
     }
 
     private fun launchApp(args: JSONObject): String {
+        if (args.optBoolean("new_session") && args.optString("session_id").isNotBlank())
+            return errorResult("INVALID_ARGUMENT", "new_session 与 session_id 不能同时使用")
+        selectRequestedSession(args)?.let { return it }
+        val newSession = args.optBoolean("new_session")
+        if (newSession && !VirtualDisplayController.additionalSessionAvailable(browserRunId))
+            return errorResult("DISPLAY_SESSION_LIMIT", "虚拟屏达到上限：每个运行最多 3 个、全局最多 6 个。请先交接已有会话")
         val packageName = args.optString("package_name").trim().ifBlank { null }
         val appName = args.optString("app_name").trim().ifBlank { null }
         val requestedDisplay = CanvasRoutingPolicy.RequestedDisplay.parse(
             args.optString("display", "auto"),
         ) ?: return errorResult("INVALID_ARGUMENT", "display 仅支持 auto、virtual 或 main")
+        if (requestedDisplay == CanvasRoutingPolicy.RequestedDisplay.MAIN && (newSession || args.optString("session_id").isNotBlank()))
+            return errorResult("INVALID_ARGUMENT", "虚拟屏会话参数不能与 display=main 同时使用")
 
         val app = if (packageName != null) {
             findAppByPackage(packageName) ?: AppInfo(packageName = packageName, appName = appName ?: packageName)
@@ -1169,9 +1476,10 @@ internal class AgentLocalTools(
             foregroundPackageOnMainDisplay = mainForegroundPkg,
             ownPackage = context.packageName,
         )
-        if (requestedDisplay == CanvasRoutingPolicy.RequestedDisplay.VIRTUAL && targetCanvas != CanvasRoutingPolicy.CanvasTarget.VIRTUAL_DISPLAY)
+        if ((requestedDisplay == CanvasRoutingPolicy.RequestedDisplay.VIRTUAL || newSession || args.optString("session_id").isNotBlank()) && targetCanvas != CanvasRoutingPolicy.CanvasTarget.VIRTUAL_DISPLAY)
             return errorResult("VIRTUAL_APP_CONFLICT", "该应用属于系统界面或正在主屏使用；本次未移动应用，请明确选择主屏或先结束冲突应用")
 
+        val existingLease = if (!newSession && currentDisplaySnapshot().active) reacquireActiveDisplayLease() else null
         val launchedVirtualId = if (targetCanvas == CanvasRoutingPolicy.CanvasTarget.VIRTUAL_DISPLAY) {
             VirtualDisplayController.launchAppOnVirtualDisplay(
                 context = context,
@@ -1179,6 +1487,9 @@ internal class AgentLocalTools(
                 appName = app.appName,
                 launchIntent = launchIntent,
                 rootAvailable = rootAvailable,
+                ownerRunId = browserRunId,
+                lease = existingLease,
+                newSession = newSession,
             )
         } else {
             null
@@ -1186,11 +1497,15 @@ internal class AgentLocalTools(
 
         val finalDisplayId = if (launchedVirtualId != null && CanvasRoutingPolicy.isVirtualDisplay(launchedVirtualId)) {
             activeDisplayId = launchedVirtualId
+            activeDisplayLease = resolveLeaseAfterLaunch(existingLease)
+            deviceController.updateDisplayLease(activeDisplayLease)
             launchedVirtualId
         } else {
             if (targetCanvas == CanvasRoutingPolicy.CanvasTarget.VIRTUAL_DISPLAY)
                 return errorResult("VIRTUAL_DISPLAY_LAUNCH_FAILED", "虚拟屏启动失败；未自动切换到主屏。可明确指定 display=main 后重新观察")
             activeDisplayId = Display.DEFAULT_DISPLAY
+            activeDisplayLease = null
+            deviceController.updateDisplayLease(null)
             context.startActivity(launchIntent)
             Display.DEFAULT_DISPLAY
         }
@@ -1201,33 +1516,47 @@ internal class AgentLocalTools(
         }
 
         logger.info("Agent local tool action=launch_app outcome=started canvas=$finalCanvas display=$finalDisplayId")
-        return JSONObject()
+        return addDisplaySessions(JSONObject()
             .put("ok", true)
             .put("tool", "launch_app")
             .put("app_name", app.appName)
             .put("package_name", app.packageName)
             .put("canvas", finalCanvas)
-            .put("display_id", finalDisplayId)
+            .put("display_id", finalDisplayId))
             .toString()
     }
 
     private fun presentToUser(args: JSONObject): String {
+        selectRequestedSession(args)?.let { return it }
         val context = requireContext()
         val reason = args.optString("reason").trim()
-        val vdSnapshot = VirtualDisplayController.snapshots.value
+        val vdSnapshot = currentDisplaySnapshot()
         val wasVirtual = vdSnapshot.active || CanvasRoutingPolicy.isVirtualDisplay(activeDisplayId)
         val presented = if (wasVirtual) {
-            VirtualDisplayController.handoffToMainDisplay(context, rootAvailable)
+            VirtualDisplayController.handoffToMainDisplay(
+                context,
+                rootAvailable,
+                ownerRunId = browserRunId,
+                lease = reacquireActiveDisplayLease(),
+            )
         } else {
             true
         }
+        if (!presented && wasVirtual) {
+            publishedObservation.set(PublishedObservation())
+            return errorResult("DISPLAY_HANDOFF_FAILED", "画面交接未确认完成，请重新观察当前会话后重试")
+        }
         activeDisplayId = Display.DEFAULT_DISPLAY
-        return JSONObject()
+        activeDisplayLease = null
+        deviceController.updateDisplayLease(null)
+        return addDisplaySessions(JSONObject()
             .put("ok", true)
             .put("tool", "present_to_user")
             .put("canvas", CanvasRoutingPolicy.CanvasTarget.MAIN_DISPLAY.wireName)
             .put("display_id", Display.DEFAULT_DISPLAY)
             .put("presented", presented)
+            .put("source_session_id", vdSnapshot.sessionId)
+            .put("source_display_id", vdSnapshot.displayId))
             .apply {
                 if (vdSnapshot.appName.isNotBlank()) put("app_name", vdSnapshot.appName)
                 if (vdSnapshot.packageName.isNotBlank()) put("package_name", vdSnapshot.packageName)
@@ -1237,6 +1566,12 @@ internal class AgentLocalTools(
     }
 
     private fun openUri(args: JSONObject): String {
+        if (args.optBoolean("new_session") && args.optString("session_id").isNotBlank())
+            return errorResult("INVALID_ARGUMENT", "new_session 与 session_id 不能同时使用")
+        selectRequestedSession(args)?.let { return it }
+        val newSession = args.optBoolean("new_session")
+        if (newSession && !VirtualDisplayController.additionalSessionAvailable(browserRunId))
+            return errorResult("DISPLAY_SESSION_LIMIT", "虚拟屏达到上限：每个运行最多 3 个、全局最多 6 个。请先交接已有会话")
         val uriText = args.optString("uri").trim()
         if (uriText.isBlank()) {
             return errorResult("INVALID_ARGUMENT", "uri 不能为空")
@@ -1261,24 +1596,34 @@ internal class AgentLocalTools(
             foregroundPackageOnMainDisplay = mainForegroundPkg,
             ownPackage = context.packageName,
         )
+        if ((newSession || args.optString("session_id").isNotBlank()) && targetCanvas != CanvasRoutingPolicy.CanvasTarget.VIRTUAL_DISPLAY)
+            return errorResult("VIRTUAL_APP_CONFLICT", "当前目标不适合虚拟屏，本次未在主屏打开 URI")
+        val uriLease = if (!newSession && currentDisplaySnapshot().active) reacquireActiveDisplayLease() else null
         val virtualId = if (targetCanvas == CanvasRoutingPolicy.CanvasTarget.VIRTUAL_DISPLAY) {
             VirtualDisplayController.openUriOnVirtualDisplay(
                 context = context,
                 intent = intent,
                 targetLabel = uri.host ?: uri.scheme.orEmpty(),
                 rootAvailable = rootAvailable,
+                ownerRunId = browserRunId,
+                lease = uriLease,
+                newSession = newSession,
             )
         } else {
             null
         }
         val finalDisplayId = if (virtualId != null && CanvasRoutingPolicy.isVirtualDisplay(virtualId)) {
             activeDisplayId = virtualId
+            activeDisplayLease = resolveLeaseAfterLaunch(uriLease)
+            deviceController.updateDisplayLease(activeDisplayLease)
             virtualId
         } else {
             if (targetCanvas == CanvasRoutingPolicy.CanvasTarget.VIRTUAL_DISPLAY)
                 return errorResult("VIRTUAL_DISPLAY_LAUNCH_FAILED", "虚拟屏 URI 启动失败；未自动切换到主屏")
             activeDisplayId = Display.DEFAULT_DISPLAY
+            activeDisplayLease = null
             context.startActivity(intent)
+            deviceController.updateDisplayLease(null)
             Display.DEFAULT_DISPLAY
         }
         val finalCanvas = if (CanvasRoutingPolicy.isVirtualDisplay(finalDisplayId)) {
@@ -1287,12 +1632,12 @@ internal class AgentLocalTools(
             CanvasRoutingPolicy.CanvasTarget.MAIN_DISPLAY.wireName
         }
         logger.info("Agent local tool action=open_uri outcome=started canvas=$finalCanvas")
-        return JSONObject()
+        return addDisplaySessions(JSONObject()
             .put("ok", true)
             .put("tool", "open_uri")
             .put("scheme", uri.scheme?.lowercase(Locale.ROOT))
             .put("canvas", finalCanvas)
-            .put("display_id", finalDisplayId)
+            .put("display_id", finalDisplayId))
             .also { result ->
                 if (uri.scheme.equals("https", true)) {
                     result.put("display_uri", uriText)
@@ -1463,6 +1808,9 @@ internal class AgentLocalTools(
                     .put("description", entry.description)
                     .put("enabled", entry.enabled)
                     .put("source", entry.source)
+                    .put("version", entry.provenance?.version ?: entry.declaration.version ?: JSONObject.NULL)
+                    .put("priority", entry.declaration.priority)
+                    .put("declaredTools", JSONArray(entry.declaration.allowedTools))
                     .put("rootPath", entry.rootPath)
                     .put("skillFilePath", entry.skillFilePath)
                     .put("capabilities", capabilities)
@@ -1492,11 +1840,8 @@ internal class AgentLocalTools(
         if (!compat.available) return errorResult("INCOMPATIBLE", compat.reason ?: "当前环境不可用")
         val resolved = loader.load(entry, "agent 主动读取 skill")
             ?: return errorResult("READ_FAILED", "读取 SKILL.md 失败：${entry.skillFilePath}")
-        val body = if (resolved.bodyMarkdown.length <= maxChars) {
-            resolved.bodyMarkdown
-        } else {
-            resolved.bodyMarkdown.take(maxChars) + "\n..."
-        }
+        val page = try { io.github.mangi.eta.agent.skill.SkillTextPage.read(resolved.bodyMarkdown, skillTextOffset(args), maxChars) }
+            catch (error: IllegalArgumentException) { return errorResult("INVALID_OFFSET", error.message ?: "offset 无效") }
         val references = JSONArray()
         resolved.loadedReferences.forEach { references.put(it) }
         val frontmatter = JSONObject()
@@ -1506,13 +1851,21 @@ internal class AgentLocalTools(
             .put("id", entry.id)
             .put("name", entry.name)
             .put("description", entry.description)
+            .put("source", entry.source)
+            .put("version", entry.provenance?.version ?: entry.declaration.version ?: JSONObject.NULL)
+            .put("priority", entry.declaration.priority)
+            .put("declaredTools", JSONArray(entry.declaration.allowedTools))
             .put("rootPath", entry.rootPath)
             .put("skillFilePath", entry.skillFilePath)
             .put("scriptsDir", resolved.scriptsDir ?: JSONObject.NULL)
+            .put("runtimePreparationTool", "skills_prepare_runtime")
+            .put("runtimePreparationRequired", entry.hasScripts || entry.hasAssets)
             .put("assetsDir", resolved.assetsDir ?: JSONObject.NULL)
             .put("references", references)
             .put("frontmatter", frontmatter)
-            .put("bodyMarkdown", body)
+            .put("bodyMarkdown", page.text)
+            .put("offset", page.offset).put("next_offset", page.nextOffset ?: JSONObject.NULL)
+            .put("offsetUnit", "utf16-code-unit").put("totalChars", page.totalChars).put("truncated", page.truncated)
             .toString()
     }
 
@@ -1537,25 +1890,17 @@ internal class AgentLocalTools(
         }
         return when (val result = reader.readText(entry, relativePath)) {
             is SkillResourceReadResult.Success -> {
-                val truncated = result.text.length > maxChars
-                val visibleText = if (truncated) {
-                    result.text.take(maxChars).let { prefix ->
-                        if (prefix.lastOrNull()?.isHighSurrogate() == true) {
-                            prefix.dropLast(1)
-                        } else {
-                            prefix
-                        }
-                    }
-                } else {
-                    result.text
-                }
+                val page = try { io.github.mangi.eta.agent.skill.SkillTextPage.read(result.text, skillTextOffset(args), maxChars) }
+                    catch (error: IllegalArgumentException) { return errorResult("INVALID_OFFSET", error.message ?: "offset 无效") }
                 JSONObject()
                     .put("ok", true)
                     .put("skillId", entry.id)
                     .put("relativePath", result.relativePath)
-                    .put("text", visibleText)
-                    .put("truncated", truncated)
-                    .put("totalChars", result.text.length)
+                    .put("text", page.text)
+                    .put("truncated", page.truncated)
+                    .put("totalChars", page.totalChars)
+                    .put("offset", page.offset).put("next_offset", page.nextOffset ?: JSONObject.NULL)
+                    .put("offsetUnit", "utf16-code-unit")
                     .toString()
             }
             is SkillResourceReadResult.Failure -> errorResult(
@@ -1563,6 +1908,54 @@ internal class AgentLocalTools(
                 message = result.error.message,
             )
         }
+    }
+
+    private fun skillsPrepareRuntime(args: JSONObject): String {
+        if (skillTreeMutationUncertain.get()) return nextTurnRequired("Skill 树")
+        val index = skillIndexService ?: return errorResult("SKILLS_UNAVAILABLE", "技能服务未初始化")
+        val skillId = args.optString("skillId").trim()
+        if (skillId.isBlank()) return errorResult("MISSING_PARAM", "缺少 skillId")
+        val selected = index.findInstalledSkill(skillId) ?: return errorResult("NOT_FOUND", "未找到已启用 Skill")
+        if (!isVisibleInCurrentRun(selected.id)) return nextTurnRequired(selected.id)
+        return try {
+            index.withMutationLock {
+            val entry = index.listSkillsForManagement(forceRefresh = true)
+                .firstOrNull { it.id == selected.id && it.installed && it.enabled }
+                ?: return@withMutationLock errorResult("NOT_FOUND", "Skill 已移除或停用")
+            val compatibility = SkillCompatibilityChecker.evaluate(entry)
+            if (!compatibility.available) return@withMutationLock errorResult("INCOMPATIBLE", compatibility.reason ?: "Skill 当前不可用")
+            if (entry.declaration.allowedTools.isNotEmpty() && !io.github.mangi.eta.agent.runtime.AgentToolPolicy(
+                    entry.declaration.allowedTools).isAllowed("skills_prepare_runtime")) {
+                return@withMutationLock errorResult("SKILL_TOOL_NOT_ALLOWED", "该 Skill 未声明文件写入或终端权限")
+            }
+            projectWorkspace?.ensurePrepared()
+            val workspace = java.io.File(terminalExecutionContext.userWorkspacePath)
+            val linuxWorkspace = if (terminalExecutionContext.linuxHostWorkspacePath == workspace.absolutePath) {
+                terminalExecutionContext.linuxWorkspacePath
+            } else {
+                io.github.mangi.eta.agent.terminal.TerminalRuntime.LINUX_INPUTS_PATH
+            }
+            val result = index.prepareRuntime(entry, workspace, linuxWorkspace)
+            JSONObject().put("ok", true).put("skillId", entry.id)
+                .put("androidPath", result.androidPath).put("linuxPath", result.linuxPath)
+                .put("contentSha256", result.contentSha256).put("version", result.version ?: JSONObject.NULL)
+                .put("fileCount", result.files).put("totalBytes", result.bytes)
+                .put("linuxEnvironmentReady", terminalExecutionContext.linuxReady)
+                .put("scriptsExecuted", false).put("dependenciesInstalled", false)
+                .put("note", "仅准备静态文件；执行时使用已授权的终端与解释器，依赖和厂商占位符须另行处理。")
+                .toString()
+            }
+        } catch (error: Exception) {
+            errorResult("SKILL_RUNTIME_PREPARATION_FAILED", error.message?.take(300) ?: "Skill 运行资源准备失败")
+        }
+    }
+
+    private fun skillTextOffset(args: JSONObject): Int {
+        if (!args.has("offset")) return 0
+        val raw = args.opt("offset")
+        val value = (raw as? Number)?.toString()?.toLongOrNull()
+        require(value != null && value in 0L..Int.MAX_VALUE.toLong()) { "offset 必须是文本范围内的非负整数" }
+        return value.toInt()
     }
 
     private fun skillsListCurated(): String {
@@ -1913,7 +2306,7 @@ internal class AgentLocalTools(
 
     private fun showTap(x: Int, y: Int, displayId: Int = Display.DEFAULT_DISPLAY) {
         if (CanvasRoutingPolicy.isVirtualDisplay(displayId)) {
-            VirtualDisplayController.emitTapEffect(x, y, longPress = false)
+            VirtualDisplayController.emitTapEffect(x, y, longPress = false, lease = activeDisplayLease)
         } else {
             GestureIndicator.showTap(context, x, y)
         }
@@ -1926,7 +2319,7 @@ internal class AgentLocalTools(
         displayId: Int = Display.DEFAULT_DISPLAY,
     ) {
         if (CanvasRoutingPolicy.isVirtualDisplay(displayId)) {
-            VirtualDisplayController.emitTapEffect(x, y, longPress = true)
+            VirtualDisplayController.emitTapEffect(x, y, longPress = true, lease = activeDisplayLease)
         } else {
             GestureIndicator.showLongPress(context, x, y, durationMs)
         }
@@ -1941,7 +2334,7 @@ internal class AgentLocalTools(
         displayId: Int = Display.DEFAULT_DISPLAY,
     ) {
         if (CanvasRoutingPolicy.isVirtualDisplay(displayId)) {
-            VirtualDisplayController.emitSwipeEffect(x1, y1, x2, y2, durationMs)
+            VirtualDisplayController.emitSwipeEffect(x1, y1, x2, y2, durationMs, lease = activeDisplayLease)
         } else {
             GestureIndicator.showSwipe(context, x1, y1, x2, y2, durationMs)
         }
@@ -1954,6 +2347,7 @@ internal class AgentLocalTools(
     )
 
     private companion object {
+        const val MAX_DELIVERABLE_BYTES = 32L * 1024 * 1024
         val DEVICE_DIRECT_TOOL_NAMES = io.github.mangi.eta.agent.model.AgentPhoneToolCatalog.direct + setOf(
             "set_alarm",
             "set_timer",

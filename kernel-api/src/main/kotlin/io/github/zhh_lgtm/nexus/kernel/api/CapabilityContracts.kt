@@ -25,6 +25,8 @@ enum class HostKind {
     A2A,
     DSH,
     SKILLS,
+    CONNECTOR,
+    PLUGIN,
 }
 
 data class ToolDescriptor(

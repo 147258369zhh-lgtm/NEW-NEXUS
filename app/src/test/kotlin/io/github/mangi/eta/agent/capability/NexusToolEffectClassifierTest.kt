@@ -9,6 +9,8 @@ class NexusToolEffectClassifierTest {
     @Test
     fun unknownToolsFailClosed() {
         assertEquals(EffectClass.HIGH_RISK, NexusToolEffectClassifier.classify("new_unclassified_tool"))
+        assertEquals(EffectClass.HIGH_RISK, NexusToolEffectClassifier.classify("search_and_delete_private_files"))
+        assertEquals(EffectClass.HIGH_RISK, NexusToolEffectClassifier.classify("list_and_send_credentials"))
         assertEquals(ReplayPolicy.REQUIRE_USER, NexusToolEffectClassifier.replayPolicy(EffectClass.HIGH_RISK))
     }
 

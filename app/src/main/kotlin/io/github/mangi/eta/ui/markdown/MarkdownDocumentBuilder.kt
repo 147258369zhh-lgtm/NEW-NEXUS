@@ -56,9 +56,9 @@ private class BlockConverter(
         MarkdownTokenTypes.EOL,
         MarkdownTokenTypes.WHITE_SPACE,
         MarkdownTokenTypes.BLOCK_QUOTE,
-        MarkdownElementTypes.LINK_DEFINITION,
         -> null
 
+        MarkdownElementTypes.LINK_DEFINITION -> footnote(node)
         MarkdownElementTypes.PARAGRAPH -> paragraph(node)
         MarkdownElementTypes.ATX_1 -> heading(node, 1, MarkdownTokenTypes.ATX_CONTENT)
         MarkdownElementTypes.ATX_2 -> heading(node, 2, MarkdownTokenTypes.ATX_CONTENT)
@@ -83,6 +83,26 @@ private class BlockConverter(
     private fun children(node: ASTNode): List<MarkdownBlock> = node.children.mapNotNull(::convert)
 
     private fun paragraph(node: ASTNode): MarkdownBlock? {
+        footnote(node)?.let { return it }
+        val special = node.children.mapNotNull { child ->
+            val image = if (child.type == MarkdownElementTypes.IMAGE) imageBlock(child, child)
+                else if (child.type == MarkdownTokenTypes.HTML_TAG) htmlImage(child.startOffset, child.text()) else null
+            image?.let { child to it }
+        }
+        if (special.isNotEmpty()) {
+            val blocks = mutableListOf<MarkdownBlock>()
+            var index = 0
+            special.forEach { (child, image) ->
+                val at = node.children.indexOf(child)
+                val leading = inline(node.children.subList(index, at))
+                if (leading.isNotBlank()) blocks += MarkdownParagraph(node.children.getOrNull(index)?.startOffset ?: node.startOffset, leading)
+                blocks += image
+                index = at + 1
+            }
+            val trailing = inline(node.children.drop(index))
+            if (trailing.isNotBlank()) blocks += MarkdownParagraph(node.children.getOrNull(index)?.startOffset ?: node.endOffset, trailing)
+            return if (blocks.size == 1) blocks.single() else MarkdownFlow(node.startOffset, blocks)
+        }
         val meaningful = node.children.filterNot { it.isWhitespaceLike() }
         val math = meaningful.singleOrNull()?.takeIf { it.type == GFMElementTypes.BLOCK_MATH }
         if (math != null) {
@@ -200,6 +220,8 @@ private class BlockConverter(
 
     private fun raw(node: ASTNode): MarkdownBlock? {
         val text = node.text().trim()
+        if (text.startsWith("<table", true)) mergedTable(node.startOffset, text)?.let { return it }
+        if (text.startsWith("<img", true)) htmlImage(node.startOffset, text)?.let { return it }
         if (text.isEmpty()) return null
         FOOTNOTE_DEFINITION.matchEntire(text)?.let { match ->
             val label = match.groupValues[1]
@@ -211,16 +233,58 @@ private class BlockConverter(
     }
 
     private fun imageBlock(paragraph: ASTNode, image: ASTNode): MarkdownImage? {
-        val link = image.child(MarkdownElementTypes.INLINE_LINK) ?: return null
-        val alt = link.child(MarkdownElementTypes.LINK_TEXT)?.text()
-            ?.removeSurrounding("[", "]")
-            .orEmpty()
-        val url = link.child(MarkdownElementTypes.LINK_DESTINATION)?.text()
-            ?.removeSurrounding("<", ">")
-            ?.takeIf(String::isNotBlank)
-            ?: return null
-        return MarkdownImage(paragraph.startOffset, url, alt)
+        val link = image.children.firstOrNull { it.type in setOf(MarkdownElementTypes.INLINE_LINK, MarkdownElementTypes.FULL_REFERENCE_LINK, MarkdownElementTypes.SHORT_REFERENCE_LINK) } ?: return null
+        val label = link.child(MarkdownElementTypes.LINK_TEXT) ?: link.child(MarkdownElementTypes.LINK_LABEL)
+        val alt = label?.text()?.removeSurrounding("[", "]").orEmpty()
+        val direct = link.child(MarkdownElementTypes.LINK_DESTINATION)?.text()?.removeSurrounding("<", ">")
+        val reference = link.child(MarkdownElementTypes.LINK_LABEL)?.text() ?: label?.text()
+        val url = direct ?: reference?.let { links?.getLinkInfo(it)?.destination?.toString() } ?: return null
+        return safeImageUrl(decodeMarkdownText(url))?.let { MarkdownImage(paragraph.startOffset, it, decodeMarkdownText(alt)) }
     }
+
+    private fun footnote(node: ASTNode): MarkdownFootnote? {
+        val match = FOOTNOTE_DEFINITION.matchEntire(node.text().trim()) ?: return null
+        val rendered = inline(node.children)
+        val start = rendered.text.indexOf("]:").takeIf { it >= 0 }?.plus(2)
+        val body = if (start != null) rendered.subSequence(start, rendered.length) else AnnotatedString(match.groupValues[2].trim())
+        return MarkdownFootnote(node.startOffset, match.groupValues[1], body)
+    }
+
+    private fun htmlImage(offset: Int, text: String): MarkdownImage? {
+        val element = org.jsoup.Jsoup.parseBodyFragment(text).select("img").singleOrNull() ?: return null
+        val uri = safeImageUrl(element.attr("src")) ?: return null
+        return MarkdownImage(offset, uri, element.attr("alt"))
+    }
+
+    private fun safeImageUrl(raw: String): String? = raw.trim().takeIf { url ->
+        url.length <= 18 * 1024 * 1024 && url.none(Char::isISOControl) &&
+            (url.substringBefore(':').lowercase() in setOf("https", "http", "file", "content") || url.startsWith("data:image/", true))
+    }
+
+    private fun mergedTable(offset: Int, source: String): MarkdownMergedTable? = runCatching {
+        require(source.length <= 512 * 1024)
+        val table = org.jsoup.Jsoup.parseBodyFragment(source).select("table").singleOrNull() ?: return null
+        val rowElements = table.select("tr").filter { it.parents().firstOrNull { parent -> parent.normalName() == "table" } == table }
+        require(rowElements.size in 1..100)
+        val occupied = Array(100) { BooleanArray(32) }
+        val cells = ArrayList<MarkdownMergedCell>(); var columns = 0
+        rowElements.forEachIndexed { row, element ->
+            var column = 0
+            element.children().filter { it.normalName() == "td" || it.normalName() == "th" }.forEach { cell ->
+                while (column < 32 && occupied[row][column]) column++
+                require(column < 32 && cells.size < 1000)
+                val rowSpan = (cell.attr("rowspan").toIntOrNull() ?: 1).coerceIn(1, rowElements.size - row)
+                val colSpan = (cell.attr("colspan").toIntOrNull() ?: 1).coerceIn(1, 32 - column)
+                for (r in row until row + rowSpan) for (c in column until column + colSpan) {
+                    require(!occupied[r][c]); occupied[r][c] = true
+                }
+                cells += MarkdownMergedCell(row, column, rowSpan, colSpan, cell.normalName() == "th", cell.wholeText().take(4096))
+                column += colSpan; columns = maxOf(columns, column)
+            }
+        }
+        require(columns > 0)
+        MarkdownMergedTable(offset, rowElements.size, columns, cells)
+    }.getOrNull()
 
     private fun inline(nodes: List<ASTNode>): AnnotatedString = inlineText(nodes, source, links, style)
 
@@ -274,6 +338,8 @@ internal fun List<MarkdownBlock>.revealKeys(): Set<RevealBlockKey> = buildSet {
     fun collect(block: MarkdownBlock) {
         when (block) {
             is MarkdownTextBlock -> if (block.text.isNotEmpty()) add(block.revealKey)
+            is MarkdownFlow -> block.blocks.forEach(::collect)
+            is MarkdownMergedTable -> Unit
             is MarkdownQuote -> block.blocks.forEach(::collect)
             is MarkdownAlert -> block.blocks.forEach(::collect)
             is MarkdownList -> block.items.forEach { item -> item.blocks.forEach(::collect) }
@@ -290,6 +356,8 @@ private fun List<MarkdownBlock>.firstRevealKey(): RevealBlockKey? = asSequence()
     .mapNotNull { block ->
         when (block) {
             is MarkdownTextBlock -> block.revealKey.takeIf { block.text.isNotEmpty() }
+            is MarkdownFlow -> block.blocks.firstRevealKey()
+            is MarkdownMergedTable -> null
             is MarkdownQuote -> block.blocks.firstRevealKey()
             is MarkdownAlert -> block.blocks.firstRevealKey()
             is MarkdownList -> block.items.firstOrNull()?.markerRevealKey

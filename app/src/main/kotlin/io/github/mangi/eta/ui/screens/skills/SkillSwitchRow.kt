@@ -42,6 +42,7 @@ internal fun SkillSwitchRow(
     onExport: (() -> Unit)? = null,
     onDelete: (() -> Unit)? = null,
     onOpenVersions: (() -> Unit)? = null,
+    onEdit: (() -> Unit)? = null,
 ) {
     var showDetails by remember(skill.id) { mutableStateOf(false) }
     val locale = LocalConfiguration.current.locales[0]
@@ -95,6 +96,7 @@ internal fun SkillSwitchRow(
                 modifier = Modifier.align(Alignment.CenterVertically),
                 entry = DropdownEntry(
                     items = buildList {
+                        onEdit?.let { edit -> add(DropdownItem(text = "编辑正文和显示名", enabled = enabled, onClick = edit)) }
                         add(DropdownItem(
                             text = stringResource(R.string.ui_view_description),
                             onClick = { showDetails = true },

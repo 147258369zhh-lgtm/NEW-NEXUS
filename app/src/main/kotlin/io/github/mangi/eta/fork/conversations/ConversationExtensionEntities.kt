@@ -32,6 +32,9 @@ internal data class ConversationExtensionEntity(
     @ColumnInfo(name = "archive_reason") val archiveReason: String? = null,
     @ColumnInfo(name = "auto_archive_exempt", defaultValue = "0") val autoArchiveExempt: Boolean = false,
     @ColumnInfo(name = "context_window_override") val contextWindowOverride: Int? = null,
+    @ColumnInfo(name = "compaction_model_id") val compactionModelId: String? = null,
+    @ColumnInfo(name = "compaction_provider_id") val compactionProviderId: String? = null,
+    @ColumnInfo(name = "last_message_at", defaultValue = "0") val lastMessageAt: Long = 0L,
     @ColumnInfo(name = "created_at") val createdAt: Long,
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
 )
@@ -80,10 +83,13 @@ internal fun ConversationExtensionEntity.toModel() = ConversationExtension(
     folderId = folderId,
     folderSortOrder = folderSortOrder,
     lastActiveAt = lastActiveAt,
+    lastMessageAt = lastMessageAt,
     archivedAt = archivedAt,
     archiveReason = archiveReason,
     autoArchiveExempt = autoArchiveExempt,
     contextWindowOverride = contextWindowOverride,
+    compactionModelId = compactionModelId,
+    compactionProviderId = compactionProviderId,
     createdAt = createdAt,
     updatedAt = updatedAt,
 )

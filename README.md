@@ -4,9 +4,13 @@
 
 <p align="center"><strong>面向 Android 的第三方系统级 AI 助手</strong></p>
 
+> **新会话开发入口：** [当前交接](docs/nexus/00_CURRENT_HANDOFF_2026-11-12.md)、[完成与未完成矩阵](docs/nexus/10_COMPLETION_MATRIX_2026-11-12.md)、[文件阅读规则](docs/nexus/09_DOCUMENT_MAP_AND_READING_RULES.md)。先读这三份，再按当前任务读取源码；不要从历史蓝图全文或旧聊天重新开始。
+
+> **最新交付：** `0.6.9 / 2026111230` 正式签名包已交付桌面；V6 仍为进行中，D01-D14 的准确状态以完成矩阵为准。
+
 > **完整开发档案：** [ETA → Nexus 项目记录、进度、注意事项与未完成事项](docs/NEXUS_PROJECT_HANDOFF.md)
 
-> **Nexus 开发状态：**阶段 0 完成；阶段 1 已接入非阻塞影子账本、retention 和调试 Timeline Reader；阶段 2/3 已接入 Application API、按需工具目录、ToolGrant 和 Settings 控制面，并为外观、MCP、Skill 与自学习补齐真实回滚；阶段 4 已完成模式持久化、Goal/Plan 状态卡和带自动 Revision 的记事本抽屉；阶段 5/6 已完成 Host/MCP/Connector/A2A 主干、旧 Eta 迁移向导、字体选择、Artifact Ledger、Classic/Omni Presentation Profile 和结构化 ContentPart 渲染；阶段 7/8 已接 canonical 语音状态机、资源优先级、迁移校验和 DSH plugin-kit v1 清单预检。DSH Host 本体、Ledger 恢复切换、正式签名和真机发布验收仍未完成。下文列出的功能来自承接的 Eta 基线，只有经过 Nexus 契约迁移和真实设备验收的条目才视为新架构完成。完整路线见 [可移交大改计划](docs/NEXUS_PORTABLE_MASTER_PLAN.md)。
+> **Nexus 实装状态：**当前处于新旧架构迁移与审计收口，完整 Run API、正式执行账本、统一权限、Host、结构化消息及双 UI 尚未全部完成生产接线和真机验收。能力目录、Goal/Plan/记事本、A2A 传输与部分语音状态已有真实接线；影子账本仍不驱动恢复。最新问题、改动及证据见 [Runtime 审计](docs/nexus/20_RUNTIME_AUDIT_2026-11-10.md)、[实装计划](docs/nexus/21_REAL_INTEGRATION_PLAN_2026-11-10.md) 和 [执行进度](docs/nexus/22_IMPLEMENTATION_PROGRESS_2026-11-10.md)。下文继承的 Eta 功能和旧阶段记录不能单独证明 Nexus 新架构已完成。
 
 <p align="center"><a href="https://github.com/147258369zhh-lgtm/NEW-NEXUS/stargazers"><img src="https://img.shields.io/github/stars/147258369zhh-lgtm/NEW-NEXUS?logo=github&amp;label=Stars&amp;color=1677FF" alt="GitHub Stars"></a> <a href="https://github.com/147258369zhh-lgtm/NEW-NEXUS/releases"><img src="https://img.shields.io/github/downloads/147258369zhh-lgtm/NEW-NEXUS/total?logo=github&amp;label=Downloads&amp;color=1677FF" alt="GitHub Releases 累计下载量"></a> <img src="https://img.shields.io/badge/minSdk-33-3DDC84?logo=android&amp;logoColor=white" alt="minSdk 33"> <img src="https://img.shields.io/badge/Assistant%20Integrations-ColorOS%20%26%20HyperOS-1677FF" alt="Assistant integrations for ColorOS and HyperOS"></p>
 

@@ -2,6 +2,7 @@ package io.github.mangi.eta.ui.components
 
 import android.graphics.BitmapFactory
 import android.util.Base64
+import kotlinx.coroutines.launch
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
@@ -40,6 +41,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.CallSplit
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.AddTask
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
@@ -47,6 +49,7 @@ import androidx.compose.material.icons.rounded.Compress
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.runtime.Composable
@@ -140,7 +143,11 @@ internal fun decodeDataUrlBitmap(dataUrl: String): ImageBitmap? {
     if (base64.isBlank()) return null
     return runCatching {
         val bytes = Base64.decode(base64, Base64.NO_WRAP)
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        var sample = 1
+        while (bounds.outWidth / sample > 1024 || bounds.outHeight / sample > 1024) sample *= 2
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })?.asImageBitmap()
     }.getOrNull()
 }
 
@@ -218,6 +225,7 @@ internal fun ChatMessageItem(
     onDeleteMessage: (String) -> Unit = {},
     onRegenerateMessage: (String) -> Unit = {},
     onForkMessage: ((String) -> Unit)? = null,
+    onCreateTaskFromMessage: ((String) -> Unit)? = null,
     onOpenPermissions: (() -> Unit)? = null,
     onStopWaiting: (() -> Unit)? = null,
     onSelectReplyCandidate: (String, Int) -> Unit = { _, _ -> },
@@ -235,6 +243,7 @@ internal fun ChatMessageItem(
                 onEdit = { onEditMessage(message.id) },
                 onDelete = { onDeleteMessage(message.id) },
                 onFork = onForkMessage?.let { callback -> { callback(message.id) } },
+                onCreateTask = onCreateTaskFromMessage?.let { callback -> { callback(message.id) } },
                 modifier = contentModifier,
             )
             is AgentMessageUi -> AgentMessageBlock(
@@ -324,6 +333,7 @@ internal fun ChatMessageItem(
 
 // ── 用户消息：轻盈美观气泡 ──────────────────────────────────────────────
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun UserMessageBubble(
     message: UserMessageUi,
@@ -334,6 +344,7 @@ private fun UserMessageBubble(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onFork: (() -> Unit)? = null,
+    onCreateTask: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     @Suppress("DEPRECATION")
@@ -351,6 +362,7 @@ private fun UserMessageBubble(
     val visiblePrompt = remember(message.content) {
         AgentFileReferencePromptCodec.parse(message.content)
     }
+    val messageBodyStyle = io.github.mangi.eta.ui.markdown.messageBodyTextStyle()
     val overlayBubbleColor = if (MiuixTheme.colorScheme.background.luminance() < 0.5f) {
         Color(0xFF37393D)
     } else {
@@ -361,7 +373,7 @@ private fun UserMessageBubble(
         modifier = modifier
             .fillMaxWidth()
             .padding(
-                horizontal = if (assistantOverlay) 16.dp else 20.dp,
+                horizontal = if (assistantOverlay) 16.dp else if (io.github.mangi.eta.ui.app.LocalNexusPresentationProfile.current.id in setOf("omni", "aurora")) 16.dp else 20.dp,
                 vertical = if (assistantOverlay) 4.dp else 8.dp,
             ),
         horizontalArrangement = Arrangement.End,
@@ -372,13 +384,13 @@ private fun UserMessageBubble(
             ),
             tooltip = {
                 RichTooltip(insideMargin = PaddingValues(horizontal = 8.dp, vertical = 6.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    FlowRow(modifier = Modifier.widthIn(max = 280.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                         MessageTooltipAction(
                             icon = Icons.Rounded.ContentCopy,
                             label = stringResource(R.string.ui_copy_4edd1d),
                             onClick = {
                                 @Suppress("DEPRECATION")
-                                clipboardManager.setText(AnnotatedString(message.content))
+                                clipboardManager.setText(invocationReferenceText(message.content, false))
                                 haptic.performHapticFeedback(HapticFeedbackType.Confirm)
                                 tooltipState.dismiss()
                             },
@@ -403,6 +415,10 @@ private fun UserMessageBubble(
                             onFork?.let { fork ->
                                 MessageTooltipAction(icon = Icons.AutoMirrored.Rounded.CallSplit, label = stringResource(R.string.branch_create),
                                     onClick = { tooltipState.dismiss(); fork() })
+                            }
+                            onCreateTask?.let { create ->
+                                MessageTooltipAction(icon = Icons.Rounded.AddTask, label = stringResource(R.string.chat_create_automation),
+                                    onClick = { tooltipState.dismiss(); create() })
                             }
                         }
                     }
@@ -445,6 +461,7 @@ private fun UserMessageBubble(
                         vertical = if (assistantOverlay) 8.dp else 12.dp,
                     ),
             ) {
+                var selectedImagePreview by remember(message.images) { mutableStateOf<String?>(null) }
                 if (message.images.isNotEmpty()) {
                     @OptIn(ExperimentalLayoutApi::class)
                     FlowRow(
@@ -453,22 +470,21 @@ private fun UserMessageBubble(
                         modifier = Modifier.padding(bottom = 8.dp)
                     ) {
                         message.images.forEach { dataUrl ->
-                            val bitmap = rememberDataUrlBitmap(dataUrl)
-                            if (bitmap != null) {
-                                Image(
-                                    bitmap = bitmap,
-                                    contentDescription = stringResource(R.string.chat_image_attachment),
-                                    modifier = Modifier
-                                        .size(100.dp)
-                                        .clip(RoundedCornerShape(12.dp)),
-                                    contentScale = ContentScale.Crop,
-                                )
-                            }
+                            NexaAttachmentContent(
+                                source = NexaAttachmentSource(dataUrl, stringResource(R.string.chat_image_attachment),
+                                    dataUrl.substringAfter("data:", "image/jpeg").substringBefore(';').takeIf { it.startsWith("image/") } ?: "image/jpeg"),
+                                modifier = Modifier.fillMaxWidth(),
+                                onOpenImage = { selectedImagePreview = dataUrl },
+                            )
                         }
                     }
                 }
+                selectedImagePreview?.let { uri ->
+                    NexusImagePreview(uri, stringResource(R.string.chat_image_attachment), true,
+                        onDismiss = { selectedImagePreview = null })
+                }
                 if (visiblePrompt.references.isNotEmpty()) {
-                    SentFileReferenceFlow(
+                    SentMediaAttachments(
                         references = visiblePrompt.references,
                         modifier = Modifier.padding(
                             bottom = if (visiblePrompt.request.isNotBlank()) 8.dp else 0.dp
@@ -478,8 +494,8 @@ private fun UserMessageBubble(
                 if (visiblePrompt.request.isNotBlank()) {
                     SelectionContainer {
                         Text(
-                            text = visiblePrompt.request,
-                            style = MiuixTheme.textStyles.body1,
+                            text = invocationReferenceText(visiblePrompt.request, MiuixTheme.colorScheme.background.luminance() < .5f),
+                            style = messageBodyStyle,
                             color = MiuixTheme.colorScheme.onSurface,
                         )
                     }
@@ -636,7 +652,13 @@ private fun AgentMessageBlock(
     val character = LocalRoleplayChat.current.takeIf { showCharacterIdentity && !assistantOverlay }
     var expanded by rememberSaveable(message.id) { mutableStateOf(false) }
     val collapsedPreview = previewLines != null && !expanded && !message.isStreaming
+    val artifactContext = androidx.compose.ui.platform.LocalContext.current
+    val artifactAccess = remember(artifactContext) { io.github.mangi.eta.data.repository.NexusArtifactAccess(artifactContext) }
+    val artifactActionScope = androidx.compose.runtime.rememberCoroutineScope()
+    var imagePreview by remember { mutableStateOf<Triple<String, String, String>?>(null) }
     val isGreeting = character != null && message.id.startsWith(GreetingMessagePrefix)
+    val messageTypography = io.github.mangi.eta.ui.app.LocalAppearanceSettings.current.messageTypography
+    val messageBodyStyle = io.github.mangi.eta.ui.markdown.messageBodyTextStyle()
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -649,7 +671,13 @@ private fun AgentMessageBlock(
             CharacterReplyHeader(character = character, isGreeting = isGreeting)
         }
         when {
-            message.contentParts.isNotEmpty() -> {
+            !messageTypography.renderMarkdown && message.content.isNotBlank() -> {
+                SelectionContainer { Text(text = message.content, style = messageBodyStyle,
+                    color = MiuixTheme.colorScheme.onSurface) }
+            }
+            message.contentParts.isNotEmpty() && !message.isStreaming && !collapsedPreview &&
+                (streamingState == null || revealComplete) -> {
+                SelectionContainer {
                 Column(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -657,17 +685,16 @@ private fun AgentMessageBlock(
                     message.contentParts.forEach { part ->
                         NexusContentPartRenderer(
                             part = part,
-                            resolveArtifact = NexusArtifactUriResolver { artifactId ->
-                                artifactId.value.takeIf {
-                                    it.startsWith("content://") || it.startsWith("file://") ||
-                                        it.startsWith("https://") || it.startsWith("http://") ||
-                                        it.startsWith("data:") || it.startsWith('/')
-                                }?.let { value ->
-                                    if (value.startsWith('/')) "file://$value" else value
+                            resolveArtifact = NexusArtifactUriResolver { null },
+                            onOpenFile = { artifact -> artifactActionScope.launch {
+                                runCatching { artifactAccess.launch(artifact.value) }.onFailure {
+                                    android.widget.Toast.makeText(artifactContext, "文件暂不可打开", android.widget.Toast.LENGTH_SHORT).show()
                                 }
-                            },
+                            } },
+                            onOpenImage = { uri, label -> imagePreview = Triple(uri, label, partArtifactId(part).orEmpty()) },
                         )
                     }
+                }
                 }
             }
             collapsedPreview -> {
@@ -696,6 +723,12 @@ private fun AgentMessageBlock(
                     tone = MarkdownTone.Answer,
                     onRevealCompleteChange = { streamingRevealComplete = it },
                     modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            message.renderMarkdown && io.github.mangi.eta.ui.screens.artwork.NexaWebArtworkStore.accepts(null, message.content) -> {
+                NexusContentPartRenderer(
+                    part = io.github.zhh_lgtm.nexus.kernel.api.MarkdownPart("${message.id}:web", message.content),
+                    resolveArtifact = NexusArtifactUriResolver { null },
                 )
             }
             message.renderMarkdown -> {
@@ -730,6 +763,10 @@ private fun AgentMessageBlock(
         message.searchSuggestionsHtml.forEach { html ->
             SearchSuggestionsView(html = html, modifier = Modifier.padding(top = 8.dp))
         }
+        imagePreview?.let { (uri, label, artifactId) ->
+            NexusImagePreview(uri = uri, label = label, show = true,
+                artifactId = artifactId.takeIf(String::isNotBlank), onDismiss = { imagePreview = null })
+        }
 
         // 回答显现完成后才出现操作行；淡入展开避免贴底滚动时整页突然跳动一行高度。
         AnimatedVisibility(
@@ -762,6 +799,7 @@ private fun AgentMessageBlock(
                     tint = if (copied) MiuixTheme.colorScheme.primary else null,
                 )
                 if (allowSpeech) SpeechReadAloudButton(message.id, message.content)
+                io.github.mangi.eta.ui.screens.capability.ConversationPluginMessageButton(message.id, message.content)
                 if (showMessageActions) {
                     onFork?.let { fork ->
                         TooltipBox(text = stringResource(R.string.branch_create), enabled = messageActionsEnabled) {
@@ -805,6 +843,7 @@ private fun AgentMessageBlock(
                 }
             }
         }
+        if (!message.isStreaming && revealComplete) io.github.mangi.eta.ui.screens.capability.DshReplyNotes(message.id)
     }
 }
 
@@ -1085,6 +1124,14 @@ internal fun ThinkingRow(
             }
         }
     }
+}
+
+private fun partArtifactId(part: io.github.zhh_lgtm.nexus.kernel.api.ContentPart): String? = when (part) {
+    is io.github.zhh_lgtm.nexus.kernel.api.ImagePart -> part.artifactId.value
+    is io.github.zhh_lgtm.nexus.kernel.api.AudioPart -> part.artifactId.value
+    is io.github.zhh_lgtm.nexus.kernel.api.VideoPart -> part.artifactId.value
+    is io.github.zhh_lgtm.nexus.kernel.api.FilePart -> part.artifactId.value
+    else -> null
 }
 
 /**

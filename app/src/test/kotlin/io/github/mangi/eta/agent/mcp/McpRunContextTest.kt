@@ -62,7 +62,7 @@ class McpRunContextTest {
             val executor = McpToolExecutor(
                 McpRunSnapshot(
                     listOf(McpRunTool("mcp_server_search", setting, definition, "run-token"))
-                )
+                ), available = { true }
             )
 
             val result = executor.execute(
@@ -74,7 +74,9 @@ class McpRunContextTest {
             assertEquals("Bearer run-token", authorization.get())
             assertTrue(result.sensitive)
             assertTrue(payload.getBoolean("truncated"))
-            assertEquals(1, payload.getInt("omitted_items"))
+            assertEquals(1, result.files.size)
+            assertEquals("audio/wav", result.files.single().mediaType)
+            assertTrue(!payload.has("omitted_items"))
             assertTrue(payload.getJSONArray("content").getString(0).contains("https://example.com/docs"))
         } finally {
             server.stop(0)

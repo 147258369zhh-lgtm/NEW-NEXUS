@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="system_tools_linux">Linux 工具箱</string>
+    <string name="system_tools_linux_summary">选择环境、安装能力包、管理下载与更新</string>
+    <string name="system_tools_terminal">打开终端</string>
+    <string name="system_tools_assistant_summary">普通默认助手无需 Root；系统接管需启用兼容框架</string>
+    <string name="system_tools_hooks_summary">系统搜索手势需兼容框架与正确作用域</string>
+    <string name="system_tools_access">系统增强与运行权限</string>
+    <string name="system_tools_root_summary">Root 授权与可选框架增强</string>
+    <string name="system_tools_permissions_summary">悬浮窗、无障碍、通知与后台执行</string>
+    <string name="system_tools_browser">网页浏览</string>
+</resources>

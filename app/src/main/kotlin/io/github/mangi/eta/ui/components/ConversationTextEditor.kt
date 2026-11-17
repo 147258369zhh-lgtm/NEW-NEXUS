@@ -1,15 +1,23 @@
 package io.github.mangi.eta.ui.components
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.InputTransformation
+import androidx.compose.foundation.text.input.OutputTransformation
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.maxLength
@@ -21,6 +29,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.key
 import androidx.compose.runtime.rememberCoroutineScope
@@ -31,6 +40,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -62,8 +76,23 @@ internal enum class ConversationDraftStatus { LOADING, READY, LOAD_FAILED, SAVE_
 
 /** Both navigation entries use the same identity boundary for local editor/timeline/audio state. */
 @Composable
-internal fun ConversationStage(subject: ConversationSubject, content: @Composable () -> Unit) {
-    key(subject.key) { CompositionLocalProvider(LocalConversationSubject provides subject, content = content) }
+internal fun ConversationStage(subject: ConversationSubject, onDshCommand: (String, String) -> Boolean = { _, _ -> false }, content: @Composable () -> Unit) {
+    val eventContext = LocalContext.current
+    androidx.compose.runtime.DisposableEffect(subject.key) {
+        if (subject.id.isNotBlank()) io.github.mangi.eta.agent.packages.PackageApplicationEvents.emit(eventContext,
+            "ChatViewHook", "view_opened", org.json.JSONObject().put("chatId", subject.id).put("viewId", subject.key).put("runtime", "main"), subject)
+        onDispose {
+            if (subject.id.isNotBlank()) io.github.mangi.eta.agent.packages.PackageApplicationEvents.emit(eventContext,
+                "ChatViewHook", "view_closed", org.json.JSONObject().put("chatId", subject.id).put("viewId", subject.key).put("runtime", "main"), subject)
+        }
+    }
+    key(subject.key) {
+        CompositionLocalProvider(LocalConversationSubject provides subject) {
+          io.github.mangi.eta.ui.screens.capability.DshConversationEntry(subject, onCommand = onDshCommand) {
+            content()
+          }
+        }
+    }
 }
 
 /** One editor's restore fence. A late disk read must never replace text already changed locally. */
@@ -84,7 +113,8 @@ internal class ConversationEditorState(
 
     fun snapshot() = ConversationDraft(field.text.toString(), field.selection.start, field.selection.end)
 
-    fun registerActive() = repository.registerActive(lease, acceptHandoff = !changed && snapshot() == baseline) {
+    fun registerActive() = repository.registerActive(lease, acceptHandoff = !changed && snapshot() == baseline,
+        replace = { draft -> replace(draft.text, TextRange(draft.selectionStart, draft.selectionEnd)) }) {
         if (status.value == ConversationDraftStatus.READY || status.value == ConversationDraftStatus.SAVE_FAILED) snapshot() else null
     }
 
@@ -198,7 +228,19 @@ internal fun ConversationTextEditor(
     maxLength: Int? = null,
     onUserEdit: () -> Unit = {},
 ) {
-    val style = MiuixTheme.textStyles.body1.copy(lineHeight = 22.sp)
+    val typography = io.github.mangi.eta.ui.app.LocalAppearanceSettings.current.messageTypography
+    val style = MiuixTheme.textStyles.body1.copy(lineHeight = 22.sp,
+        fontFamily = io.github.mangi.eta.ui.markdown.messageFontFamily(typography.font)
+            ?: MiuixTheme.textStyles.body1.fontFamily)
+    val dark = MiuixTheme.colorScheme.background.luminance() < .5f
+    val referencePresentation = remember(dark) {
+        OutputTransformation {
+            io.github.mangi.eta.agent.model.AgentInvocationReferences.parse(asCharSequence()).asReversed().forEach { ref ->
+                if (ref.end - ref.start > ref.display.length) replace(ref.start + ref.display.length, ref.end, "")
+                addStyle(invocationReferenceStyle(ref.isSkill, dark), ref.start, ref.start + ref.display.length)
+            }
+        }
+    }
     val trackInput = InputTransformation { if (changes.changeCount > 0) onUserEdit() }
     Box(
         modifier = modifier.defaultMinSize(minHeight = 48.dp).padding(horizontal = 8.dp, vertical = 6.dp),
@@ -210,6 +252,7 @@ internal fun ConversationTextEditor(
         )
         BasicTextField(
             state = state,
+            outputTransformation = referencePresentation,
             enabled = enabled,
             modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 36.dp)
                 .semantics { contentDescription = placeholder }

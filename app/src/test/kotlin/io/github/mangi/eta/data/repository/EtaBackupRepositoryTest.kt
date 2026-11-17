@@ -8,6 +8,8 @@ import io.github.mangi.eta.data.db.ConversationStateEntity
 import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.data.model.ModelSource
 import io.github.mangi.eta.data.model.ProviderAuthModes
+import io.github.mangi.eta.data.model.ModelRoleSettings
+import io.github.mangi.eta.data.model.AgentPermissionMode
 import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import io.github.mangi.eta.data.model.Model
 import io.github.mangi.eta.data.model.withApiKey
@@ -40,6 +42,47 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
 class EtaBackupRepositoryTest {
+    @Test
+    fun modelRoleBindingsRoundTripWithoutChangingProviderSecrets() = runBlocking {
+        ProviderRepository.addProvider(OpenAiCompatibleProviderSetting(
+            id = "role-provider", name = "角色提供商", baseUrl = "https://example.invalid/v1", apiKey = "fixture-key",
+            models = listOf(
+                io.github.mangi.eta.data.model.Model(id = "role-aux", modelId = "aux", displayName = "辅助"),
+                io.github.mangi.eta.data.model.Model(id = "role-compact", modelId = "compact", displayName = "压缩"),
+                io.github.mangi.eta.data.model.Model(id = "role-memory", modelId = "memory", displayName = "记忆"),
+                io.github.mangi.eta.data.model.Model(id = "role-learning", modelId = "learning", displayName = "自学习"),
+                io.github.mangi.eta.data.model.Model(id = "role-transcript", modelId = "transcript", displayName = "语音整理"),
+            ),
+        ))
+        val expected = ModelRoleSettings(
+            auxiliaryProviderId = "role-provider", auxiliaryModelId = "role-aux",
+            compactionProviderId = "role-provider", compactionModelId = "role-compact",
+            memoryProviderId = "role-provider", memoryModelId = "role-memory",
+            learningProviderId = "role-provider", learningModelId = "role-learning",
+            transcriptProviderId = "role-provider", transcriptModelId = "role-transcript",
+        )
+        SettingsDataStore.setModelRoleSettings(expected)
+
+        val output = ByteArrayOutputStream()
+        EtaBackupRepository.export(context, output)
+        SettingsDataStore.setModelRoleSettings(ModelRoleSettings())
+        EtaBackupRepository.import(context, ByteArrayInputStream(output.toByteArray()))
+
+        assertEquals(expected, SettingsDataStore.modelRoleSettings())
+    }
+
+    @Test
+    fun agentPermissionModeRoundTripsWithSettingsBackup() = runBlocking {
+        SettingsDataStore.setAgentPermissionMode(AgentPermissionMode.FULL_ACCESS)
+        val output = ByteArrayOutputStream()
+        EtaBackupRepository.export(context, output)
+
+        SettingsDataStore.setAgentPermissionMode(AgentPermissionMode.MANUAL_APPROVAL)
+        EtaBackupRepository.import(context, ByteArrayInputStream(output.toByteArray()))
+
+        assertEquals(AgentPermissionMode.FULL_ACCESS, SettingsDataStore.agentPermissionMode())
+    }
+
     private val context = RuntimeEnvironment.getApplication()
 
     @Before

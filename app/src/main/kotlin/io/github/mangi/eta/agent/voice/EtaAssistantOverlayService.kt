@@ -1,6 +1,7 @@
 package io.github.mangi.eta.agent.voice
 
 import io.github.mangi.eta.data.model.TtsProvider
+import io.github.mangi.eta.data.model.supportsLiveRecognition
 import io.github.mangi.eta.data.model.SpeechSettings
 import io.github.mangi.eta.data.repository.SpeechSettingsRepository
 import io.github.mangi.eta.ui.voice.openSpeechSettings
@@ -99,6 +100,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     private val eventCoalescer = AgentRunEventCoalescer()
     private var deltaFlushJob: Job? = null
     private var speechLevel by mutableFloatStateOf(0f)
+    private var speechWaveform by mutableStateOf(FloatArray(SpeechInputState.WAVEFORM_SAMPLES))
     private var speechState by mutableStateOf(EtaSpeechState())
     /**
      * 识别侧与播报侧分别维护自己的状态，再由 [publishSpeechState] 合成一份界面状态：
@@ -115,15 +117,35 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     private val speechForeground by lazy { AssistantSpeechForeground(this) }
     private val wakeWordStore by lazy { WakeWordStore(this) }
     private val voiceprintStore by lazy { VoiceprintProfileStore(this) }
+    private val duplexAudioGroup = Any()
     private var speechSpeakerFeatures: ByteArray? = null
+    private var speechSpeakerIdentity: String = ""
+    private var supplementRunId: String? = null
     private val playback by lazy {
-        SpeechPlaybackController(this, scope, beforePlayback = speechForeground::playback, afterPlayback = speechForeground::playbackStopped)
+        SpeechPlaybackController(this, scope, beforePlayback = speechForeground::playback, afterPlayback = speechForeground::playbackStopped,
+            duplexAudioGroup = duplexAudioGroup)
+    }
+    private val duplex: DuplexSpeechController by lazy {
+        DuplexSpeechController(this, scope, duplexAudioGroup,
+            foreground = { active -> if (active) speechForeground.monitoring() else speechForeground.monitoringStopped() },
+            playbackActive = { playbackSpeaking },
+            onInterrupted = { playback.stopSmoothly() },
+            onUnavailable = { message ->
+                voiceSession.setBargeInEnabled(true)
+                updateSpeechState(EtaSpeechState(message = message))
+            },
+            onUtterance = { capture ->
+                speechSpeakerFeatures = null; speechSpeakerIdentity = ""
+                speechInput.start(capturedAudio = capture)
+            }, onCaptureStatus = { available -> bargeInArmed = available; publishSpeechState() },
+            endpointSilenceMs = { speechSettings?.autoSendSilenceMs ?: 2_000 })
     }
     private val voiceSession by lazy {
         LocalVoiceSessionCoordinator(
             scope = scope,
             stopSpeaking = { fadeMs -> playback.stopSmoothly(fadeMs) },
             startListening = { startSpeechInternal() },
+            startListeningWithCapture = { capture -> startSpeechInternal(capturedAudio = capture) },
             monitorFactory = { SpeechBargeInMonitor(this) },
             onMonitorLevel = { level -> speechLevel = level },
             onMonitoringChanged = { active ->
@@ -131,44 +153,54 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             },
         )
     }
-    private val speechInput by lazy {
+    private val speechInput: SpeechInputController by lazy {
         SpeechInputController(
             context = this,
             scope = scope,
             automaticEndpoint = true,
             captureSpeakerFeatures = true,
             onSpeakerFeatures = { features -> speechSpeakerFeatures = features },
+            onSpeakerIdentity = { identity -> speechSpeakerIdentity = identity },
+            duplexAudioGroup = duplexAudioGroup,
             beforeCapture = speechForeground::recording,
             afterCapture = speechForeground::recordingStopped,
-            onResult = { text ->
+            onResult = speechResult@{ text ->
+                val wasDuplex = duplex.active
+                if (wasDuplex) duplex.transcript(text)
+                duplex.recognitionFinished()
                 updateSpeechState(EtaSpeechState())
-                if (!WakeWordMatcher.matches(text, wakeWordStore.read())) {
-                    updateSpeechState(EtaSpeechState(message = getString(R.string.speech_wake_word_not_detected)))
-                    scope.launch(Dispatchers.Main.immediate) {
-                        delay(650L)
-                        if (activeRunId == null && windowView != null) startSpeech()
-                    }
-                } else if (wakeWordStore.read().voiceprintEnabled) {
-                    val wakeConfig = wakeWordStore.read()
-                    val verification = voiceprintStore.verify(
-                        featureVector = speechSpeakerFeatures,
-                        threshold = wakeConfig.voiceprintThreshold,
-                    )
-                    speechSpeakerFeatures = null
-                    updateSpeechState(EtaSpeechState(message = getString(
-                        when (verification) {
-                            VoiceprintVerification.VERIFIED -> R.string.speech_voiceprint_verified
+                val speakerConfig = wakeWordStore.read()
+                if (speakerConfig.voiceprintEnabled) {
+                    val verification = voiceprintStore.verify(speechSpeakerFeatures, speakerConfig.voiceprintThreshold, speechSpeakerIdentity)
+                    speechSpeakerFeatures = null; speechSpeakerIdentity = ""
+                    if (verification != VoiceprintVerification.VERIFIED) {
+                        updateSpeechState(EtaSpeechState(message = getString(when (verification) {
                             VoiceprintVerification.REJECTED -> R.string.speech_voiceprint_rejected
                             VoiceprintVerification.NO_PROFILE -> R.string.speech_voiceprint_profile_required
-                            VoiceprintVerification.DISABLED -> R.string.speech_voiceprint_unavailable
-                            VoiceprintVerification.UNAVAILABLE -> R.string.speech_voiceprint_unavailable
-                        },
-                    )))
-                    if (verification == VoiceprintVerification.VERIFIED) submitPromptInternal(text, fromSpeech = true)
-                } else {
-                    speechSpeakerFeatures = null
-                    submitPromptInternal(text, fromSpeech = true)
+                            else -> R.string.speech_voiceprint_unavailable
+                        })))
+                        return@speechResult
+                    }
                 }
+                val target = supplementRunId ?: activeRunId?.takeIf { wasDuplex }
+                if (target != null) {
+                    supplementRunId = null
+                    scope.launch {
+                        val accepted = runtimeClient.supplement(target, text)
+                        withContext(Dispatchers.Main.immediate) {
+                            RunVoiceSupplement.completed(target, when (accepted) {
+                                AgentRuntimeClient.SupplementOutcome.ACCEPTED -> "补充已加入当前任务"
+                                AgentRuntimeClient.SupplementOutcome.NOT_ACCEPTING -> "任务已结束，补充未执行"
+                                AgentRuntimeClient.SupplementOutcome.UNAVAILABLE -> "提交状态未确认，请核对会话后再操作"
+                            }, preview = text)
+                            if (accepted != AgentRuntimeClient.SupplementOutcome.ACCEPTED && wasDuplex) inputText = text
+                            if (activeRunId == null && windowView == null && !wasDuplex) stopSelf()
+                        }
+                    }
+                    return@speechResult
+                }
+                speechSpeakerFeatures = null
+                submitPromptInternal(text, fromSpeech = true)
             },
         )
     }
@@ -221,9 +253,23 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             }
         }
         scope.launch(Dispatchers.Main.immediate) {
+            var previousInputActive = false
             speechInput.state.collect { state ->
+                supplementRunId?.let { target ->
+                    RunVoiceSupplement.publish(target, state)
+                    if (state.error != null && !state.active) {
+                        supplementRunId = null
+                        if (activeRunId == null && windowView == null) stopSelf()
+                    }
+                }
                 speechLevel = state.level
+                speechWaveform = state.waveform
                 if (state.preview.isNotBlank()) inputText = state.preview
+                if (duplex.active) {
+                    duplex.transcript(state.preview)
+                    if (previousInputActive && !state.active) duplex.recognitionFinished()
+                }
+                previousInputActive = state.active
                 updateSpeechState(EtaSpeechState(
                     phase = state.phase,
                     // 连接、聆听、识别中的阶段播报由语音条目与波形承担，反馈条只保留错误提示，
@@ -234,7 +280,9 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                     holdToTalk = speechHeld && state.active,
                 ))
                 // 识别会话的生命周期就是协调器的“正在听”，开始与结束都在这里对齐。
-                if (state.active) voiceSession.onListeningStarted() else voiceSession.onListeningEnded()
+                if (!duplex.active) {
+                    if (state.active) voiceSession.onListeningStarted() else voiceSession.onListeningEnded()
+                }
             }
         }
         scope.launch(Dispatchers.Main.immediate) {
@@ -261,7 +309,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         }
         scope.launch(Dispatchers.Main.immediate) {
             voiceSession.state.collect { session ->
-                if (session.bargeInArmed != bargeInArmed) {
+                if (!duplex.active && session.bargeInArmed != bargeInArmed) {
                     bargeInArmed = session.bargeInArmed
                     if (playbackSpeaking) publishSpeechState()
                 }
@@ -272,12 +320,44 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             AssistantSpeechForeground.ACTION_STOP -> {
+                duplex.stop()
                 voiceSession.release()
                 speechInput.cancel()
                 playback.stop()
             }
             ACTION_SHOW -> showEntry(intent.getStringExtra(EXTRA_SCREEN_CONTEXT_ID))
+            ACTION_WAKE -> {
+                val current = activeRunId
+                if (current == null) showEntry(null)
+                else { supplementRunId = current; showWindow(); startSpeechInternal(holdToTalk = false) }
+            }
             ACTION_HANDOFF_READY -> finishHandoff()
+            RunVoiceSupplement.START -> {
+                val target = intent.getStringExtra(RunVoiceSupplement.RUN_ID).orEmpty()
+                if (target.isNotBlank()) {
+                    speechInput.cancel()
+                    supplementRunId = target
+                    scope.launch {
+                        val prepared = runCatching { runtimeClient.queryActiveRuns() to SpeechSettingsRepository.settings() }
+                        withContext(Dispatchers.Main.immediate) {
+                            if (supplementRunId != target) return@withContext
+                            val active = prepared.getOrNull()?.first
+                            speechSettings = prepared.getOrNull()?.second ?: speechSettings
+                            if (active !is AgentRuntimeClient.ActiveRunsQuery.Known || target !in active.runIds) {
+                                RunVoiceSupplement.completed(target, "任务已结束或状态不可用")
+                                supplementRunId = null
+                                if (activeRunId == null && windowView == null) stopSelf()
+                            } else startSpeechInternal(holdToTalk = false)
+                        }
+                    }
+                }
+            }
+            RunVoiceSupplement.FINISH -> if (supplementRunId == intent.getStringExtra(RunVoiceSupplement.RUN_ID)) speechInput.finish()
+            RunVoiceSupplement.CANCEL -> if (supplementRunId == intent.getStringExtra(RunVoiceSupplement.RUN_ID)) {
+                supplementRunId?.let { RunVoiceSupplement.completed(it, "已取消") }; supplementRunId = null
+                speechInput.cancel()
+                if (activeRunId == null && windowView == null) stopSelf()
+            }
             else -> Unit
         }
         return START_NOT_STICKY
@@ -321,6 +401,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     }
 
     override fun onDestroy() {
+        supplementRunId?.let { RunVoiceSupplement.completed(it, "语音已停止") }; supplementRunId = null
         entryGeneration++
         EtaAssistantScreenContexts.release(entryScreenContext?.id)
         entryScreenContext = null
@@ -413,7 +494,8 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     }
 
     private fun startSpeech(holdToTalk: Boolean = false) {
-        if (activeRunId != null || speechSettings?.recognitionEnabled != true) return
+        if (speechSettings?.recognitionEnabled != true) return
+        activeRunId?.let { supplementRunId = it; RunVoiceSupplement.begin(it) }
         pendingHoldToTalk = holdToTalk
         when (voiceSession.state.value.phase) {
             VoiceSessionPhase.SPEAKING -> {
@@ -427,13 +509,32 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         startSpeechInternal(holdToTalk)
     }
 
-    private fun startSpeechInternal(holdToTalk: Boolean = pendingHoldToTalk) {
-        if (activeRunId != null || speechSettings?.recognitionEnabled != true) return
-        if (speechInput.state.value.active) return
+    private fun startSpeechInternal(holdToTalk: Boolean = pendingHoldToTalk, capturedAudio: SpeechAudioCapture? = null) {
+        if (duplex.active && capturedAudio == null) {
+            if (!holdToTalk) return
+            duplex.stop(); voiceSession.setBargeInEnabled(true)
+            scope.launch(Dispatchers.Main.immediate) { duplex.awaitStopped(); startSpeechInternal(holdToTalk = true) }
+            return
+        }
+        if (activeRunId != null && supplementRunId == null) { capturedAudio?.cancel(); return }
+        if (speechSettings?.recognitionEnabled != true) {
+            capturedAudio?.cancel()
+            supplementRunId?.let { RunVoiceSupplement.completed(it, "请先启用语音识别") }; supplementRunId = null
+            if (activeRunId == null && windowView == null) stopSelf()
+            return
+        }
+        if (speechInput.state.value.active) { capturedAudio?.cancel(); return }
         entryInputPending = false
         awaitingVoiceFollowUp = false
         if (playbackSpeaking) playback.stop()
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            capturedAudio?.cancel()
+            if (supplementRunId != null) {
+                RunVoiceSupplement.completed(supplementRunId!!, "请先授予麦克风权限")
+                supplementRunId = null
+                if (activeRunId == null && windowView == null) stopSelf()
+                return
+            }
             try {
                 startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -452,13 +553,16 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             view.clearFocus()
         }
         speechLevel = 0f
+        speechWaveform = FloatArray(SpeechInputState.WAVEFORM_SAMPLES)
+        speechSpeakerFeatures = null; speechSpeakerIdentity = ""
         speechHeld = holdToTalk
         updateSpeechState(EtaSpeechState(phase = EtaSpeechPhase.STARTING, holdToTalk = holdToTalk))
         voiceSession.onListeningStarted()
-        speechInput.start(holdToTalk = holdToTalk)
+        speechInput.start(holdToTalk = holdToTalk, capturedAudio = capturedAudio)
     }
 
     private fun scheduleVoiceFollowUp() {
+        if (duplex.active) return
         scope.launch(Dispatchers.Main.immediate) {
             delay(320L)
             if (continuousVoiceConversation &&
@@ -477,6 +581,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     }
 
     private fun cancelSpeech() {
+        duplex.stop()
         voiceSession.stopSpeakingNow()
         speechInput.cancel()
         speechHeld = false
@@ -487,6 +592,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     }
 
     private fun switchToKeyboard() {
+        duplex.stop()
         voiceSession.stopSpeakingNow()
         speechInput.cancel()
         continuousVoiceConversation = false
@@ -537,6 +643,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                             }
                         },
                         speechLevel = { speechLevel },
+                        speechWaveform = { speechWaveform },
                         onMicrophone = ::startSpeech,
                         onCancelSpeech = ::cancelSpeech,
                         onFinishSpeech = { speechInput.finish() },
@@ -651,7 +758,18 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
 
     private fun submitInput() {
         val prompt = inputText.trim()
-        if (prompt.isBlank() || activeRunId != null) return
+        if (prompt.isBlank()) return
+        activeRunId?.let { target ->
+            inputText = ""
+            scope.launch {
+                val accepted = runtimeClient.supplement(target, prompt)
+                if (accepted != AgentRuntimeClient.SupplementOutcome.ACCEPTED) withContext(Dispatchers.Main.immediate) {
+                    inputText = prompt
+                    updateSpeechState(EtaSpeechState(message = "补充未确认，请核对当前任务"))
+                }
+            }
+            return
+        }
         submitPrompt(prompt)
     }
 
@@ -660,11 +778,18 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     private fun submitPromptInternal(prompt: String, fromSpeech: Boolean) {
         val normalized = prompt.trim()
         if (normalized.isBlank() || activeRunId != null) return
-        continuousVoiceConversation = fromSpeech && speechSettings?.continuousConversation == true
+        val liveDuplex = speechSettings?.let { it.duplexConversation && it.recognitionEnabled && it.asr.supportsLiveRecognition() } == true
+        continuousVoiceConversation = fromSpeech && (speechSettings?.continuousConversation == true || liveDuplex)
         awaitingVoiceFollowUp = false
         entryInputPending = false
         inputFocusRequestKey = -1
         speechInput.cancel()
+        if (fromSpeech && liveDuplex) {
+            voiceSession.setBargeInEnabled(false)
+            duplex.start()
+        } else {
+            duplex.stop(); voiceSession.setBargeInEnabled(true)
+        }
         updateSpeechState(EtaSpeechState())
         // 打字提交同样结束朗读，只是不需要接着开麦。
         if (voiceSession.state.value.phase == VoiceSessionPhase.SPEAKING) {
@@ -741,7 +866,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                     getSystemService(PowerManager::class.java).isInteractive &&
                     speechConfig?.autoSpeak == true && speechConfig.tts != TtsProvider.NONE) {
                     val messageId = uiState.messages.filterIsInstance<AgentMessageUi>().lastOrNull()?.id ?: runId
-                    playback.speak(messageId, result.content, settings = speechConfig)
+                    if (!duplex.userSpeaking) playback.speak(messageId, result.content, settings = speechConfig)
                     awaitingVoiceFollowUp = continuousVoiceConversation
                 } else if (continuousVoiceConversation && result.ok && !hiddenForForegroundOperation &&
                     getSystemService(PowerManager::class.java).isInteractive
@@ -911,6 +1036,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     }
 
     private fun cancelCurrentRun() {
+        duplex.stop()
         voiceSession.release()
         playback.stop()
         speechInput.cancel()
@@ -950,9 +1076,10 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
 
     private fun removeWindow(onComplete: ((Boolean) -> Unit)? = null) {
         entryInputPending = false
+        if (!hiddenForForegroundOperation) duplex.stop()
         voiceSession.release()
         playback.stop()
-        speechInput.cancel()
+        if (!duplex.active) speechInput.cancel()
         speechForeground.stop()
         updateSpeechState(EtaSpeechState())
         unregisterSystemBackCallback()
@@ -1105,6 +1232,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
 
     internal companion object {
         const val ACTION_SHOW = "io.github.mangi.eta.agent.voice.SHOW"
+        private const val ACTION_WAKE = "io.github.zhh_lgtm.nexus.WAKE_ASSISTANT"
         const val ACTION_OPEN_CONVERSATION = "io.github.mangi.eta.agent.voice.OPEN_CONVERSATION"
         const val EXTRA_CONVERSATION_KEY = "io.github.mangi.eta.agent.voice.extra.CONVERSATION_KEY"
         private const val EXTRA_SCREEN_CONTEXT_ID = "assistant_screen_context_id"
@@ -1168,6 +1296,10 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                     .setAction(ACTION_SHOW)
                     .putExtra(EXTRA_SCREEN_CONTEXT_ID, screenContextId),
             )
+        }
+
+        fun showFromWake(context: Context) {
+            context.applicationContext.startService(Intent(context, EtaAssistantOverlayService::class.java).setAction(ACTION_WAKE))
         }
 
         fun dismiss(context: Context) {

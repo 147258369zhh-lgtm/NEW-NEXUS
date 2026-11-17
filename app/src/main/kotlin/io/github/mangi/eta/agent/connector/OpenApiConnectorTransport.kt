@@ -69,9 +69,14 @@ internal class OpenApiConnectorTransport(
                 ),
             )
         }
+        // ApiToolExecutor owns this envelope; its ok field is execution status, not remote business data.
+        val payload = runCatching { JSONObject(result.content) }.getOrElse { JSONObject().put("content", result.content) }
         ConnectorResult(
-            json = runCatching { JSONObject(result.content) }.getOrElse { JSONObject().put("content", result.content) },
+            json = payload,
             text = result.content,
+            success = payload.optBoolean("ok", false),
+            errorCode = payload.optString("code").takeIf(String::isNotBlank),
+            errorMessage = payload.optString("message").takeIf(String::isNotBlank),
         )
     }
 }

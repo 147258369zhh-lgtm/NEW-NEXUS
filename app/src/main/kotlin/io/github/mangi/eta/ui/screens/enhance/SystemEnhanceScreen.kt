@@ -8,6 +8,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.height
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.foundation.lazy.rememberLazyListState
+import io.github.mangi.eta.ui.components.NexusSettingsTabs
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
@@ -34,10 +40,10 @@ import io.github.mangi.eta.ui.components.EtaStatusTone
 import io.github.mangi.eta.ui.components.etaGlassSurface
 import io.github.mangi.eta.ui.model.AgentSystemEnhanceAction
 import top.yukonga.miuix.kmp.basic.BasicComponent
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle as SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -50,14 +56,21 @@ fun SystemEnhanceScreen(
     val context = LocalContext.current
     val capabilities = rememberDeviceCapabilities()
     val canRequestRoot = capabilities.root.suPresent && !capabilities.root.isGranted
+    var category by rememberSaveable { mutableIntStateOf(0) }
+    val accessScroll = rememberLazyListState()
+    val featuresScroll = rememberLazyListState()
     MiuixScaffoldPage(
+        listState = if (category == 0) accessScroll else featuresScroll,
+        aboveContent = { NexusSettingsTabs(listOf(
+            stringResource(R.string.settings_tab_system_access), stringResource(R.string.settings_tab_system_features),
+        ), category, { category = it }) },
         title = stringResource(R.string.capability_enhancements),
         onBack = { onAction(AgentSystemEnhanceAction.NavigateBack) },
         modifier = modifier,
     ) {
         item(key = "overview") {
             Card(
-                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
                     .etaGlassSurface(accent = EtaIconTone.SYSTEM.accent, cornerRadius = 18.dp),
                 colors = CardDefaults.defaultColors(MiuixTheme.colorScheme.surfaceContainer, MiuixTheme.colorScheme.onSurface),
             ) {
@@ -87,11 +100,11 @@ fun SystemEnhanceScreen(
                 }
             }
         }
-        item(key = "access") {
+        if (category == 0) item(key = "access") {
             SmallTitle("访问能力")
             Card(
                 modifier = Modifier
-                    .padding(horizontal = 12.dp)
+                    .padding(horizontal = 16.dp)
                     .padding(bottom = 12.dp)
                     .etaGlassSurface(accent = EtaIconTone.SYSTEM.accent, cornerRadius = 18.dp),
                 colors = CardDefaults.defaultColors(MiuixTheme.colorScheme.surfaceContainer, MiuixTheme.colorScheme.onSurface),
@@ -133,10 +146,10 @@ fun SystemEnhanceScreen(
                 )
             }
         }
-        item(key = "framework-help") {
+        if (category == 0) item(key = "framework-help") {
             Card(
                 modifier = Modifier
-                    .padding(horizontal = 12.dp)
+                    .padding(horizontal = 16.dp)
                     .padding(bottom = 12.dp)
                     .etaGlassSurface(accent = EtaIconTone.TOOL.accent, cornerRadius = 16.dp),
                 colors = CardDefaults.defaultColors(MiuixTheme.colorScheme.surfaceContainer, MiuixTheme.colorScheme.onSurface),
@@ -147,11 +160,11 @@ fun SystemEnhanceScreen(
                 )
             }
         }
-        item(key = "root-features") {
+        if (category == 1) item(key = "root-features") {
             SmallTitle(stringResource(R.string.capability_root_features))
             Card(
                 modifier = Modifier
-                    .padding(horizontal = 12.dp)
+                    .padding(horizontal = 16.dp)
                     .padding(bottom = 12.dp)
                     .etaGlassSurface(accent = EtaIconTone.SYSTEM.accent, cornerRadius = 18.dp),
                 colors = CardDefaults.defaultColors(MiuixTheme.colorScheme.surfaceContainer, MiuixTheme.colorScheme.onSurface),
@@ -163,11 +176,11 @@ fun SystemEnhanceScreen(
                 EnhanceFeatureRow(Icons.Rounded.Terminal, stringResource(R.string.capability_root_linux), stringResource(R.string.capability_root_linux_summary))
             }
         }
-        item(key = "hook-features") {
+        if (category == 1) item(key = "hook-features") {
             SmallTitle(stringResource(R.string.capability_system_features))
             Card(
                 modifier = Modifier
-                    .padding(horizontal = 12.dp)
+                    .padding(horizontal = 16.dp)
                     .padding(bottom = 12.dp)
                     .etaGlassSurface(accent = EtaIconTone.TOOL.accent, cornerRadius = 18.dp),
                 colors = CardDefaults.defaultColors(MiuixTheme.colorScheme.surfaceContainer, MiuixTheme.colorScheme.onSurface),

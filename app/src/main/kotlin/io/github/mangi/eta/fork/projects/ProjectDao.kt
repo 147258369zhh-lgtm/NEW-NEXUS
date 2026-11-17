@@ -40,6 +40,12 @@ internal interface ProjectDao {
     @Query("SELECT * FROM project_subject_bindings WHERE project_id = :projectId ORDER BY subject_type, subject_id")
     suspend fun bindingsForProject(projectId: String): List<ProjectSubjectBindingEntity>
 
+    @Query("SELECT * FROM project_subject_bindings")
+    suspend fun allBindings(): List<ProjectSubjectBindingEntity>
+
+    @Query("SELECT * FROM project_subject_bindings WHERE subject_type = :subjectType AND subject_id = :subjectId LIMIT 1")
+    suspend fun binding(subjectType: String, subjectId: String): ProjectSubjectBindingEntity?
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertProject(project: ProjectEntity)
 

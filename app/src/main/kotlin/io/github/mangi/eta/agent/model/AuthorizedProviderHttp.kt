@@ -18,6 +18,7 @@ internal object AuthorizedProviderHttp {
         controller: AgentRunController,
         accessToken: (String, String, AgentRunController, String?) -> String =
             { id, mode, run, rejected -> ProviderCredentialRepository.accessToken(id, mode, run, rejected) },
+        onAuthenticationRetry: () -> Unit = {},
         consume: (Response) -> T,
     ): T {
         val profile = ProviderConnectionProfile.forAuthMode(authMode)
@@ -49,6 +50,7 @@ internal object AuthorizedProviderHttp {
                     if (profile != null && response.code == 401 && !refreshed) {
                         rejectedToken = token
                         refreshed = true
+                        onAuthenticationRetry()
                     } else {
                         if (profile != null && response.code == 401) {
                             val failure = AgentModelFailure.http(response.code, response.peekBody(16_384).string())

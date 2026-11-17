@@ -62,6 +62,8 @@ class EtaApp : Application(), XposedServiceHelper.OnServiceListener, androidx.wo
 
     override fun onCreate() {
         super.onCreate()
+        if (!android.os.Process.isApplicationUid(android.os.Process.myUid()) ||
+            AppProcessPolicy.isPackageSandbox(Application.getProcessName(), packageName)) return
         val fullRuntime = AppProcessPolicy.shouldInitializeFullRuntime(
             Application.getProcessName(),
             packageName,
@@ -92,19 +94,17 @@ class EtaApp : Application(), XposedServiceHelper.OnServiceListener, androidx.wo
         }
         Prefs.initLocal(this)
         io.github.mangi.eta.agent.model.AgentHttpClient.initialize(this)
-        // Secondary processes (:voice, :recognition) also serve speech requests and need the
-        // local audio runtimes even though they must not open the main app's databases.
-        LocalSpeechRuntime.initialize(this)
         if (!fullRuntime) return
         // This must finish before any Room or DataStore consumer opens the new stores.
         runBlocking(Dispatchers.IO) {
             LegacyInstallMigrationCoordinator.migrateIfNeeded(this@EtaApp)
         }
-        TerminalRuntime.initialize(this)
+        // Voice/recognition processes are system bridges; native speech is owned by the main
+        // overlay, input and playback services. Do not open another catalog/crash journal there.
         RootAccess.initialize(this)
-        RootAccessibilityRecovery.initialize(this)
-        applicationScope.launch { TerminalRuntime.backgroundJobs(this@EtaApp).resume() }
         SettingsDataStore.init(this)
+        io.github.mangi.eta.ui.app.SettingsRuntimeSnapshotStore.prewarm(this, applicationScope)
+        io.github.mangi.eta.agent.runtime.LocalInferenceScheduling.initialize(this)
         AgentRunMetricsStore.init(this)
         applicationScope.launch {
             runCatching {
@@ -135,59 +135,79 @@ class EtaApp : Application(), XposedServiceHelper.OnServiceListener, androidx.wo
                 )
             }
         }
-        val predictiveBackEnabled = runBlocking(Dispatchers.IO) {
-            AppearanceSettingsRepository.settings().predictiveBackEnabled
+        applicationScope.launch {
+            val predictiveBackEnabled = runCatching {
+                AppearanceSettingsRepository.settings().predictiveBackEnabled
+            }.getOrElse { error ->
+                AndroidAgentLogger.warn("Startup appearance read unavailable: type=${error.safeLogType()}")
+                true
+            }
+            PredictiveBackController.apply(applicationInfo, predictiveBackEnabled)
         }
-        PredictiveBackController.apply(applicationInfo, predictiveBackEnabled)
         AgentMemoryRepository.init(this)
-        runCatching { io.github.mangi.eta.data.repository.AutoBackupScheduler.sync(this) }
-            .onFailure { AndroidAgentLogger.warn("Backup scheduler unavailable: type=${it.safeLogType()}") }
-        runCatching { io.github.mangi.eta.agent.memory.MemoryMaintenanceScheduler.sync(this) }
-            .onFailure { AndroidAgentLogger.warn("Memory scheduler unavailable: type=${it.safeLogType()}") }
-        runCatching { io.github.mangi.eta.agent.capability.SkillUpdateScheduler.sync(this) }
-            .onFailure { AndroidAgentLogger.warn("Skill update scheduler unavailable: type=${it.safeLogType()}") }
         ProviderRepository.init(this)
-        io.github.mangi.eta.data.repository.LocalModelRepository.init(this)
+        io.github.mangi.eta.agent.packages.PackageDesktopWidgetService.initialize(this, applicationScope)
+        // Bind only the context on the first frame. Reading the local-model catalog is deferred
+        // below because it parses JSON and may repair/write index metadata.
+        io.github.mangi.eta.data.repository.LocalModelRepository.bind(this)
         applicationScope.launch {
-            runCatching { io.github.mangi.eta.data.repository.LocalModelRepository.refresh() }
-                .onFailure { error ->
+            runCatching {
+                LocalSpeechRuntime.initialize(this@EtaApp)
+                TerminalRuntime.initialize(this@EtaApp)
+                RootAccessibilityRecovery.initialize(this@EtaApp)
+                TerminalRuntime.backgroundJobs(this@EtaApp).resume()
+                io.github.mangi.eta.data.repository.LocalModelRepository.refresh()
+                LiteRtLmRuntimeManager.initialize(this@EtaApp)
+                LlamaCppRuntimeManager.initialize(this@EtaApp)
+                MnnRuntimeManager.initialize(this@EtaApp)
+                LocalModelStartupCoordinator.resumeSelectedModel(this@EtaApp)
+            }.onFailure { error ->
                     AndroidAgentLogger.warn(
-                        "Nexus local model maintenance unavailable: type=${error.safeLogType()}",
+                        "Nexus deferred runtime initialization unavailable: type=${error.safeLogType()}",
                     )
-                }
-        }
-        LiteRtLmRuntimeManager.initialize(this)
-        LlamaCppRuntimeManager.initialize(this)
-        MnnRuntimeManager.initialize(this)
-        applicationScope.launch {
-            runCatching { LocalModelStartupCoordinator.resumeSelectedModel(this@EtaApp) }
-                .onFailure { error ->
-                    AndroidAgentLogger.warn(
-                        "Nexus selected local model could not resume: type=${error.safeLogType()}",
-                    )
-                }
+            }
         }
         McpServerRepository.init(this)
-        runCatching {
-            runBlocking(Dispatchers.IO) {
-                EtaFullBackupArchive.restorePortableSecretsAfterStartup(this@EtaApp)
-            }
-        }.onFailure { error ->
-            AndroidAgentLogger.error(
-                "Nexus portable backup credential restore failed: type=${error.safeLogType()}",
-            )
-        }
-        runCatching { AgentTaskWorkScheduler.ensureScheduled(this) }
-            .onFailure { error ->
-                AndroidAgentLogger.warn(
-                    "Nexus task scheduler unavailable: type=${error.safeLogType()}",
+        applicationScope.launch {
+            runCatching { EtaFullBackupArchive.restorePortableSecretsAfterStartup(this@EtaApp) }
+                .onFailure { error ->
+                    AndroidAgentLogger.error(
+                        "Nexus portable backup credential restore failed: type=${error.safeLogType()}",
+                    )
+                }
+            runCatching { io.github.mangi.eta.agent.runtime.AgentOfficialPriceRefresh.schedule(this@EtaApp) }
+                .onFailure { AndroidAgentLogger.warn("Official price refresh scheduler unavailable: type=${it.safeLogType()}") }
+            runCatching { io.github.mangi.eta.data.repository.AutoBackupScheduler.sync(this@EtaApp) }
+                .onFailure { AndroidAgentLogger.warn("Backup scheduler unavailable: type=${it.safeLogType()}") }
+            runCatching { io.github.mangi.eta.agent.memory.MemoryMaintenanceScheduler.sync(this@EtaApp) }
+                .onFailure { AndroidAgentLogger.warn("Memory scheduler unavailable: type=${it.safeLogType()}") }
+            runCatching { io.github.mangi.eta.agent.capability.SkillUpdateScheduler.sync(this@EtaApp) }
+                .onFailure { AndroidAgentLogger.warn("Skill update scheduler unavailable: type=${it.safeLogType()}") }
+            runCatching { AgentTaskWorkScheduler.ensureScheduled(this@EtaApp) }
+                .onFailure { error ->
+                    AndroidAgentLogger.warn(
+                        "Nexus task scheduler unavailable: type=${error.safeLogType()}",
+                    )
+                }
+            runCatching {
+                io.github.mangi.eta.agent.skill.SkillEvolution.enqueue(this@EtaApp)
+                io.github.mangi.eta.fork.tasks.AutomationTriggers.signal(
+                    this@EtaApp,
+                    io.github.mangi.eta.fork.tasks.AutomationTrigger.APP_START,
+                    java.util.UUID.randomUUID().toString(),
                 )
+                io.github.mangi.eta.fork.tasks.AutomationMonitorService.restoreIfEnabled(this@EtaApp)
+            }.onFailure {
+                AndroidAgentLogger.warn("Core automation startup unavailable: type=${it.safeLogType()}")
             }
-        runCatching {
-            io.github.mangi.eta.agent.skill.SkillEvolution.enqueue(this)
-            io.github.mangi.eta.fork.tasks.AutomationTriggers.signal(this, io.github.mangi.eta.fork.tasks.AutomationTrigger.APP_START, java.util.UUID.randomUUID().toString())
-            io.github.mangi.eta.fork.tasks.AutomationMonitorService.restoreIfEnabled(this)
-        }.onFailure { AndroidAgentLogger.warn("Core automation startup unavailable: type=${it.safeLogType()}") }
+            runCatching { LinuxEnvironmentSettingsRepository.initialize(this@EtaApp) }
+                .onFailure { AndroidAgentLogger.warn("Linux environment initialization unavailable: type=${it.safeLogType()}") }
+            runCatching {
+                io.github.mangi.eta.agent.skill.SkillRuntime.createIndexService(this@EtaApp).listInstalledSkills()
+            }.onFailure { throwable ->
+                AndroidAgentLogger.warn("Agent skill index prewarm failed: type=${throwable.safeLogType()}")
+            }
+        }
         applicationScope.launch {
             runCatching { AgentTaskWorkScheduler.refreshNextDeadline(this@EtaApp) }
                 .onFailure { error ->
@@ -205,6 +225,8 @@ class EtaApp : Application(), XposedServiceHelper.OnServiceListener, androidx.wo
                 }
         }
         XposedServiceHelper.registerListener(this)
+        io.github.mangi.eta.agent.packages.PackageAppLifecycle(this).install()
+        io.github.mangi.eta.agent.memory.AppForegroundState.install(this)
         applicationScope.launch {
             try {
                 SpeechOssUpload(this@EtaApp).retryPending(this@EtaApp)
@@ -213,49 +235,45 @@ class EtaApp : Application(), XposedServiceHelper.OnServiceListener, androidx.wo
                 AndroidAgentLogger.warn("Nexus speech cleanup unavailable: type=${error.javaClass.simpleName}")
             }
         }
-        applicationScope.launch {
-            LinuxEnvironmentSettingsRepository.initialize(this@EtaApp)
-            runCatching {
-                SkillRuntime.createIndexService(this@EtaApp).listInstalledSkills()
-            }.onFailure { throwable ->
-                AndroidAgentLogger.warn(
-                    "Agent skill index prewarm failed: type=${throwable.safeLogType()}"
-                )
-            }
-        }
     }
 
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
+        if (!AppProcessPolicy.shouldInitializeFullRuntime(Application.getProcessName(), packageName)) return
+        io.github.mangi.eta.agent.packages.PackageApplicationEvents.emit(this, "AppLifecycleHook", "application_on_trim_memory",
+            org.json.JSONObject().put("extras", org.json.JSONObject().put("level", level)))
         if (level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ||
             level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
             level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) {
             BrowserSessionRegistry.releaseIdlePages()
-            val critical = level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
-                level >= ComponentCallbacks2.TRIM_MEMORY_COMPLETE
-            LiteRtLmRuntimeManager.requestMemoryRelief(critical)
-            LlamaCppRuntimeManager.requestMemoryRelief(critical)
-            MnnRuntimeManager.requestMemoryRelief(critical)
+            io.github.mangi.eta.agent.runtime.LocalInferenceScheduling.pressureChanged()
+            io.github.mangi.eta.agent.model.LocalModelResourceOwner.memoryPressure(this, level)
         }
     }
 
     override fun onLowMemory() {
         super.onLowMemory()
+        if (!AppProcessPolicy.shouldInitializeFullRuntime(Application.getProcessName(), packageName)) return
+        io.github.mangi.eta.agent.packages.PackageApplicationEvents.emit(this, "AppLifecycleHook", "application_on_low_memory", org.json.JSONObject())
         BrowserSessionRegistry.releaseIdlePages()
-        LiteRtLmRuntimeManager.requestMemoryRelief(critical = true)
-        LlamaCppRuntimeManager.requestMemoryRelief(critical = true)
-        MnnRuntimeManager.requestMemoryRelief(critical = true)
+        io.github.mangi.eta.agent.runtime.LocalInferenceScheduling.pressureChanged()
+        io.github.mangi.eta.agent.model.LocalModelResourceOwner.memoryPressure(this, ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL)
     }
 
     override fun onServiceBind(service: XposedService) {
         serviceInstance = service
-        Prefs.reconcileAgentPreferences(service)
-        dispatch(service)
+        applicationScope.launch {
+            val remotePreferences = Prefs.remotePreferencesForUi(service)
+            if (serviceInstance !== service) return@launch
+            Prefs.reconcileAgentPreferences(remotePreferences)
+            dispatch(service)
+        }
     }
 
     override fun onServiceDied(service: XposedService) {
         // 只有当前持有的 service 死亡时才清空并派发 null；
         // 多 framework 场景下死掉的可能是已被替换的旧实例，无需影响 UI。
+        Prefs.clearRemotePreferencesCache(service)
         if (serviceInstance === service) {
             serviceInstance = null
             dispatch(null)

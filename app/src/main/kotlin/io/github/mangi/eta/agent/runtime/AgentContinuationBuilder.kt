@@ -35,6 +35,7 @@ internal object AgentContinuationBuilder {
                 payload = AgentUiHandoffPayload(
                     conversationId = payload.conversationId,
                     workflowMode = payload.workflowMode,
+                    selectedSkillIds = payload.selectedSkillIds,
                     promptSupplement = nextSupplement,
                 ).toJson(),
             )

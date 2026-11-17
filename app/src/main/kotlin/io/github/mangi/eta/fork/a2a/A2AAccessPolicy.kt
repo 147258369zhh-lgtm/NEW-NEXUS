@@ -5,15 +5,22 @@ import java.security.MessageDigest
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.Dispatchers
+import kotlinx.serialization.Serializable
 
 internal object A2AToolTier {
     const val READ_ONLY = "read_only"
     const val RESTRICTED = "restricted"
     const val HIGH_RISK = "high_risk"
+    const val CUSTOM = "custom"
 
-    val configurable = setOf(READ_ONLY, RESTRICTED)
+    val configurable = setOf(READ_ONLY, RESTRICTED, CUSTOM)
 }
 
+@Serializable
 internal data class A2AToolAccess(
     val peerId: String,
     val tier: String,
@@ -45,6 +52,28 @@ internal data class A2AToolAccess(
             "skills_install_from_github",
         )
 
+        /** Named local tools only: no wildcards, remote supplied schemas, or privilege controls. */
+        val CONFIGURABLE_TOOLS = (RESTRICTED_TOOLS + setOf(
+            "glob_files", "grep_files", "read_image", "make_directory", "copy_file", "move_file",
+            "inspect_app", "get_clipboard", "observe_screen", "wait", "wait_for_text", "wait_for_package",
+            "web_search", "fetch_url", "browser_use", "tap", "tap_element", "long_press", "swipe", "scroll",
+            "type_text", "press_key", "get_device_environment", "get_current_location",
+            "search_notification_history", "app_usage_summary", "memory_get", "memory_search", "memory_write",
+            "conversation_history", "skills_list", "skills_read", "skills_read_resource",
+            "schedule_list", "schedule_create", "schedule_pause", "schedule_delete", "set_alarm", "set_timer",
+            "voice_synthesize", "download_media", "cloud_document", "cloud_media", "connector_call",
+            "goal_manage", "plan_manage", "notepad_manage", "project_workspace_status",
+        )).filterTo(sortedSetOf()) {
+            it !in HIGH_RISK_TOOLS &&
+                io.github.mangi.eta.agent.capability.NexusToolEffectClassifier.classify(it) !=
+                io.github.zhh_lgtm.nexus.kernel.api.EffectClass.HIGH_RISK
+        }
+
+        fun custom(peerId: String, tools: Set<String>): A2AToolAccess {
+            require(tools.all { it in CONFIGURABLE_TOOLS }) { "Unsupported A2A tool grant" }
+            return A2AToolAccess(peerId, A2AToolTier.CUSTOM, tools.toSortedSet())
+        }
+
         fun readOnly(peerId: String): A2AToolAccess = A2AToolAccess(
             peerId = peerId,
             tier = A2AToolTier.READ_ONLY,
@@ -70,12 +99,12 @@ internal class A2AAccessPolicyStore(context: Context) {
 
     fun observePeers(): Flow<Map<String, String>> = callbackFlow {
         val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
-            trySend(peerTiers())
+            trySend(Unit)
         }
         preferences.registerOnSharedPreferenceChangeListener(listener)
-        trySend(peerTiers())
+        trySend(Unit)
         awaitClose { preferences.unregisterOnSharedPreferenceChangeListener(listener) }
-    }
+    }.conflate().map { peerTiers() }.flowOn(Dispatchers.IO)
 
     fun peerTiers(): Map<String, String> = preferences.all
         .filterKeys { it.startsWith(KEY_PREFIX) }
@@ -87,19 +116,41 @@ internal class A2AAccessPolicyStore(context: Context) {
 
     fun tier(peerId: String): String = peerTiers()[peerId] ?: A2AToolTier.READ_ONLY
 
+    fun customTools(peerId: String): Set<String> {
+        val raw = preferences.getStringSet(CUSTOM_PREFIX + safePeerId(peerId), null)
+            ?: return accessForLegacyTier(peerId).allowedTools.intersect(A2AToolAccess.CONFIGURABLE_TOOLS)
+        return raw.intersect(A2AToolAccess.CONFIGURABLE_TOOLS)
+    }
+
+    fun setCustomTools(peerId: String, tools: Set<String>) {
+        A2AToolAccess.custom(peerId, tools)
+        check(preferences.edit().putStringSet(CUSTOM_PREFIX + safePeerId(peerId), tools.toSet())
+            .putString(KEY_PREFIX + safePeerId(peerId), A2AToolTier.CUSTOM).commit()) {
+            "A2A authorization policy was not saved"
+        }
+    }
+
     fun setTier(peerId: String, tier: String) {
         require(tier in A2AToolTier.configurable) { "Unsupported A2A tool tier" }
-        preferences.edit().putString(KEY_PREFIX + safePeerId(peerId), tier).apply()
+        check(preferences.edit().putString(KEY_PREFIX + safePeerId(peerId), tier).commit()) {
+            "A2A authorization policy was not saved"
+        }
     }
 
     fun observePeer(peerId: String) {
         val key = KEY_PREFIX + safePeerId(peerId)
         if (!preferences.contains(key)) {
-            preferences.edit().putString(key, A2AToolTier.READ_ONLY).apply()
+            check(preferences.edit().putString(key, A2AToolTier.READ_ONLY).commit()) {
+                "A2A authorization policy was not initialized"
+            }
         }
     }
 
-    fun accessFor(peerId: String): A2AToolAccess = when (tier(peerId)) {
+    fun accessFor(peerId: String): A2AToolAccess = if (tier(peerId) == A2AToolTier.CUSTOM) {
+        A2AToolAccess.custom(peerId, customTools(peerId))
+    } else accessForLegacyTier(peerId)
+
+    private fun accessForLegacyTier(peerId: String): A2AToolAccess = when (tier(peerId)) {
         A2AToolTier.RESTRICTED -> A2AToolAccess.restricted(peerId)
         else -> A2AToolAccess.readOnly(peerId)
     }
@@ -107,6 +158,7 @@ internal class A2AAccessPolicyStore(context: Context) {
     companion object {
         private const val PREFERENCES_NAME = "eta_a2a_access_policy"
         private const val KEY_PREFIX = "peer::"
+        private const val CUSTOM_PREFIX = "tools::"
 
         fun tokenPeerId(token: String): String {
             val digest = MessageDigest.getInstance("SHA-256")

@@ -87,7 +87,7 @@ internal object ConversationMarkdownExporter {
             .trim()
             .ifBlank { fallback }
         val timestamp = SimpleDateFormat(FILENAME_TIMESTAMP_PATTERN, Locale.US).format(Date(nowMillis))
-        return "Nexus-$sanitized-$timestamp.md"
+        return "NEXA-$sanitized-$timestamp.md"
     }
 
     private fun AgentChatMessageUi.toMarkdownBlock(labels: Labels): String? = when (this) {

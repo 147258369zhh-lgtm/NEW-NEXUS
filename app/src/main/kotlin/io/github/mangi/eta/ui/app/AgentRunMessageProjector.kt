@@ -2,8 +2,10 @@ package io.github.mangi.eta.ui.app
 
 import android.os.SystemClock
 import io.github.mangi.eta.agent.runtime.AgentEvent
+import io.github.mangi.eta.agent.runtime.AgentUiHandoffPayload
 import io.github.mangi.eta.agent.runtime.AgentTokenUsage
 import io.github.mangi.eta.agent.runtime.SearchSuggestionsBudget
+import io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.SystemNoticeCode
@@ -13,11 +15,79 @@ import io.github.mangi.eta.ui.model.ToolActivityMessageUi
 import io.github.mangi.eta.ui.model.TokenUsageUi
 import io.github.mangi.eta.ui.model.ToolActivityStatusUi
 import io.github.mangi.eta.ui.model.UserMessageUi
+import io.github.mangi.eta.data.repository.NexusContentParts
+import io.github.mangi.eta.data.repository.NexusArtifactMedia
+import io.github.mangi.eta.agent.runtime.AgentArtifactReference
+import io.github.zhh_lgtm.nexus.kernel.api.AudioPart
+import io.github.zhh_lgtm.nexus.kernel.api.ContentPart
+import io.github.zhh_lgtm.nexus.kernel.api.FilePart
+import io.github.zhh_lgtm.nexus.kernel.api.ImagePart
+import io.github.zhh_lgtm.nexus.kernel.api.MarkdownPart
+import io.github.zhh_lgtm.nexus.kernel.api.TextPart
+import io.github.zhh_lgtm.nexus.kernel.api.VideoPart
 
 internal class AgentRunMessageProjector(
     private val nowElapsedRealtime: () -> Long = { SystemClock.elapsedRealtime() },
 ) {
     private val thinkingStartedAt = mutableMapOf<String, Long>()
+
+    data class ReplayProjection(val messages: List<AgentChatMessageUi>, val updateTimestamp: Boolean)
+
+    /** Rebuild into local immutable lists and publish once; adjacent deltas share one projection. */
+    fun replay(runId: String, events: List<AgentEvent>, previous: List<AgentChatMessageUi>): ReplayProjection {
+        val replayToolStarts = events.filterIsInstance<AgentEvent.ToolStarted>().mapTo(hashSetOf()) {
+            it.round to it.toolCallId
+        }
+        val replayArtifactIds = buildSet {
+            events.forEach { event ->
+                val baseId: String
+                val artifacts: List<AgentArtifactReference>
+                when (event) {
+                    is AgentEvent.ToolFinished -> {
+                        if (event.success != true || (event.round to event.toolCallId) !in replayToolStarts) return@forEach
+                        baseId = "artifact-$runId-${event.round}-${event.toolCallId}"
+                        artifacts = event.artifactReferences()
+                    }
+                    is AgentEvent.AssistantReceived -> {
+                        baseId = "artifact-$runId-${event.round}-model"
+                        artifacts = event.artifacts
+                    }
+                    else -> return@forEach
+                }
+                artifacts.distinctBy { it.id }.forEachIndexed { index, artifact ->
+                    add(artifactMessageId(baseId, index, artifact.id))
+                }
+            }
+        }
+        // Rebuild only attachments whose events are present, so partial legacy handoffs keep
+        // their files while complete replays preserve the original tool/attachment order.
+        val replayBase = previous.filterNot { it is AgentMessageUi && it.id in replayArtifactIds }
+        var messages = resetForReplay(runId, replayBase, events.filterIsInstance<AgentEvent.UserSupplementReceived>()
+            .mapTo(mutableSetOf()) { it.index })
+        var updateTimestamp = false
+        val deltas = AgentRunEventCoalescer()
+        fun apply(event: AgentEvent) {
+            val next = if (event is AgentEvent.UserSupplementReceived) {
+                AgentPendingResultRecovery.mergeSupplements(runId, listOf(AgentUiHandoffPayload.Supplement(
+                    index = event.index, text = event.text, createdAt = System.currentTimeMillis(),
+                )), messages)
+            } else applyEvent(runId, event, messages)
+            if (next !== messages && event !is AgentEvent.AssistantBlockDelta && event !is AgentEvent.SubagentProgress) {
+                updateTimestamp = true
+            }
+            messages = next
+        }
+        events.forEach { event ->
+            if (event is AgentEvent.AssistantBlockDelta) {
+                deltas.append(runId, event)?.let(::apply)
+            } else {
+                deltas.flush(runId)?.let(::apply)
+                apply(event)
+            }
+        }
+        deltas.flush(runId)?.let(::apply)
+        return ReplayProjection(messages, updateTimestamp)
+    }
 
     /**
      * App 与系统助手浮层共用的事件到消息投影。无可见变化的事件原样返回同一列表，
@@ -28,6 +98,7 @@ internal class AgentRunMessageProjector(
         event: AgentEvent,
         messages: List<AgentChatMessageUi>,
     ): List<AgentChatMessageUi> = when (event) {
+        is AgentEvent.PluginUiFrame -> messages
         is AgentEvent.AccessibilityWaiting -> {
             val id = "assistant-$runId-accessibility-${event.outage}"
             val notice = SystemNoticeMessageUi(
@@ -37,6 +108,7 @@ internal class AgentRunMessageProjector(
             if (messages.any { it.id == id }) messages.map { if (it.id == id) notice else it } else messages + notice
         }
         is AgentEvent.GuiControlChanged -> messages
+        is AgentEvent.ApprovalChanged -> messages
         is AgentEvent.AssistantBlockStart -> startAssistantBlock(runId, event, messages)
         is AgentEvent.AssistantBlockDelta -> when (event.kind) {
             AgentEvent.AssistantBlockKind.TEXT ->
@@ -58,6 +130,8 @@ internal class AgentRunMessageProjector(
             startTool(runId, event, finalizeTextRound(runId, event.round, finalizeThinkingRound(runId, event.round, messages)))
         is AgentEvent.ToolFinished -> finishTool(runId, event, messages)
         is AgentEvent.SubagentProgress -> updateSubagentProgress(runId, event, messages)
+        is AgentEvent.SubagentQueued -> updateSubagentQueue(runId, event, messages)
+        is AgentEvent.SubagentAdmitted -> updateSubagentAdmitted(runId, event, messages)
         is AgentEvent.HostedToolStarted ->
             startHostedTool(runId, event, finalizeTextRound(runId, event.round, finalizeThinkingRound(runId, event.round, messages)))
         is AgentEvent.HostedToolFinished -> finishHostedTool(runId, event, messages)
@@ -71,8 +145,10 @@ internal class AgentRunMessageProjector(
         }
         is AgentEvent.ModelRetryScheduled -> scheduleModelRetry(runId, event, messages)
         is AgentEvent.RunFailed -> failRunningTools(event.reason, finalizeText(runId, finalizeThinking(runId, finishAccessibilityWaiting(runId, messages))))
-        is AgentEvent.AssistantReceived -> if (event.reasoningContent.isBlank()) messages else {
-            ensureCompletedThinking(runId, event.round, event.reasoningContent, messages)
+        is AgentEvent.AssistantReceived -> {
+            val withThinking = if (event.reasoningContent.isBlank()) messages else
+                ensureCompletedThinking(runId, event.round, event.reasoningContent, messages)
+            appendArtifacts("artifact-$runId-${event.round}-model", event.artifacts, withThinking)
         }
         is AgentEvent.RunFinished -> finalizeText(runId, finalizeThinking(runId, finishAccessibilityWaiting(runId, messages)))
         is AgentEvent.UserSupplementReceived,
@@ -362,6 +438,7 @@ internal class AgentRunMessageProjector(
             if (message is AgentMessageUi && isAssistantMessageForRun(message.id, runId)) {
                 message.copy(
                     content = message.content.trimEnd(),
+                    contentParts = message.contentParts.withBody(message.id, message.content.trimEnd()),
                     isStreaming = false,
                     renderMarkdown = true,
                 )
@@ -381,6 +458,7 @@ internal class AgentRunMessageProjector(
             if (message is AgentMessageUi && isAssistantMessageForRound(message.id, runId, round)) {
                 message.copy(
                     content = message.content.trimEnd(),
+                    contentParts = message.contentParts.withBody(message.id, message.content.trimEnd()),
                     isStreaming = false,
                     renderMarkdown = true,
                 )
@@ -402,6 +480,8 @@ internal class AgentRunMessageProjector(
             if (message is AgentMessageUi && message.id == assistantId) {
                 message.copy(
                     content = replacementContent?.trimEnd() ?: message.content.trimEnd(),
+                    contentParts = message.contentParts.withBody(
+                        message.id, replacementContent?.trimEnd() ?: message.content.trimEnd()),
                     isStreaming = false,
                     renderMarkdown = true,
                 )
@@ -424,6 +504,7 @@ internal class AgentRunMessageProjector(
             status = ToolActivityStatusUi.Running,
             argumentsSummary = event.argsPreview,
             command = event.command,
+            executionItemId = io.github.mangi.eta.agent.runtime.NexusExecutionIds.tool(runId, event.round, event.toolCallId),
         )
         if (messages.any { it.id == message.id }) return messages
         return messages + message
@@ -436,19 +517,19 @@ internal class AgentRunMessageProjector(
     ): List<AgentChatMessageUi> {
         val targetId = toolActivityMessageId(runId, event.round, event.toolCallId)
         // success 字段优先；旧版本 Runtime/归档事件缺省时回退到摘要文本判断
-        val status = when (event.success) {
-            true -> ToolActivityStatusUi.Success
-            false -> ToolActivityStatusUi.Failed
-            null -> if (event.resultSummary.contains("ok=false", ignoreCase = true)) {
-                ToolActivityStatusUi.Failed
-            } else {
-                ToolActivityStatusUi.Success
-            }
+        val status = when {
+            event.effectUnknown -> ToolActivityStatusUi.Unknown
+            event.success == true -> ToolActivityStatusUi.Success
+            event.success == false -> ToolActivityStatusUi.Failed
+            event.resultSummary.contains("ok=false", ignoreCase = true) -> ToolActivityStatusUi.Failed
+            event.resultSummary.contains("未确认") || event.resultSummary.contains("待核对") ->
+                ToolActivityStatusUi.Unknown
+            else -> ToolActivityStatusUi.Success
         }
         val targetIndex = messages.indexOfLast { it is ToolActivityMessageUi && it.id == targetId }
         if (targetIndex < 0) return messages
 
-        return messages.mapIndexed { index, message ->
+        val updated = messages.mapIndexed { index, message ->
             if (index == targetIndex && message is ToolActivityMessageUi) {
                 message.copy(
                     status = status,
@@ -460,6 +541,27 @@ internal class AgentRunMessageProjector(
                 message
             }
         }
+        if (event.success != true) return updated
+        val artifacts = event.artifactReferences()
+        return appendArtifacts("artifact-$runId-${event.round}-${event.toolCallId}", artifacts, updated)
+    }
+
+    private fun appendArtifacts(baseId: String, artifacts: List<AgentArtifactReference>, messages: List<AgentChatMessageUi>): List<AgentChatMessageUi> {
+        if (artifacts.isEmpty()) return messages
+        val additions = artifacts.distinctBy { it.id }.mapIndexedNotNull { index, artifact ->
+            // Keep the first attachment's historical message ID, including old persisted conversations.
+            val id = artifactMessageId(baseId, index, artifact.id)
+            if (messages.any { it.id == id }) null else AgentMessageUi(id, artifact.name,
+                contentParts = listOf(nexusArtifactContentPart(id, artifact.id, artifact.name, artifact.mediaType)))
+        }
+        return if (additions.isEmpty()) messages else messages + additions
+    }
+
+    private fun artifactMessageId(baseId: String, index: Int, artifactId: String): String =
+        if (index == 0) baseId else "$baseId:$artifactId"
+
+    private fun AgentEvent.ToolFinished.artifactReferences(): List<AgentArtifactReference> = artifacts.ifEmpty {
+        artifactId?.let { listOf(AgentArtifactReference(it, artifactName?.takeIf(String::isNotBlank) ?: "文件")) }.orEmpty()
     }
 
     fun updateSubagentProgress(
@@ -479,6 +581,48 @@ internal class AgentRunMessageProjector(
         }
     }
 
+    fun updateSubagentQueue(
+        runId: String,
+        event: AgentEvent.SubagentQueued,
+        messages: List<AgentChatMessageUi>,
+    ): List<AgentChatMessageUi> {
+        val targetId = toolActivityMessageId(runId, event.round, event.toolCallId)
+        return messages.map { message ->
+            if (message is ToolActivityMessageUi && message.id == targetId) {
+                val snapshot = SubagentActivitySnapshot.decode(message.command) ?: SubagentActivitySnapshot(
+                    subagentType = event.subagentType,
+                    description = message.argumentsSummary.substringAfter(" · ", message.argumentsSummary),
+                )
+                message.copy(command = snapshot.copy(
+                    status = SubagentActivitySnapshot.STATUS_QUEUED,
+                    currentAction = "等待并发名额 ${event.queuePosition}/${event.maxParallelAgents}",
+                ).encode())
+            } else message
+        }
+    }
+
+    fun updateSubagentAdmitted(
+        runId: String,
+        event: AgentEvent.SubagentAdmitted,
+        messages: List<AgentChatMessageUi>,
+    ): List<AgentChatMessageUi> {
+        val targetId = toolActivityMessageId(runId, event.round, event.toolCallId)
+        return messages.map { message ->
+            if (message is ToolActivityMessageUi && message.id == targetId) {
+                val snapshot = SubagentActivitySnapshot.decode(message.command) ?: SubagentActivitySnapshot(
+                    subagentType = event.subagentType,
+                    description = message.argumentsSummary.substringAfter(" · ", message.argumentsSummary),
+                )
+                message.copy(command = snapshot.copy(
+                    status = SubagentActivitySnapshot.STATUS_RUNNING,
+                    currentAction = if (event.waitedMillis >= 1_000) {
+                        "开始执行（排队 ${event.waitedMillis / 1000} 秒）"
+                    } else "开始执行…",
+                ).encode())
+            } else message
+        }
+    }
+
     fun startHostedTool(
         runId: String,
         event: AgentEvent.HostedToolStarted,
@@ -489,6 +633,7 @@ internal class AgentRunMessageProjector(
             toolName = event.name,
             status = ToolActivityStatusUi.Running,
             argumentsSummary = "",
+            executionItemId = io.github.mangi.eta.agent.runtime.NexusExecutionIds.tool(runId, event.round, event.toolCallId, hosted = true),
         )
         return if (messages.any { it.id == message.id }) messages else messages + message
     }
@@ -726,19 +871,22 @@ internal class AgentRunMessageProjector(
             if (targetIndex < 0) {
                 val id = resultFallbackId(runId, visibleMessages)
                 return visibleMessages + if (notice == null) {
-                    AgentMessageUi(id = id, content = content, isStreaming = false, renderMarkdown = true)
+                    AgentMessageUi(id = id, content = content, isStreaming = false, renderMarkdown = true,
+                        contentParts = NexusContentParts.text(id, content))
                 } else {
                     SystemNoticeMessageUi(id, notice, detail)
                 }
             }
             val target = visibleMessages[targetIndex] as AgentMessageUi
-            val replacement = if (notice != null) SystemNoticeMessageUi(target.id, notice, detail) else {
+            val replacement: AgentChatMessageUi = if (notice != null) SystemNoticeMessageUi(target.id, notice, detail) else {
                 val round = target.id.assistantRound(runId)
                 val sameRoundBlocks = round?.let {
                     visibleMessages.count { message -> message is AgentMessageUi && message.id.assistantRound(runId) == it }
                 } ?: 0
                 target.copy(
                     content = if (sameRoundBlocks <= 1) content else target.content.ifBlank { content },
+                    contentParts = target.contentParts.withBody(
+                        target.id, if (sameRoundBlocks <= 1) content else target.content.ifBlank { content }),
                     isStreaming = false,
                     renderMarkdown = true,
                 )
@@ -751,6 +899,9 @@ internal class AgentRunMessageProjector(
                 .takeIf { it != this }
                 ?.substringBefore('-')
                 ?.toIntOrNull()
+
+        private fun List<ContentPart>.withBody(messageId: String, body: String): List<ContentPart> =
+            NexusContentParts.text(messageId, body) + filterNot { it is MarkdownPart || it is TextPart }
 
         private fun lastRetryIndex(runId: String, messages: List<AgentChatMessageUi>): Int =
             messages.indexOfLast {
@@ -766,6 +917,18 @@ internal class AgentRunMessageProjector(
                 messageId.startsWith(assistantMessagePrefix(runId))
     }
 
+}
+
+/** Shared by chat and meeting projections so produced media stays native in both surfaces. */
+internal fun nexusArtifactContentPart(messageId: String, artifactId: String, name: String, mediaType: String? = null, path: String? = null): ContentPart {
+    val artifact = io.github.zhh_lgtm.nexus.kernel.api.ArtifactId(artifactId)
+    val mime = NexusArtifactMedia.mimeType(mediaType, name, path)
+    return when (NexusArtifactMedia.kind(mime, name, path)) {
+        NexusArtifactMedia.Kind.IMAGE -> ImagePart("$messageId:image", artifact, mime)
+        NexusArtifactMedia.Kind.AUDIO -> AudioPart("$messageId:audio", artifact, mime, null)
+        NexusArtifactMedia.Kind.VIDEO -> VideoPart("$messageId:video", artifact, mime, null)
+        else -> FilePart("$messageId:file", artifact, name)
+    }
 }
 
 private const val MAX_TOOL_RESULT_PREVIEW_CHARS = 48

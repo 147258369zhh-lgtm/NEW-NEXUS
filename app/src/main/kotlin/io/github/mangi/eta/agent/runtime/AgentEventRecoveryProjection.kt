@@ -2,6 +2,7 @@ package io.github.mangi.eta.agent.runtime
 
 /** 工具参数增量不用于展示；搜索建议只允许活动 run 的内存重连回放。 */
 internal fun AgentEvent.replayProjection(): AgentEvent? = when (this) {
+    is AgentEvent.PluginUiFrame -> null
     is AgentEvent.AssistantBlockDelta ->
         takeUnless { kind == AgentEvent.AssistantBlockKind.TOOL_CALL }
     else -> this

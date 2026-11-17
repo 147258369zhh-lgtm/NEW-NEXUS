@@ -62,7 +62,7 @@ class CharacterMemoryRepositoryTest {
     @Test
     fun layeredAppendWritesTheRequestedStoryLayer() {
         val context = context()
-        CharacterMemoryRepository.replaceAll(context, "character-a", "# 核心记忆\n主角住在城里")
+        CharacterMemoryRepository.replaceAll(context, "character-a", "剧情资料说明\n\n# 核心记忆\n主角住在城里")
         val revision = CharacterMemoryRepository.snapshot(context, "character-a").revision
         val result = CharacterMemoryTools(context, "character-a") { true }.execute(
             AgentModelClient.ToolCall(
@@ -73,7 +73,7 @@ class CharacterMemoryRepositoryTest {
         )
         assertTrue(JSONObject(result.content).getBoolean("ok"))
         assertEquals(
-            "# 核心记忆\n主角住在城里\n\n# 项目记忆\n本章目标是寻找古书",
+            "剧情资料说明\n\n# 核心记忆\n主角住在城里\n\n# 项目记忆\n本章目标是寻找古书",
             CharacterMemoryRepository.snapshot(context, "character-a").content,
         )
     }

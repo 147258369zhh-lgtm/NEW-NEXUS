@@ -13,6 +13,7 @@ internal object AgentTerminalToolCatalog {
                 description = "执行 Shell 命令，直接提供 command 即可。默认环境、身份和工作目录见本次运行上下文。" +
                     "需要保留 cd、环境变量等 Shell 状态时，先 action=open，再通过 session_id 执行命令，最后 action=close。" +
                     "单次命令结束后进程会回收，勿用 & 挂后台；耗时或后台命令使用 terminal_job，跨运行的后台服务使用 terminal_daemon。" +
+                    "成功结果中的 generated_files 是命令后的工作区候选文件，不证明文件归属；核实属于本任务后按其中的 environment 和 deliver_path 调用 deliver_file。" +
                     "已知文件的读写、编辑和搜索优先使用对应文件工具。",
                 parameters = parameters(
                     commandProperties()

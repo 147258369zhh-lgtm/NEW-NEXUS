@@ -10,6 +10,7 @@ data class ConversationPaneUiState(
     val folders: List<ConversationFolderUi> = emptyList(),
     val archivedConversations: List<ConversationSummaryUi> = emptyList(),
     val archiveViewOpen: Boolean = false,
+    val unfilteredConversations: List<ConversationSummaryUi> = emptyList(),
 )
 
 @Immutable
@@ -18,7 +19,9 @@ data class ConversationFolderUi(
     val name: String,
     val sortOrder: Long,
     val parentId: String? = null,
-)
+) {
+    val isPinned: Boolean get() = sortOrder < 0L
+}
 
 @Immutable
 data class ConversationSummaryUi(
@@ -27,6 +30,7 @@ data class ConversationSummaryUi(
     val preview: String,
     val timeLabel: String,
     val updatedAtMillis: Long = 0L,
+    val lastActivityAtMillis: Long = updatedAtMillis,
     val mode: ConversationModeUi,
     val isPinned: Boolean = false,
     val isActiveRun: Boolean = false,

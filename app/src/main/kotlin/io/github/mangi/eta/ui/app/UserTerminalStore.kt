@@ -57,6 +57,7 @@ internal data class TerminalSessionUi(
     val cwd: String,
     val running: Boolean = false,
     val alive: Boolean = true,
+    val linuxRootfsPath: String? = null,
 )
 
 @Immutable
@@ -229,7 +230,7 @@ internal class UserTerminalStore(
             withContext(Dispatchers.IO) { controller.stopSession(sessionId) }
             sessionLeases.remove(sessionId)?.release()
             val opened = withContext(Dispatchers.IO) {
-                openLeasedSession(entry.environment, entry.cwd)
+                openLeasedSession(entry.environment, entry.cwd, entry.linuxRootfsPath)
             }
             when (opened) {
                 is UserTerminalController.OpenResult.Failed -> {
@@ -305,8 +306,9 @@ internal class UserTerminalStore(
     /** 切换环境 tab：只改目标环境；有该环境的存活会话则切过去，否则进入空态待新建。 */
     fun switchEnvironment(environment: TerminalEnvironment) {
         val state = _uiState.value
-        if (state.environment == environment && state.activeSessionId != null) return
-        val reusable = state.sessions.lastOrNull { it.environment == environment && it.alive }
+        val targetRootfs = selectedRootfs(environment)
+        if (state.environment == environment && state.sessions.any { it.id == state.activeSessionId && it.linuxRootfsPath == targetRootfs }) return
+        val reusable = state.sessions.lastOrNull { it.environment == environment && it.alive && it.linuxRootfsPath == selectedRootfs(environment) }
         if (reusable != null) {
             switchSession(reusable.id)
         } else {
@@ -329,15 +331,17 @@ internal class UserTerminalStore(
         sessionLeases.clear()
     }
 
-    private fun openLeasedSession(environment: TerminalEnvironment, cwd: String? = null): UserTerminalController.OpenResult {
-        val rootfs = environment.linuxDistribution?.let { LinuxEnvironmentPaths.rootfsDir(appContext, it).absolutePath }
+    private fun selectedRootfs(environment: TerminalEnvironment): String? =
+        environment.linuxDistribution?.let { LinuxEnvironmentPaths.rootfsDir(appContext, it).absolutePath }
+
+    private fun openLeasedSession(environment: TerminalEnvironment, cwd: String? = null, rootfs: String? = selectedRootfs(environment)): UserTerminalController.OpenResult {
         val identity = TerminalRuntime.defaultIdentity(environment, rootfs)
         val lease = if (identity == "user") {
             TerminalSessionLease.acquire(appContext) { sessionId -> scope.launch { closeSession(sessionId) } }
                 ?: return UserTerminalController.OpenResult.Failed("BACKGROUND_START_NOT_ALLOWED", appContext.getString(R.string.capability_background_failed))
         } else null
         val result = try {
-            controller.openSession(environment, cwd = cwd, identity = identity)
+            controller.openSession(environment, cwd = cwd, identity = identity, linuxRootfsPathOverride = rootfs)
         } catch (failure: Throwable) {
             lease?.release()
             throw failure
@@ -370,7 +374,7 @@ internal class UserTerminalStore(
             if (alive) return active.id
             // 已退出：原环境原 cwd 重开，块保留。
             val reopened = withContext(Dispatchers.IO) {
-                openLeasedSession(active.environment, active.cwd)
+                openLeasedSession(active.environment, active.cwd, active.linuxRootfsPath)
             }
             return when (reopened) {
                 is UserTerminalController.OpenResult.Failed -> {
@@ -388,7 +392,7 @@ internal class UserTerminalStore(
                 }
             }
         }
-        val reusable = state.sessions.lastOrNull { it.environment == environment && it.alive }
+        val reusable = state.sessions.lastOrNull { it.environment == environment && it.alive && it.linuxRootfsPath == selectedRootfs(environment) }
         if (reusable != null) {
             switchSession(reusable.id)
             return reusable.id
@@ -412,6 +416,7 @@ internal class UserTerminalStore(
                     id = opened.sessionId,
                     environment = opened.environment,
                     cwd = opened.cwd,
+                    linuxRootfsPath = opened.linuxRootfsPath,
                 )
                 sessionBlocks[opened.sessionId] = emptyList()
                 _uiState.update { state ->
@@ -442,6 +447,7 @@ internal class UserTerminalStore(
                         id = opened.sessionId,
                         environment = opened.environment,
                         cwd = opened.cwd,
+                        linuxRootfsPath = opened.linuxRootfsPath,
                     )
                 } else {
                     session

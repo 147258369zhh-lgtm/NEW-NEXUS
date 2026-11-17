@@ -37,7 +37,9 @@ class AgentContinuationBuilderTest {
             handoff = AgentRuntimeWire.EntryHandoff(
                 id = "run-old",
                 source = "agent_ui",
-                payload = AgentUiHandoffPayload(conversationId = "conversation-1", workflowMode = "GOAL").toJson(),
+                payload = AgentUiHandoffPayload(
+                    conversationId = "conversation-1", workflowMode = "GOAL", selectedSkillIds = listOf("skill-a"),
+                ).toJson(),
             ),
         )
         val response = AgentModelClient.ModelResponse.Text(
@@ -80,6 +82,7 @@ class AgentContinuationBuilderTest {
         val payload = AgentUiHandoffPayload.from(continuation.handoff?.payload.orEmpty())
         assertEquals("conversation-1", payload.conversationId)
         assertEquals("GOAL", payload.workflowMode)
+        assertEquals(listOf("skill-a"), payload.selectedSkillIds)
         assertEquals(
             AgentUiHandoffPayload.Supplement(
                 index = 1,

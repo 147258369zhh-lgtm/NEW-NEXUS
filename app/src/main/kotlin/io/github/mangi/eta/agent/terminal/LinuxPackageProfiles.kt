@@ -1,16 +1,15 @@
 package io.github.mangi.eta.agent.terminal
 
 import android.content.Context
-import io.github.mangi.eta.core.AndroidAgentLogger
 import java.io.File
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.withContext
 
 internal enum class PackageProfileInstallStage {
+    WAITING,
     CHECKING,
     DOWNLOADING,
+    CHECKSUM,
     INSTALLING,
+    VERIFYING,
     COMPLETE,
 }
 
@@ -18,22 +17,33 @@ internal data class PackageProfileInstallProgress(
     val stage: PackageProfileInstallStage,
     val downloadedBytes: Long = 0,
     val totalBytes: Long = 0,
+    val profileId: String? = null,
+    val detail: String? = null,
+    /** Only set from a real package-manager progress event; never estimated from elapsed time. */
+    val percent: Int? = null,
 )
 
 internal sealed interface PackageProfileInstallResult {
     data object AlreadyReady : PackageProfileInstallResult
     data object EnvironmentNotReady : PackageProfileInstallResult
 
-    /** 依赖的 profile 尚未安装，按依赖链先装它。 */
+    /** 保留旧调用方兼容；新安装器自动安装整条依赖链。 */
     data class DependencyMissing(val profileId: String) : PackageProfileInstallResult
     data object Installed : PackageProfileInstallResult
-    data class Failed(val stage: PackageProfileInstallStage) : PackageProfileInstallResult
+    data class Failed(
+        val stage: PackageProfileInstallStage,
+        val profileId: String? = null,
+        val exitCode: Int? = null,
+        val reason: String? = null,
+    ) : PackageProfileInstallResult
 }
 
 internal data class LinuxPackageSpec(
     val packages: List<String> = emptyList(),
     val managedTool: ManagedLinuxTool? = null,
+    val managedTools: List<ManagedLinuxTool> = emptyList(),
     val setupScript: String? = null,
+    val checks: List<LinuxPackageCheck> = emptyList(),
 )
 
 internal data class LinuxPackageProfile(
@@ -43,6 +53,10 @@ internal data class LinuxPackageProfile(
     val specs: Map<LinuxDistribution, LinuxPackageSpec>,
     /** 安装前必须就绪的前置 profile。 */
     val dependsOn: LinuxPackageProfile? = null,
+    val displayName: String = id,
+    val description: String = "",
+    val isLargeDownload: Boolean = false,
+    val isOptional: Boolean = false,
 ) {
     fun spec(distribution: LinuxDistribution): LinuxPackageSpec = requireNotNull(specs[distribution])
 }
@@ -118,126 +132,8 @@ internal object LinuxPackageProfiles {
             LinuxDistribution.DEBIAN to LinuxPackageSpec(setupScript = KIMI_INSTALL_SCRIPT),
         ),
     )
-    val ALL = listOf(PYTHON, NODE, SSH, KIMI)
+    val ALL: List<LinuxPackageProfile> by lazy { listOf(PYTHON, NODE, SSH, KIMI) + LinuxCapabilityCatalog.ALL }
 }
 
-internal fun linuxPackageProfileReady(rootfs: File, profile: LinuxPackageProfile): Boolean {
-    val marker = File(rootfs, profile.markerName)
-    if (!marker.isFile) return false
-    return marker.useLines { lines ->
-        lines.any { line -> line.trim() == "profile=${profile.revision}" }
-    }
-}
-
-/** 为当前选中的发行版按需安装单个工具 profile；成功后只写对应完成标记。 */
-internal class LinuxPackageProfileInstaller(
-    private val context: Context,
-    private val distribution: LinuxDistribution,
-    private val profile: LinuxPackageProfile,
-) {
-    private val rootfs = LinuxEnvironmentPaths.rootfsDir(context, distribution)
-    private val managedToolInstaller = PinnedLinuxToolInstaller(context)
-
-    fun isReady(): Boolean = linuxPackageProfileReady(rootfs, profile)
-
-    suspend fun install(
-        onProgress: suspend (PackageProfileInstallProgress) -> Unit = {},
-    ): PackageProfileInstallResult {
-        installMutex.lock()
-        return try {
-            installLocked(onProgress)
-        } finally {
-            installMutex.unlock()
-        }
-    }
-
-    private suspend fun installLocked(
-        onProgress: suspend (PackageProfileInstallProgress) -> Unit,
-    ): PackageProfileInstallResult = withContext(Dispatchers.IO) {
-        if (isReady()) return@withContext PackageProfileInstallResult.AlreadyReady
-        onProgress(PackageProfileInstallProgress(PackageProfileInstallStage.CHECKING))
-        if (!LinuxEnvironmentPaths.rootfsReady(rootfs.absolutePath) ||
-            !File(rootfs, AlpineEnvironmentPaths.COMMON_TOOLS_MARKER).isFile
-        ) {
-            return@withContext PackageProfileInstallResult.EnvironmentNotReady
-        }
-        profile.dependsOn?.let { dependency ->
-            if (!linuxPackageProfileReady(rootfs, dependency)) {
-                return@withContext PackageProfileInstallResult.DependencyMissing(dependency.id)
-            }
-        }
-
-        val spec = profile.spec(distribution)
-        spec.managedTool?.let { tool ->
-            val installed = managedToolInstaller.install(
-                tool = tool,
-                distribution = distribution,
-                rootfs = rootfs,
-            ) { downloadedBytes, totalBytes ->
-                onProgress(
-                    PackageProfileInstallProgress(
-                        stage = PackageProfileInstallStage.DOWNLOADING,
-                        downloadedBytes = downloadedBytes,
-                        totalBytes = totalBytes,
-                    ),
-                )
-            }
-            if (!installed) {
-                return@withContext PackageProfileInstallResult.Failed(
-                    PackageProfileInstallStage.DOWNLOADING,
-                )
-            }
-        }
-
-        val packageHelper = when (distribution) {
-            LinuxDistribution.ALPINE -> "/usr/local/bin/eta-apk"
-            LinuxDistribution.DEBIAN -> "/usr/local/bin/eta-apt"
-        }
-        onProgress(PackageProfileInstallProgress(PackageProfileInstallStage.INSTALLING))
-        if (spec.packages.isNotEmpty()) {
-            val installResult = InstallerShellRunner.run(
-                command = "$packageHelper install ${spec.packages.joinToString(" ")}",
-                timeoutSeconds = INSTALL_TIMEOUT_SECONDS,
-                environment = distribution.terminalEnvironment,
-                linuxRootfsPath = rootfs.absolutePath,
-            )
-            if (installResult.exitCode != 0) {
-                return@withContext PackageProfileInstallResult.Failed(
-                    PackageProfileInstallStage.INSTALLING,
-                )
-            }
-        }
-
-        val activateCommand = buildString {
-            append("set -e\n")
-            spec.setupScript?.let { script -> append(script).append('\n') }
-            if (profile == LinuxPackageProfiles.KIMI) append("kimi --version >/dev/null\nkimi web --help >/dev/null\n")
-            append("cat > /").append(profile.markerName).append(" <<'ETA_PROFILE_EOF'\n")
-            append("profile=").append(profile.revision).append('\n')
-            append("ETA_PROFILE_EOF\n")
-            append("chmod 0644 /").append(profile.markerName).append(" || exit 71")
-        }
-        val result = InstallerShellRunner.run(
-            command = activateCommand,
-            timeoutSeconds = INSTALL_TIMEOUT_SECONDS,
-            environment = distribution.terminalEnvironment,
-            linuxRootfsPath = rootfs.absolutePath,
-        )
-        AndroidAgentLogger.info(
-            "Package profile action=activate distribution=${distribution.wireName} profile=${profile.id} " +
-                "outcome=${if (result.exitCode == 0) "succeeded" else "failed"} " +
-                "exitCode=${result.exitCode} outputChars=${result.output.length}",
-        )
-        if (result.exitCode != 0) {
-            return@withContext PackageProfileInstallResult.Failed(PackageProfileInstallStage.INSTALLING)
-        }
-
-        onProgress(PackageProfileInstallProgress(PackageProfileInstallStage.COMPLETE))
-        PackageProfileInstallResult.Installed
-    }
-
-    companion object {
-        private const val INSTALL_TIMEOUT_SECONDS = 600L
-        private val installMutex = Mutex()
-    }
-}
+internal fun linuxPackageProfileReady(rootfs: File, profile: LinuxPackageProfile): Boolean =
+    LinuxPackageProfileStatus.read(File(rootfs, profile.markerName), profile.revision).ready

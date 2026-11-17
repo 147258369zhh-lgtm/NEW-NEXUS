@@ -31,10 +31,13 @@ jobs:
       - name: 配置构建环境
         uses: ./.github/actions/setup-build
 
+      - name: 验证 Nexus 安装身份
+        run: python3 scripts/verify_nexus_identity.py
+
       - name: Lint 与单元测试
         run: >-
           ./gradlew --no-daemon --no-configuration-cache --continue
-          :app:lintDebug :app:testDebugUnitTest
+          checkNexusBaseline :app:lintDebug
 
       - name: 上传检查报告
         if: failure()
@@ -44,6 +47,8 @@ jobs:
           path: |
             app/build/reports/
             app/build/test-results/
+            kernel-api/build/test-results/
+            application-api/build/test-results/
           if-no-files-found: ignore
           retention-days: 7
 

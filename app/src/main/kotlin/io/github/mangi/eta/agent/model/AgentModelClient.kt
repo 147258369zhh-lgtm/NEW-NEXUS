@@ -12,7 +12,9 @@ import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
 import io.github.mangi.eta.agent.capability.NexusLazyToolCatalog
+import io.github.mangi.eta.agent.capability.NexusToolDescriptors
 import io.github.mangi.eta.agent.tool.AgentToolRequirements
+import io.github.zhh_lgtm.nexus.kernel.api.RunBudget
 import io.github.mangi.eta.data.model.AnthropicProviderSetting
 import io.github.mangi.eta.data.model.CustomBody
 import io.github.mangi.eta.data.model.CustomHeader
@@ -102,6 +104,8 @@ internal object AgentModelClient {
         images: List<ModelImage> = emptyList(),
         history: List<ConversationMessage> = emptyList(),
         provider: AgentProviderClient = ProviderClientFactory.getClient(config),
+        compactionConfig: ModelConfig = config,
+        compactionProvider: AgentProviderClient? = null,
         runController: AgentRunController = AgentRunController(),
         skillContext: SkillContext = SkillContext.EMPTY,
         memoryContext: AgentMemoryContext = AgentMemoryContext.DISABLED,
@@ -124,18 +128,57 @@ internal object AgentModelClient {
         onTranscript: (List<ConversationMessage>) -> Unit = {},
         initialRound: Int = 1,
         textOnlyFallback: Boolean = false,
+        resumeToolResult: Boolean = false,
         metricsScope: io.github.mangi.eta.agent.runtime.AgentMetricScope? = null,
         promptScope: PromptRunScope = PromptRunScope(),
+        runBudget: RunBudget = AgentRunBudgets.default(),
+        budgetGuard: AgentRunBudgetGuard = AgentRunBudgetGuard(runBudget, initialRound,
+            approveSoftLimit = { io.github.mangi.eta.agent.runtime.RunBudgetConfirmation.await(runController, it) },
+            approveHardLimit = { io.github.mangi.eta.agent.runtime.RunBudgetConfirmation.await(runController, it) }),
+        extensions: AgentRunExtensions = AgentRunExtensions.NONE,
+        maxParallelAgents: Int = io.github.mangi.eta.data.model.SubagentSettings.DEFAULT_MAX_PARALLEL_AGENTS,
+        captureModelMedia: (Int, List<ToolFile>) -> List<io.github.mangi.eta.agent.runtime.AgentArtifactReference> = { _, _ -> emptyList() },
         onEvent: (AgentEvent) -> Unit = {}
     ): ModelResponse.Text {
+        val provider = BudgetedAgentProvider.wrap(provider)
+        // Signed tool responses must keep their original catalogue until the chain ends.
+        // A catalogue containing only discovery tools would otherwise stay locked even
+        // after tool_activate succeeds. Publish the policy-filtered schemas up front.
+        val useLazyDiscovery = lazyToolCatalog != null && provider.capabilities.endpoint !in setOf(
+            EndpointKind.ANTHROPIC_MESSAGES, EndpointKind.GEMINI_INTERACTIONS,
+        )
+        if (useLazyDiscovery && !compactOnly && !rewriteReply && !textOnlyFallback && config.supportsTools) {
+            lazyToolCatalog?.restoreUsedTools(history)
+        }
+        val effectiveCompactionProvider = compactionProvider ?: if (
+            config.providerId == compactionConfig.providerId &&
+                config.baseUrl == compactionConfig.baseUrl &&
+                config.authMode == compactionConfig.authMode &&
+                config.model == compactionConfig.model
+        ) {
+            provider
+        } else {
+            ProviderClientFactory.getClient(compactionConfig)
+        }
+        if (runBudget.costLimitMicros != null && runController.modelBudget == null) {
+            throw AgentModelFailure("MODEL_COST_BUDGET_OWNER_REQUIRED", false, "费用预算缺少可靠执行记录，本次请求未启动。")
+        }
         val webSchema = JSONArray().put(JSONObject().put("type", "function").put("function", JSONObject().put("name", "web_search")))
-        val config = if (config.hostedWebSearchEnabled && (!io.github.mangi.eta.agent.runtime.AgentBoundaryStore.load().isAllowed("web_search") ||
+        var config = if (config.hostedWebSearchEnabled && (!io.github.mangi.eta.agent.runtime.AgentBoundaryStore.load().isAllowed("web_search") ||
                 toolFilter?.invoke(webSchema)?.length() == 0)) config.copy(hostedWebSearchEnabled = false) else config
         config.validate()
+        if (images.isNotEmpty() && !config.supportsImageInput) {
+            throw AgentModelFailure(
+                code = "MODEL_IMAGE_INPUT_UNSUPPORTED",
+                retryable = false,
+                message = "当前模型未声明图片输入能力。请在模型设置中启用“图片输入”，或切换到支持视觉的模型。",
+            )
+        }
+        val prompt = if (compactOnly || rewriteReply || textOnlyFallback) prompt else extensions.input(prompt, images.size)
         // 这里已经拿到本次请求最终生效的模型；提示词注入在本次 complete 内只解析一次，
         // 主模型、备用模型与子 Agent 各自用自己实际生效的配置冻结同一份结果。
         val promptInjection = if (compactOnly) ResolvedPromptInjection()
-        else resolvePromptInjection(config, promptScope)
+        else resolvePromptInjection(config, promptScope, roleplayContext)
         require(initialRound > 0)
         val initialCapabilities = capabilitiesProvider()
         val messages = AgentPromptBuilder.buildInitialMessages(
@@ -149,31 +192,43 @@ internal object AgentModelClient {
             roleplayContext = roleplayContext,
             executionContext = executionContext,
             promptInjection = promptInjection,
-            lazyToolDiscovery = lazyToolCatalog?.enabled() == true,
+            lazyToolDiscovery = useLazyDiscovery && lazyToolCatalog?.enabled() == true,
             workflowModeInstruction = workflowModeInstruction,
+            resumeToolResult = resumeToolResult,
         )
+        val currentUserIndex = (0 until messages.length()).last { index ->
+            messages.optJSONObject(index)?.let { it.optString("role") == "user" && !it.optBoolean(io.github.mangi.eta.agent.prompt.PROMPT_INJECTION_MARKER) } == true
+        }
         if (rewriteReply) {
-            messages.put(messages.length() - 1, AgentConversationCodec.userTextMessage(
+            messages.put(currentUserIndex, AgentConversationCodec.userTextMessage(
                 "请只改写下面这条角色回复，保持已有事实与实际工具结果，以当前角色设定改善表达。" +
                     "这不是重新执行任务；不得调用任何工具、重读设备、更新记忆或编造缺失证据。只输出替代正文。\n" +
                     "<reply_to_rewrite>\n$prompt\n</reply_to_rewrite>",
             ))
-        } else if (!compactOnly) {
-            messages.getJSONObject(messages.length() - 1).put("_eta_message_id", initialUserMessageId)
-            AssistantScreenContextProjection.attach(messages.getJSONObject(messages.length() - 1), assistantScreenContext)
+        } else if (!compactOnly && !resumeToolResult) {
+            messages.getJSONObject(currentUserIndex).put("_eta_message_id", initialUserMessageId)
+            AssistantScreenContextProjection.attach(messages.getJSONObject(currentUserIndex), assistantScreenContext)
         }
-        if (!compactOnly && config.providerType == ProviderTypes.GEMINI) {
-            GeminiEphemeralState.markRunStart(messages.getJSONObject(messages.length() - 1))
+        if (!compactOnly && !resumeToolResult && config.providerType == ProviderTypes.GEMINI) {
+            GeminiEphemeralState.markRunStart(messages.getJSONObject(currentUserIndex))
         }
-        if (compactOnly) messages.remove(messages.length() - 1)
+        if (compactOnly || resumeToolResult) messages.remove(currentUserIndex)
         val transcript = JSONArray()
         // 旧 history 中的无效消息可能在组装时被跳过，系统边界不能由 history 条数倒推。
         val systemCount = AgentPromptBuilder.buildSystemMessages(
             config, skillContext, memoryContext, initialCapabilities.rootAvailable, roleplayContext,
             executionContext, taskPrompt = prompt, promptInjection = promptInjection,
-            lazyToolDiscovery = lazyToolCatalog?.enabled() == true,
+            lazyToolDiscovery = useLazyDiscovery && lazyToolCatalog?.enabled() == true,
             workflowModeInstruction = workflowModeInstruction,
         ).length()
+        val cloudToolsEnabled = runCatching {
+            kotlinx.coroutines.runBlocking {
+                val context = io.github.mangi.eta.data.datastore.SettingsDataStore.applicationContext()
+                val cloud = io.github.mangi.eta.data.repository.CloudToolsSettingsRepository.resolveRuntimeConfig(context)
+                cloud.settings.enabled || io.github.mangi.eta.agent.cloud.CloudToolAvailability
+                    .isAvailable(AgentCloudToolCatalog.MEDIA, cloud)
+            }
+        }.getOrDefault(false)
         fun toolsFor(capabilities: AgentToolCapabilities): JSONArray {
             if (rewriteReply || textOnlyFallback || !config.supportsTools) return JSONArray()
             val fullTools = AgentToolCatalog.build(
@@ -188,21 +243,37 @@ internal object AgentModelClient {
                 memoryWritable = roleplayContext == null,
                 capabilities = capabilities,
                 localWebSearch = !config.usesHostedWebSearch,
+                cloudTools = cloudToolsEnabled,
             )
-            val candidateTools = lazyToolCatalog?.localSchemas(fullTools) ?: fullTools
-            if (lazyToolCatalog == null) {
+            var candidateTools = if (useLazyDiscovery) checkNotNull(lazyToolCatalog).localSchemas(fullTools) else fullTools
+            if (!useLazyDiscovery) {
                 for (index in 0 until additionalTools.length()) {
                     candidateTools.put(additionalTools.opt(index))
                 }
+                candidateTools = lazyToolCatalog?.authorizedSchemas(candidateTools) ?: candidateTools
             }
             val policyFiltered = toolFilter?.invoke(candidateTools) ?: candidateTools
-            val withDiscovery = lazyToolCatalog?.appendDiscoverySchemas(policyFiltered) ?: policyFiltered
+            val withDiscovery = if (useLazyDiscovery) checkNotNull(lazyToolCatalog).appendDiscoverySchemas(policyFiltered) else policyFiltered
             val boundaryFiltered = io.github.mangi.eta.agent.runtime.AgentBoundaryStore.load()
                 .filterSchemas(withDiscovery)
             return AgentToolSchema.sanitizeFunctionCatalog(boundaryFiltered)
         }
-        val tools = toolsFor(initialCapabilities)
-        onEvent(
+        val tools = if (compactOnly || rewriteReply || textOnlyFallback) toolsFor(initialCapabilities)
+            else extensions.prepare(messages, systemCount, toolsFor(initialCapabilities))
+        val auditedProvider = object : AgentProviderClient by provider {
+            override fun complete(request: ProviderRequest, runController: AgentRunController, onEvent: (ProviderEvent) -> Unit): ProviderResponse {
+                if (!compactOnly) runCatching {
+                    io.github.mangi.eta.agent.prompt.PromptAssemblyAuditStore.record(operationId, promptScope, request, promptInjection)
+                }
+                return provider.complete(request, runController, onEvent)
+            }
+        }
+        if (config.hostedWebSearchEnabled && extensions.tools(webSchema).length() == 0) config = config.copy(hostedWebSearchEnabled = false)
+        val emitEvent: (AgentEvent) -> Unit = { event ->
+            onEvent(event)
+            if (!compactOnly && !rewriteReply && !textOnlyFallback) extensions.event(event)
+        }
+        emitEvent(
             AgentEvent.RunStarted(
                 initialImages = images.size,
                 initialImageBytes = images.sumOf { it.bytes },
@@ -210,6 +281,52 @@ internal object AgentModelClient {
                 terminalTools = config.terminalTools
             )
         )
+        if (!compactOnly && !rewriteReply && !textOnlyFallback) {
+            var processedTranscript = emptyList<ConversationMessage>()
+            val processedStream = StringBuilder()
+            var processorBlockStarted = false
+            fun processorDelta(chunk: String) {
+                if (chunk.isEmpty()) return
+                budgetGuard.checkDuration(); runController.throwIfStopped()
+                require(processedStream.length.toLong() + chunk.length <= 256_000) { "PACKAGE_MESSAGE_OUTPUT_LIMIT" }
+                if (!processorBlockStarted) {
+                    // Isolated processor output arrives on a Binder callback thread. Do not reenter its locked hook chain here.
+                    onEvent(AgentEvent.RoundStarted(initialRound, messages.length()))
+                    onEvent(AgentEvent.AssistantBlockStart(initialRound, AgentEvent.AssistantBlockKind.TEXT, 0))
+                    processorBlockStarted = true
+                }
+                processedStream.append(chunk)
+                onEvent(AgentEvent.AssistantBlockDelta(initialRound, AgentEvent.AssistantBlockKind.TEXT, 0, chunk.length, chunk))
+            }
+            try {
+                val processed = budgetGuard.watch(runController).use {
+                    extensions.processStreaming(messages, systemCount, config.knownContextWindow, ::processorDelta).also {
+                        budgetGuard.checkDuration(); runController.throwIfCancelled()
+                    }
+                }
+                if (processed != null) {
+                    val text = processed.text
+                    if (!processorBlockStarted) processed.chunks.forEach(::processorDelta)
+                    else if (text.startsWith(processedStream.toString())) processorDelta(text.substring(processedStream.length))
+                    extensions.event(AgentEvent.AssistantBlockStart(initialRound, AgentEvent.AssistantBlockKind.TEXT, 0))
+                    val completed = listOf(ConversationMessage(role = "assistant", content = text))
+                    processedTranscript = completed
+                    onTranscript(completed)
+                    emitEvent(AgentEvent.AssistantBlockEnd(initialRound, AgentEvent.AssistantBlockKind.TEXT, 0, contentChars = text.length,
+                        replacementContent = text.takeIf { it != processedStream.toString() }))
+                    emitEvent(AgentEvent.AssistantReceived(initialRound, text.length, "", emptyList()))
+                    extensions.finished(true)
+                    budgetGuard.checkDuration(); runController.throwIfCancelled()
+                    return ModelResponse.Text(content = text, transcript = completed)
+                }
+                check(!processorBlockStarted) { "消息处理插件输出后不能撤销匹配" }
+            } catch (failure: Throwable) {
+                if (processedTranscript.isEmpty() && processedStream.isNotEmpty()) processedTranscript = listOf(ConversationMessage("assistant", processedStream.toString()))
+                extensions.finished(false)
+                throw AgentModelExecutionException(cause = runController.abortFailure ?: failure, contextSnapshot = null,
+                    reasoningContent = "", transcript = processedTranscript)
+            }
+        }
         // 工具目录与系统提示都是请求前缀，按轮重算会让一次瞬时状态抖动废掉整段缓存。
         // Root 授权真正变化时整体重建；其余能力只增不减：短暂不可用的工具仍保留，执行时自行报告错误码。
         var promptRootAvailable = initialCapabilities.rootAvailable
@@ -220,18 +337,18 @@ internal object AgentModelClient {
                 val systemMessages = AgentPromptBuilder.buildSystemMessages(
                     config, skillContext, memoryContext, capabilities.rootAvailable, roleplayContext,
                     executionContext, taskPrompt = prompt, promptInjection = promptInjection,
-                    lazyToolDiscovery = lazyToolCatalog?.enabled() == true,
+                    lazyToolDiscovery = useLazyDiscovery && lazyToolCatalog?.enabled() == true,
                     workflowModeInstruction = workflowModeInstruction,
                 )
                 for (index in 0 until systemMessages.length()) {
                     messages.put(index, systemMessages.getJSONObject(index))
                 }
                 promptRootAvailable = capabilities.rootAvailable
-                publishedTools = toolsFor(capabilities)
+                publishedTools = extensions.prepare(messages, systemCount, toolsFor(capabilities))
                 return publishedTools
             }
             if (lazyToolCatalog != null) {
-                publishedTools = toolsFor(capabilities)
+                publishedTools = extensions.tools(toolsFor(capabilities))
                 return publishedTools
             }
             val published = toolNames(publishedTools)
@@ -245,7 +362,7 @@ internal object AgentModelClient {
                 io.github.mangi.eta.agent.runtime.AgentBoundaryStore.load()
                     .filterSchemas(toolFilter?.invoke(publishedTools) ?: publishedTools),
             )
-            return publishedTools
+            return extensions.tools(publishedTools)
         }
         val loop = AgentLoop(
             transcript = transcript,
@@ -257,7 +374,7 @@ internal object AgentModelClient {
             config = config,
             messages = messages,
             tools = tools,
-            provider = provider,
+            provider = auditedProvider,
             // 目录在运行内只增不减，可见不再等于可用：执行前用同一规则复核，
             // 中途失去的能力返回与目录过滤一致的错误码，而不是让底层接口给出含糊的失败。
             toolExecutor = AgentModelClient.ToolExecutor { call ->
@@ -283,7 +400,8 @@ internal object AgentModelClient {
             },
             runController = runController,
             traceFormatter = traceFormatter,
-            onEvent = onEvent,
+            onEvent = emitEvent,
+            captureModelMedia = captureModelMedia,
             purpose = when {
                 rewriteReply -> ProviderRequestPurpose.REPLY_REWRITE
                 textOnlyFallback -> ProviderRequestPurpose.FALLBACK
@@ -294,12 +412,28 @@ internal object AgentModelClient {
             initialRound = initialRound,
             toolsForRound = ::toolsForRound,
             metricsScope = metricsScope,
+            budgetGuard = budgetGuard,
+            maxParallelAgents = maxParallelAgents,
+            // 批次并发只取本地 descriptor，且插件/包 Hook 运行仍保持原有串行顺序。
+            toolBatchSlot = if (extensions === AgentRunExtensions.NONE) {
+                NexusToolDescriptors::batchSlot
+            } else {
+                { _ -> ToolBatchSlot.SERIAL }
+            },
+            compactionConfig = compactionConfig,
+            compactionProvider = effectiveCompactionProvider,
         )
         val result = try {
-            if (compactOnly) loop.compactOnly(compactionSelection) else loop.run()
+            budgetGuard.watch(runController).use {
+                (if (compactOnly) loop.compactOnly(compactionSelection) else loop.run()).also {
+                    budgetGuard.checkDuration()
+                    runController.throwIfCancelled()
+                }
+            }.also { runController.throwIfCancelled() }
         } catch (throwable: Throwable) {
+            if (!compactOnly && !rewriteReply && !textOnlyFallback) extensions.finished(false)
             throw AgentModelExecutionException(
-                cause = throwable,
+                cause = runController.abortFailure ?: throwable,
                 contextSnapshot = if (rewriteReply) null else loop.contextSnapshot(),
                 reasoningContent = loop.reasoningSnapshot(),
                 transcript = AgentToolBatchRecovery.completeInterrupted(AgentConversationCodec.transcript(
@@ -309,6 +443,7 @@ internal object AgentModelClient {
                 )),
             )
         }
+        if (!compactOnly && !rewriteReply && !textOnlyFallback) extensions.finished(true)
         return ModelResponse.Text(
             content = result.content,
             contextSnapshot = if (rewriteReply) null else loop.contextSnapshot(),
@@ -327,11 +462,14 @@ internal object AgentModelClient {
     private fun resolvePromptInjection(
         config: ModelConfig,
         scope: PromptRunScope,
+        roleplay: RoleplayRunContext?,
     ): ResolvedPromptInjection =
         if (config.providerId.isBlank() || config.model.isBlank()) {
             ResolvedPromptInjection()
         } else {
-            runCatching { PromptInjectionStore.resolve(config, scope) }
+            runCatching { PromptInjectionStore.resolve(config, scope,
+                io.github.mangi.eta.agent.prompt.PromptMacroContext(roleplay?.card,
+                    roleplay?.userName ?: "用户", roleplay?.userDescription.orEmpty())) }
                 .onSuccess { resolved ->
                     if (resolved.skippedScopes.isNotEmpty()) {
                         AndroidAgentLogger.warn("Prompt injection skipped invalid scopes=${resolved.skippedScopes.joinToString(",")}")
@@ -343,11 +481,11 @@ internal object AgentModelClient {
     private fun toolNames(tools: JSONArray): Set<String> =
         (0 until tools.length()).mapNotNullTo(mutableSetOf()) { toolName(tools.getJSONObject(it)) }
 
-    private fun ModelConfig.validate() {
+    internal fun ModelConfig.validate() {
         require(baseUrl.isNotBlank()) { "请先配置 API 地址" }
         when {
             authMode == ProviderAuthModes.API_KEY -> require(
-                apiKey.isNotBlank() || ProviderEndpoint.isLocalOrPrivate(baseUrl),
+                apiKey.isNotBlank() || ProviderEndpoint.isLocalOrPrivate(baseUrl) || io.github.mangi.eta.agent.packages.PackageAiRegistry.isPackageProvider(providerId),
             ) { "请先配置 API Key" }
             ProviderAuthModes.isOAuth(authMode) -> {
                 require(providerId.isNotBlank()) { "账号登录缺少服务商标识，请重新选择服务商" }
@@ -399,8 +537,14 @@ internal object AgentModelClient {
         val openAiEndpointMode: String = OpenAiEndpointMode.CHAT_COMPLETIONS,
         val hostedWebSearchEnabled: Boolean = false,
         val supportsSearchSuggestions: Boolean = false,
-        /** null in the model catalog means unknown; only an explicit false disables tools. */
+        /**
+         * Model configuration maps an unknown catalog capability to false before Runtime so
+         * providers do not receive unsupported tool declarations. The default remains true for
+         * older serialized Runtime payloads that predate explicit capability fields.
+         */
         val supportsTools: Boolean = true,
+        /** Older runtime payloads remain readable; model-backed requests set this explicitly. */
+        val supportsImageInput: Boolean = true,
         val terminalTools: Boolean = false,
         val browserTools: Boolean = true,
         val deviceDirectTools: Boolean = true,
@@ -435,7 +579,7 @@ internal object AgentModelClient {
         val effectiveReasoningEffort: ReasoningEffort
             get() = reasoningEffort ?: ReasoningEffort.fromLegacy(thinkingEnabled)
 
-        /** 未知窗口不阻断对话：只关闭依赖窗口的自动压缩，手动压缩与服务商溢出错误照常可用。 */
+        /** Declared provider window; missing metadata uses the conservative compaction fallback. */
         val knownContextWindow: Int?
             get() = contextWindow?.takeIf { it > 0 }
     }
@@ -474,7 +618,11 @@ internal object AgentModelClient {
          */
         val sensitive: Boolean = false,
         val command: String? = null,
+        val files: List<ToolFile> = emptyList(),
+        /** Verified locally captured receipts, separate from untrusted remote result JSON. */
+        val artifacts: List<io.github.mangi.eta.agent.runtime.AgentArtifactReference> = emptyList(),
     )
+    data class ToolFile(val name: String, val mediaType: String, val bytes: ByteArray)
 
     /** 图片引用：入口侧可为本地 URI/路径，进入模型协议前必须解析为远程 URL 或 data URL。 */
     data class ModelImage(

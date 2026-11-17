@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="speech_asr_azure">Azure Speech · 短音频识别</string>
+    <string name="speech_tts_azure">Azure Speech</string>
+    <string name="speech_azure_key">Azure 资源密钥</string>
+    <string name="speech_azure_region">资源地域（如 eastasia）</string>
+    <string name="speech_azure_locale">语言代码（如 zh-CN）</string>
+    <string name="speech_azure_asr_note">使用 Azure Speech 资源密钥和对应地域。录音结束后转写，最长 60 秒；此接口不提供实时预览或停顿自动发送。</string>
+    <string name="speech_azure_tts_note">使用 Azure Speech 资源密钥和对应地域，通过官方 REST 接口输出 24 kHz PCM 音频。识别和播报凭据独立保存。</string>
+    <string name="speech_azure_voice_note">填写资源地域支持的完整音色名称，如 zh-CN-XiaoxiaoNeural 或 en-US-JennyNeural。音色与语言代码须匹配。</string>
+</resources>

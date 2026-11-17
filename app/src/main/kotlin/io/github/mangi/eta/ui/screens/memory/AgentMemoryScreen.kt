@@ -9,6 +9,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -64,14 +65,14 @@ import io.github.mangi.eta.ui.model.AgentMemoryUiState
 import java.text.NumberFormat
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.preference.SwitchPreference
-import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
+import io.github.mangi.eta.ui.components.NexusSettingsSwitchPreference as SwitchPreference
+import io.github.mangi.eta.ui.components.NexusSettingsDropdownPreference as OverlayDropdownPreference
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
@@ -90,7 +91,9 @@ internal fun MemoryDocumentScreen(
     onOpenLibrary: () -> Unit,
     embedded: Boolean = false,
     modifier: Modifier = Modifier,
+    documentScrollState: ScrollState = rememberScrollState(),
     moduleTabs: @Composable () -> Unit = {},
+    onOpenCharacterMemory: (String) -> Unit = {},
 ) {
     var showClearDialog by remember { mutableStateOf(false) }
     var showDiscardDialog by remember { mutableStateOf(false) }
@@ -119,7 +122,9 @@ internal fun MemoryDocumentScreen(
             onModeChange = { mode = it },
             onDraftChange = { onAction(AgentMemoryAction.DraftChanged(it)) },
             onSave = { onAction(AgentMemoryAction.Save) },
+            documentScrollState = documentScrollState,
             moduleTabs = moduleTabs,
+            onOpenCharacterMemory = onOpenCharacterMemory,
             onSelectScope = { scope ->
                 if (hasUnsavedChanges) pendingScope = scope else onAction(AgentMemoryAction.ScopeSelected(scope))
             },
@@ -127,7 +132,7 @@ internal fun MemoryDocumentScreen(
         )
     } else {
         MiuixScaffold(
-            title = "记忆与自学习",
+            title = "记忆与经验",
             onBack = requestExit,
             compactTitle = useCompactTitle,
             actions = {
@@ -153,7 +158,9 @@ internal fun MemoryDocumentScreen(
                 onModeChange = { mode = it },
                 onDraftChange = { onAction(AgentMemoryAction.DraftChanged(it)) },
                 onSave = { onAction(AgentMemoryAction.Save) },
+                documentScrollState = documentScrollState,
                 moduleTabs = moduleTabs,
+                onOpenCharacterMemory = onOpenCharacterMemory,
                 onSelectScope = { scope ->
                     if (hasUnsavedChanges) pendingScope = scope else onAction(AgentMemoryAction.ScopeSelected(scope))
                 },
@@ -253,11 +260,14 @@ private fun MemoryDocumentBody(
     onModeChange: (MemoryViewMode) -> Unit,
     onDraftChange: (String) -> Unit,
     onSave: () -> Unit,
+    documentScrollState: ScrollState,
     moduleTabs: @Composable () -> Unit = {},
     onSelectScope: (io.github.mangi.eta.data.repository.AgentMemoryScope) -> Unit,
+    onOpenCharacterMemory: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val imeVisible = WindowInsets.isImeVisible
+    var scopeKind by remember(state.selectedScope.key) { mutableStateOf(state.selectedScope.type.path) }
     Column(
         modifier = modifier
             .imePadding()
@@ -270,16 +280,39 @@ private fun MemoryDocumentBody(
             enter = fadeIn() + expandVertically(),
             exit = fadeOut() + shrinkVertically(),
         ) {
-            MemoryDocumentScopeGroup(state = state, onSelect = onSelectScope)
+            MemoryDocumentScopeGroup(state = state, kind = scopeKind, onKindChange = { scopeKind = it }, onSelect = onSelectScope, onOpenCharacterMemory = onOpenCharacterMemory)
         }
+        if (scopeKind != state.selectedScope.type.path) {
+            Box(Modifier.fillMaxWidth().weight(1f).padding(24.dp), contentAlignment = Alignment.Center) {
+                Text("选择此分类中的具体对象后查看文档。当前文档及草稿已保留。", style = MiuixTheme.textStyles.body2)
+            }
+            MemorySaveBar(state = state, onDiscard = { onDraftChange(state.savedContent) }, onSave = onSave)
+            Spacer(Modifier.height(12.dp))
+            return@Column
+        }
+        var sectionKey by remember(state.selectedScope.key) { mutableStateOf("all") }
+        val sections = io.github.mangi.eta.agent.memory.MemoryDocumentSections.parts(state.draft)
+        val section = sections.firstOrNull { it.key == sectionKey }
+        DialogChoicePreference(
+            title = "内容章节",
+            value = section?.title ?: "全文（含前言）",
+            options = listOf("全文（含前言）") + sections.map { it.title },
+            selectedIndex = if (section == null) 0 else sections.indexOf(section) + 1,
+            enabled = !state.isLoading && !state.isSaving,
+            onSelectedIndexChange = { index -> sectionKey = sections.getOrNull(index - 1)?.key ?: "all" },
+        )
         MemoryDocumentCard(
-            state = state,
+            state = if (section == null) state else state.copy(draft = io.github.mangi.eta.agent.memory.MemoryDocumentSections.content(state.draft, section)),
             mode = mode,
             onModeChange = onModeChange,
-            onDraftChange = onDraftChange,
+            onDraftChange = { value ->
+                onDraftChange(if (section == null) value else io.github.mangi.eta.agent.memory.MemoryDocumentSections.replace(state.draft, section, value))
+                if (section?.missing == true && value.isNotEmpty()) sectionKey = io.github.mangi.eta.agent.memory.MemoryDocumentSections.parts(state.draft + "\n# ${section.title}\n").firstOrNull { it.title == section.title && !it.missing }?.key ?: "all"
+            },
+            documentScrollState = documentScrollState,
             modifier = Modifier
                 .weight(1f)
-                .padding(horizontal = 12.dp),
+                .padding(horizontal = 16.dp),
         )
         MemorySaveBar(
             state = state,
@@ -293,22 +326,38 @@ private fun MemoryDocumentBody(
 @Composable
 private fun MemoryDocumentScopeGroup(
     state: AgentMemoryUiState,
+    kind: String,
+    onKindChange: (String) -> Unit,
     onSelect: (io.github.mangi.eta.data.repository.AgentMemoryScope) -> Unit,
+    onOpenCharacterMemory: (String) -> Unit,
 ) {
-    val labels = state.scopes.map { scope -> scopeLabel(scope) }
-    val selectedIndex = state.scopes.indexOfFirst { it.key == state.selectedScope.key }.coerceAtLeast(0)
+    val kinds = listOf("global", "project", "conversation", "task", "meeting", "character")
+    val labels = listOf("全局", "项目", "会话", "任务", "会议", "角色")
+    val scopes = state.scopes.filter { it.type.path == kind }
+    val selectedIndex = scopes.indexOfFirst { it.key == state.selectedScope.key }
     Card(
-        modifier = Modifier
-            .padding(horizontal = 12.dp)
-            .padding(top = 8.dp, bottom = 12.dp),
+        modifier = Modifier.padding(horizontal = 16.dp).padding(top = 8.dp, bottom = 12.dp),
     ) {
-        DialogChoicePreference(
-            title = "记忆范围",
-            value = labels.getOrElse(selectedIndex) { "暂无可用范围" },
-            options = labels,
-            selectedIndex = selectedIndex,
-            enabled = !state.isLoading && !state.isSaving && state.scopes.isNotEmpty(),
-            onSelectedIndexChange = { index -> state.scopes.getOrNull(index)?.let(onSelect) },
+        DialogChoicePreference(title = "记忆分类", value = labels.getOrElse(kinds.indexOf(kind)) { "全局" },
+            options = labels, selectedIndex = kinds.indexOf(kind), enabled = !state.isLoading && !state.isSaving,
+            onSelectedIndexChange = { index -> onKindChange(kinds.getOrElse(index) { "global" }) })
+        Text("范围决定哪些任务可见；核心等章节表示内容的重要性。", style = MiuixTheme.textStyles.footnote2,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp), color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+        if (kind == "character") {
+            val characters = state.characters.entries.toList()
+            if (characters.isEmpty()) BasicComponent(title = "暂无角色", summary = "创建角色后，可在这里管理该角色已有的剧情记忆。")
+            else DialogChoicePreference(title = "角色记忆", value = "选择角色查看与管理剧情记忆",
+                options = characters.map { it.value }, selectedIndex = -1,
+                enabled = !state.isLoading && !state.isSaving && !state.hasUnsavedChanges,
+                onSelectedIndexChange = { index -> characters.getOrNull(index)?.let { onOpenCharacterMemory(it.key) } })
+        } else if (scopes.isEmpty()) {
+            BasicComponent(title = "暂无${labels.getOrElse(kinds.indexOf(kind)) { "此类" }}对象", summary = "创建相应对象后可选择其记忆；已有文档始终保留。")
+        } else DialogChoicePreference(
+            title = stringResource(R.string.memory_scope_label),
+            value = scopes.getOrNull(selectedIndex)?.let { scopeLabel(it, state.scopeNames) } ?: "选择要查看和编辑的对象",
+            options = scopes.map { scopeLabel(it, state.scopeNames) }, selectedIndex = selectedIndex,
+            enabled = !state.isLoading && !state.isSaving,
+            onSelectedIndexChange = { index -> scopes.getOrNull(index)?.let(onSelect) },
         )
     }
 }
@@ -320,7 +369,7 @@ internal fun MemorySettingsGroup(
 ) {
     Card(
         modifier = Modifier
-            .padding(horizontal = 12.dp)
+            .padding(horizontal = 16.dp)
             .padding(top = 8.dp, bottom = 12.dp),
     ) {
         SwitchPreference(
@@ -332,26 +381,21 @@ internal fun MemorySettingsGroup(
         )
         OverlayDropdownPreference(
             title = stringResource(R.string.memory_scope_label),
-            items = state.scopes.map { scope -> scopeLabel(scope) },
+            items = state.scopes.map { scope -> scopeLabel(scope, state.scopeNames) },
             selectedIndex = state.scopes.indexOfFirst { it.key == state.selectedScope.key }.coerceAtLeast(0),
             onSelectedIndexChange = { index -> state.scopes.getOrNull(index)?.let { onAction(AgentMemoryAction.ScopeSelected(it)) } },
             enabled = !state.isLoading && !state.isSaving,
         )
         BasicComponent(
-            title = stringResource(R.string.ui_core_memory_injection_budget_48b5d5),
-            summary = stringResource(R.string.memory_budget_summary, formatNumber(state.coreBudgetChars)),
+            title = "本轮记忆与经验预算",
+            summary = "少量核心最多 ${formatNumber(state.coreBudgetChars)} 字符；核心、事实与经验合计最多 ${formatNumber(state.totalBudgetChars)} 字符。按当前任务检索并整条选取，没有相关内容时少提供；实际随模型窗口缩减。",
         )
     }
 }
 
 @Composable
-private fun scopeLabel(scope: io.github.mangi.eta.data.repository.AgentMemoryScope): String = when (scope.type) {
-    io.github.mangi.eta.data.repository.AgentMemoryScopeType.GLOBAL -> stringResource(R.string.memory_scope_global)
-    io.github.mangi.eta.data.repository.AgentMemoryScopeType.PROJECT -> stringResource(R.string.memory_scope_project) + " · " + scope.id
-    io.github.mangi.eta.data.repository.AgentMemoryScopeType.CONVERSATION -> stringResource(R.string.memory_scope_conversation) + " · " + scope.id
-    io.github.mangi.eta.data.repository.AgentMemoryScopeType.MEETING -> stringResource(R.string.memory_scope_meeting) + " · " + scope.id
-    io.github.mangi.eta.data.repository.AgentMemoryScopeType.TASK -> stringResource(R.string.memory_scope_task) + " · " + scope.id
-}
+private fun scopeLabel(scope: io.github.mangi.eta.data.repository.AgentMemoryScope, names: Map<String, String> = emptyMap()): String =
+    memoryScopeName(scope.key, names)
 
 /** 文档卡片：标题栏承载文件名、体积与预览/编辑切换，正文区占满卡片剩余高度并独立滚动。 */
 @Composable
@@ -360,6 +404,7 @@ private fun MemoryDocumentCard(
     mode: MemoryViewMode,
     onModeChange: (MemoryViewMode) -> Unit,
     onDraftChange: (String) -> Unit,
+    documentScrollState: ScrollState,
     modifier: Modifier = Modifier,
 ) {
     val colors = MiuixTheme.colorScheme
@@ -380,7 +425,7 @@ private fun MemoryDocumentCard(
             Spacer(Modifier.width(8.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = scopeLabel(state.selectedScope),
+                    text = scopeLabel(state.selectedScope, state.scopeNames),
                     style = MiuixTheme.textStyles.body2,
                     fontWeight = FontWeight.Medium,
                     color = colors.onSurface,
@@ -409,11 +454,13 @@ private fun MemoryDocumentCard(
                         MemoryViewMode.Preview -> MemoryPreview(
                             content = state.draft,
                             onStartEditing = { onModeChange(MemoryViewMode.Edit) },
+                            scrollState = documentScrollState,
                         )
                         MemoryViewMode.Edit -> MemoryEditor(
                             value = state.draft,
                             enabled = !state.isSaving,
                             onValueChange = onDraftChange,
+                            scrollState = documentScrollState,
                         )
                     }
                 }
@@ -423,7 +470,7 @@ private fun MemoryDocumentCard(
 }
 
 @Composable
-private fun MemoryPreview(content: String, onStartEditing: () -> Unit) {
+private fun MemoryPreview(content: String, onStartEditing: () -> Unit, scrollState: ScrollState) {
     if (content.isBlank()) {
         Column(
             modifier = Modifier
@@ -451,7 +498,7 @@ private fun MemoryPreview(content: String, onStartEditing: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scrollState)
             .padding(horizontal = 16.dp, vertical = 14.dp),
     ) {
         StaticMarkdown(content = content, tone = MarkdownTone.Answer, modifier = Modifier.fillMaxWidth())
@@ -464,6 +511,7 @@ private fun MemoryEditor(
     value: String,
     enabled: Boolean,
     onValueChange: (String) -> Unit,
+    scrollState: ScrollState,
 ) {
     val colors = MiuixTheme.colorScheme
     val focusRequester = remember { FocusRequester() }
@@ -471,7 +519,7 @@ private fun MemoryEditor(
         modifier = Modifier
             .fillMaxSize()
             .clickable(interactionSource = null, indication = null) { focusRequester.requestFocus() }
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scrollState)
             .padding(horizontal = 16.dp, vertical = 14.dp),
     ) {
         if (value.isEmpty()) {
@@ -520,7 +568,7 @@ private fun MemoryModeSwitch(
                 modifier = Modifier
                     .squircleSurface(color = background, cornerRadius = 9.dp)
                     .clickable(enabled = enabled && !selected) { onModeChange(option) }
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
@@ -552,7 +600,7 @@ private fun MemorySaveBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp)
+                .padding(horizontal = 16.dp)
                 .padding(top = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),

@@ -2,18 +2,24 @@ package io.github.mangi.eta.agent.browser
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.content.MutableContextWrapper
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.net.Uri
+import android.net.http.SslError
 import android.os.Handler
 import android.os.Looper
+import android.os.Message
 import android.util.Base64
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.PermissionRequest
 import android.webkit.RenderProcessGoneDetail
+import android.webkit.SslErrorHandler
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -22,8 +28,10 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.core.graphics.createBitmap
+import io.github.mangi.eta.agent.accessibility.MainThreadCallGate
 import io.github.mangi.eta.agent.media.AgentImageCodec
 import io.github.mangi.eta.agent.tool.requiredText
+import io.github.mangi.eta.ui.screens.browser.AgentBrowserActivity
 import java.io.ByteArrayOutputStream
 import java.util.Locale
 import java.util.concurrent.CompletableFuture
@@ -106,6 +114,11 @@ internal class AgentBrowserSession(
 
     @Volatile
     private var attachedContainer: ViewGroup? = null
+
+    private var interactionHost: BrowserUserInteractionHost? = null
+    private var hostForeground = false
+    private val popupViews = mutableSetOf<WebView>()
+    private var userHandoffGeneration = 0L
 
     @Volatile
     private var currentLoadWaiter: LoadWaiter? = null
@@ -268,6 +281,7 @@ internal class AgentBrowserSession(
         userControlActive = true
         if (!wasAlreadyControlling) interruptCurrentAction(force = true)
         runOnMain {
+            if (attachedContainer != null && attachedContainer !== container) cancelPageRequestsOnMain()
             attachedContainer?.takeIf { it !== container }?.removeAllViews()
             attachedContainer = container
             contextWrapper?.baseContext = hostContext
@@ -279,6 +293,8 @@ internal class AgentBrowserSession(
     fun detachFrom(container: ViewGroup) {
         runOnMain {
             if (attachedContainer === container) {
+                cancelPageRequestsOnMain()
+                webView?.onPause()
                 val wasControlling = userControlActive
                 userControlActive = false
                 if (wasControlling) interruptCurrentAction(force = true)
@@ -289,6 +305,37 @@ internal class AgentBrowserSession(
                 onIdle()
             }
         }
+    }
+
+    fun bindInteractionHost(host: BrowserUserInteractionHost) = runOnMain {
+        if (interactionHost !== host) interactionHost?.cancelPageRequests()
+        interactionHost = host
+    }
+
+    fun setHostForeground(host: BrowserUserInteractionHost, foreground: Boolean) = runOnMain {
+        if (interactionHost !== host) return@runOnMain
+        hostForeground = foreground
+        if (foreground) webView?.onResume() else {
+            interactionHost?.cancelMediaPermission()
+            webView?.onPause()
+            CookieManager.getInstance().flush()
+        }
+    }
+
+    fun unbindInteractionHost(host: BrowserUserInteractionHost) = runOnMain {
+        if (interactionHost !== host) return@runOnMain
+        cancelPageRequestsOnMain()
+        interactionHost = null
+        hostForeground = false
+    }
+
+    private fun canShowUserPrompt(): Boolean =
+        userControlActive && hostForeground && interactionHost != null && attachedContainer != null && !isDataClearing()
+
+    private fun cancelPageRequestsOnMain() {
+        interactionHost?.cancelPageRequests()
+        popupViews.toList().forEach { popup -> runCatching { popup.destroy() } }
+        popupViews.clear()
     }
 
     /** 主线程只尝试回收空闲页面，不等待正在执行的导航或脚本。 */
@@ -375,6 +422,7 @@ internal class AgentBrowserSession(
                 runCatching {
                     when (action) {
                         "navigate" -> navigate(args)
+                        "open_for_user" -> openForUser()
                         "get_readable" -> readPage(args, readable = true)
                         "get_text" -> readPage(args, readable = false)
                         "find_elements" -> findElements(args)
@@ -452,6 +500,41 @@ internal class AgentBrowserSession(
             baseEnvelope("navigate", ok = true, status = "ok")
                 .put("redirected", rawUrl != currentUrl)
         )
+    }
+
+    /** Opens the same registered page without waiting for the user or exposing a second execution route. */
+    private fun openForUser(): BrowserToolResult {
+        val context = appContext ?: throw BrowserFailure("BROWSER_NOT_INITIALIZED", "浏览器尚未初始化")
+        val sessionKey = BrowserSessionRegistry.keyOf(this)
+            ?: throw BrowserFailure("BROWSER_SESSION_NOT_SHARED", "当前浏览器未绑定可接管会话，请从当前对话重新打开浏览器")
+        val epoch = activeOperationEpoch
+        callOnMain {
+            requireActiveOperation(epoch)
+            val generation = ++userHandoffGeneration
+            userControlActive = true
+            publishSnapshotOnMain()
+            try {
+                context.startActivity(AgentBrowserActivity.createIntent(context, sessionKey).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                })
+            } catch (failure: Exception) {
+                userControlActive = attachedContainer != null
+                publishSnapshotOnMain()
+                throw BrowserFailure("BROWSER_USER_HANDOFF_FAILED", "未能打开浏览器接管页面，请让用户从当前对话打开浏览器")
+            }
+            // Android may silently block a background Activity start. Do not strand the session in takeover.
+            mainHandler.postDelayed({
+                if (userHandoffGeneration == generation && attachedContainer == null && userControlActive) {
+                    userControlActive = false
+                    publishSnapshotOnMain()
+                    onIdle()
+                }
+            }, 15_000L)
+        }
+        return toolResult(baseEnvelope("open_for_user", ok = true, status = "waiting_for_user")
+            .put("requires_user_action", true)
+            .put("next_tool", "request_user_input")
+            .put("message", "已请求打开当前会话浏览器。请立即调用 request_user_input，告知用户完成登录、授权或从浏览器菜单扫描二维码后返回对话并确认。用户接管期间不得继续操作网页；收到用户确认后再读取页面状态，禁止索要密码、验证码或登录Cookie。若系统未打开页面，请让用户从当前对话打开浏览器。"))
     }
 
     private fun readPage(args: JSONObject, readable: Boolean): BrowserToolResult {
@@ -685,20 +768,26 @@ internal class AgentBrowserSession(
     @SuppressLint("SetJavaScriptEnabled")
     private fun ensureWebView(): WebView {
         webView?.let { return it }
-        return callOnMain {
+        return callOnMain(timeoutMs = WEBVIEW_START_TIMEOUT_MS) {
             webView ?: run {
                 val base = appContext ?: error("browser context unavailable")
                 val wrapper = MutableContextWrapper(attachedContainer?.context ?: base)
                 val view = WebView(wrapper).apply {
                     setBackgroundColor(Color.WHITE)
+                    isLongClickable = true
+                    isFocusable = true
+                    isFocusableInTouchMode = true
+                    // Do not consume long presses: Android owns the selection/copy action mode.
+                    setOnLongClickListener { false }
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
-                    settings.allowFileAccess = true
-                    settings.allowContentAccess = true
-                    settings.javaScriptCanOpenWindowsAutomatically = true
-                    settings.mediaPlaybackRequiresUserGesture = false
-                    settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                    settings.safeBrowsingEnabled = false
+                    settings.allowFileAccess = false
+                    settings.allowContentAccess = false
+                    settings.javaScriptCanOpenWindowsAutomatically = false
+                    settings.setSupportMultipleWindows(true)
+                    settings.mediaPlaybackRequiresUserGesture = true
+                    settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                    settings.safeBrowsingEnabled = true
                     settings.setSupportZoom(true)
                     settings.builtInZoomControls = true
                     settings.displayZoomControls = false
@@ -709,6 +798,7 @@ internal class AgentBrowserSession(
                 CookieManager.getInstance().setAcceptThirdPartyCookies(view, true)
                 contextWrapper = wrapper
                 webView = view
+                if (hostForeground) view.onResume()
                 layoutOffscreenOnMain(view)
                 attachedContainer?.let { attachWebViewOnMain(view, it) }
                 publishSnapshotOnMain()
@@ -720,6 +810,8 @@ internal class AgentBrowserSession(
     private fun attachWebViewOnMain(view: WebView, container: ViewGroup) {
         // 前台跟随窗口的硬件加速，不能继承离屏绘制遗留的软件图层。
         view.setLayerType(View.LAYER_TYPE_NONE, null)
+        view.isLongClickable = true
+        view.isFocusableInTouchMode = true
         (view.parent as? ViewGroup)?.takeIf { it !== container }?.removeView(view)
         if (view.parent == null) {
             container.removeAllViews()
@@ -731,6 +823,19 @@ internal class AgentBrowserSession(
                 )
             )
         }
+    }
+
+    private fun enablePageTextSelection(view: WebView) {
+        // Restore native copying on prose even when a site's presentation CSS disables selection.
+        // Buttons, inputs and editable widgets retain their normal interaction.
+        view.evaluateJavascript("""
+            (() => {
+              if (!document.head || document.getElementById('nexa-native-selection')) return;
+              const style = document.createElement('style'); style.id = 'nexa-native-selection';
+              style.textContent = 'body,main,div:not([role=button]):not([contenteditable]),p,article,section,blockquote,pre,code,td,th,h1,h2,h3,h4,h5,h6,li,span:not([role=button]) { -webkit-user-select:text !important; user-select:text !important; -webkit-touch-callout:default !important; }';
+              document.head.appendChild(style);
+            })()
+        """.trimIndent(), null)
     }
 
     private fun layoutOffscreenOnMain(view: WebView) {
@@ -746,6 +851,7 @@ internal class AgentBrowserSession(
     }
 
     private fun destroyWebViewOnMain() {
+        cancelPageRequestsOnMain()
         val view = webView ?: return
         (view.parent as? ViewGroup)?.removeView(view)
         runCatching { view.stopLoading() }
@@ -991,19 +1097,30 @@ internal class AgentBrowserSession(
         publishSnapshotOnMain()
     }
 
-    private fun <T> callOnMain(block: () -> T): T {
+    private fun <T> callOnMain(timeoutMs: Long = JAVASCRIPT_TIMEOUT_MS, block: () -> T): T {
         if (Looper.myLooper() == Looper.getMainLooper()) return block()
         val future = CompletableFuture<T>()
-        mainHandler.post {
-            runCatching(block)
-                .onSuccess(future::complete)
-                .onFailure(future::completeExceptionally)
+        val gate = MainThreadCallGate()
+        val action = Runnable {
+            if (gate.tryStart()) {
+                try { future.complete(block()) }
+                catch (failure: Throwable) { future.completeExceptionally(failure) }
+                finally { gate.finish() }
+            }
         }
+        if (!mainHandler.post(action)) throw BrowserFailure("MAIN_THREAD_UNAVAILABLE", "浏览器主线程不可用")
         return try {
-            future.get(JAVASCRIPT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            future.get(timeoutMs, TimeUnit.MILLISECONDS)
         } catch (_: TimeoutException) {
-            future.cancel(true)
-            throw BrowserFailure("MAIN_THREAD_TIMEOUT", "浏览器主线程响应超时", "timeout")
+            if (gate.cancelIfPending()) {
+                mainHandler.removeCallbacks(action)
+                throw BrowserFailure("MAIN_THREAD_TIMEOUT", "浏览器主线程等待超时，本次操作未执行", "timeout")
+            }
+            throw BrowserFailure("MAIN_THREAD_OUTCOME_UNKNOWN", "浏览器操作已开始但未及时返回；请先重新观察页面，勿重复提交", "timeout")
+        } catch (interrupted: InterruptedException) {
+            if (gate.cancelIfPending()) mainHandler.removeCallbacks(action)
+            Thread.currentThread().interrupt()
+            throw interrupted
         } catch (error: ExecutionException) {
             throw error.cause ?: error
         }
@@ -1016,6 +1133,7 @@ internal class AgentBrowserSession(
     private inner class BrowserClient : WebViewClient() {
         override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
             if (webView !== view) return
+            cancelPageRequestsOnMain()
             currentUrl = url.orEmpty()
             currentHost = hostOf(currentUrl)
             currentTitle = view.title.orEmpty()
@@ -1034,8 +1152,10 @@ internal class AgentBrowserSession(
             committedMainFrameUrl = currentUrl
             currentPageVisible = true
             currentTitle = view.title.orEmpty()
+            enablePageTextSelection(view)
             currentLoading = false
             currentProgress = 100
+            CookieManager.getInstance().flush()
             publishSnapshotOnMain()
             currentLoadWaiter?.complete(LoadOutcome(true, "OK", ""))
         }
@@ -1058,6 +1178,11 @@ internal class AgentBrowserSession(
         override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
             if (webView !== view || !request.isForMainFrame) return
             setNavigationErrorOnMain("NETWORK_ERROR", "页面加载失败，请检查网络连接")
+        }
+
+        override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
+            handler.cancel()
+            if (webView === view) setNavigationErrorOnMain("SSL_ERROR", "网站安全证书无效，已取消连接")
         }
 
         override fun onReceivedHttpError(
@@ -1091,6 +1216,59 @@ internal class AgentBrowserSession(
     }
 
     private inner class BrowserChrome : WebChromeClient() {
+        override fun onShowFileChooser(
+            view: WebView,
+            callback: ValueCallback<Array<Uri>>,
+            params: FileChooserParams,
+        ): Boolean {
+            if (webView !== view || !canShowUserPrompt()) {
+                callback.onReceiveValue(null)
+            } else {
+                interactionHost?.chooseFiles(callback, params)
+            }
+            return true
+        }
+
+        override fun onPermissionRequest(request: PermissionRequest) {
+            if (!canShowUserPrompt() ||
+                !BrowserInteractionPolicy.sameSecureOrigin(currentUrl, request.origin.toString()) ||
+                request.resources.any { it != PermissionRequest.RESOURCE_AUDIO_CAPTURE && it != PermissionRequest.RESOURCE_VIDEO_CAPTURE }
+            ) {
+                request.deny()
+                return
+            }
+            interactionHost?.requestMediaPermission(request) ?: request.deny()
+        }
+
+        override fun onPermissionRequestCanceled(request: PermissionRequest) {
+            interactionHost?.cancelMediaPermission(request)
+        }
+
+        /** User-initiated target=_blank login pages reuse this session and its cookie jar. */
+        override fun onCreateWindow(view: WebView, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message): Boolean {
+            if (webView !== view || !isUserGesture || !canShowUserPrompt()) return false
+            val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
+            val popup = WebView(view.context)
+            popupViews += popup
+            popup.webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(child: WebView, request: WebResourceRequest): Boolean {
+                    val target = request.url.toString()
+                    if (!request.isForMainFrame) return false
+                    mainHandler.post {
+                        if (popupViews.remove(child)) child.destroy()
+                        if (webView === view && canShowUserPrompt() &&
+                            BrowserInteractionPolicy.confirmedQrWebAddress(target) != null
+                        ) view.loadUrl(target)
+                    }
+                    return true
+                }
+            }
+            transport.webView = popup
+            resultMsg.sendToTarget()
+            mainHandler.postDelayed({ if (popupViews.remove(popup)) popup.destroy() }, 15_000L)
+            return true
+        }
+
         override fun onReceivedTitle(view: WebView, title: String?) {
             if (webView !== view) return
             currentTitle = title.orEmpty()
@@ -1149,6 +1327,7 @@ internal class AgentBrowserSession(
         private const val MAX_TEXT_CHARS = 12_000
         private const val NAVIGATION_TIMEOUT_MS = 25_000L
         private const val JAVASCRIPT_TIMEOUT_MS = 8_000L
+        private const val WEBVIEW_START_TIMEOUT_MS = 25_000L
         private const val POST_ACTION_TIMEOUT_MS = 10_000L
         private const val OFFSCREEN_VIEWPORT_MAX_WIDTH = 1_280
         private const val OFFSCREEN_VIEWPORT_MAX_HEIGHT = 2_400
@@ -1157,6 +1336,7 @@ internal class AgentBrowserSession(
         private const val PREVIEW_QUALITY = 60
         private val SUPPORTED_ACTIONS = setOf(
             "navigate",
+            "open_for_user",
             "get_readable",
             "get_text",
             "find_elements",

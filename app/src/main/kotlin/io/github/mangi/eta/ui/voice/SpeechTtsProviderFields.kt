@@ -11,9 +11,9 @@ import io.github.mangi.eta.data.model.GeminiTtsModel
 import io.github.mangi.eta.data.model.MiniMaxTtsModel
 import io.github.mangi.eta.data.model.SpeechCredentialField
 import io.github.mangi.eta.data.model.TtsProvider
-import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle as SmallTitle
+import io.github.mangi.eta.ui.components.NexusSettingsDropdownPreference as OverlayDropdownPreference
 
 @Composable
 internal fun GeminiConnectionSection(store: SpeechSettingsStore) {
@@ -80,8 +80,8 @@ private fun SpeechApiKeyConnectionSection(
         SmallTitle(stringResource(R.string.speech_group_connection))
         Card(
             modifier = Modifier
-                .padding(horizontal = 12.dp)
-                .padding(bottom = 12.dp),
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 8.dp),
         ) {
             model()
             SpeechFieldColumn {
@@ -123,6 +123,52 @@ internal fun SpeechDeliveryFields(store: SpeechSettingsStore) {
                 },
             )
         }
-        TtsProvider.NONE, TtsProvider.QWEN, TtsProvider.DOUBAO, TtsProvider.LOCAL -> Unit
+        TtsProvider.BAIDU -> {
+            val config = store.settings.baiduTts
+            DomesticIntDeliveryField(stringResource(R.string.speech_speed), config.speed, 0..15) {
+                store.edit(store.settings.copy(baiduTts = config.copy(speed = it)))
+            }
+            DomesticIntDeliveryField(stringResource(R.string.speech_domestic_pitch), config.pitch, 0..15) {
+                store.edit(store.settings.copy(baiduTts = config.copy(pitch = it)))
+            }
+            DomesticIntDeliveryField(stringResource(R.string.speech_domestic_volume), config.volume, 0..9) {
+                store.edit(store.settings.copy(baiduTts = config.copy(volume = it)))
+            }
+        }
+        TtsProvider.IFLYTEK -> {
+            val config = store.settings.iflytekTts
+            val speeds = (0..100 step 10).toList().plus(config.speed).distinct().sorted()
+            DomesticNumberDeliveryField(stringResource(R.string.speech_speed), speeds.map(Int::toString),
+                speeds.indexOf(config.speed)) { index -> speeds.getOrNull(index)?.let {
+                store.edit(store.settings.copy(iflytekTts = config.copy(speed = it)))
+            } }
+        }
+        TtsProvider.TENCENT -> {
+            val config = store.settings.tencentTts
+            val speeds = listOf(-2f, -1f, 0f, 1f, 2f, 3f, 4f, 5f, 6f).plus(config.speed).distinct().sorted()
+            DomesticNumberDeliveryField(stringResource(R.string.speech_speed), speeds.map(Float::toString),
+                speeds.indexOf(config.speed)) { index -> speeds.getOrNull(index)?.let {
+                store.edit(store.settings.copy(tencentTts = config.copy(speed = it)))
+            } }
+            val volumes = (-10..10).map(Int::toFloat).plus(config.volume).distinct().sorted()
+            DomesticNumberDeliveryField(stringResource(R.string.speech_domestic_volume), volumes.map(Float::toString),
+                volumes.indexOf(config.volume)) { index -> volumes.getOrNull(index)?.let {
+                store.edit(store.settings.copy(tencentTts = config.copy(volume = it)))
+            } }
+        }
+        TtsProvider.NONE, TtsProvider.QWEN, TtsProvider.DOUBAO, TtsProvider.LOCAL, TtsProvider.AZURE, TtsProvider.XIAOMI, TtsProvider.DEEPSEEK -> Unit
     }
+}
+
+@Composable
+private fun DomesticIntDeliveryField(title: String, value: Int, range: IntRange, onChange: (Int) -> Unit) {
+    val values = range.toList().plus(value).distinct().sorted()
+    DomesticNumberDeliveryField(title, values.map(Int::toString), values.indexOf(value)) { index ->
+        values.getOrNull(index)?.let(onChange)
+    }
+}
+
+@Composable
+private fun DomesticNumberDeliveryField(title: String, values: List<String>, selected: Int, onChange: (Int) -> Unit) {
+    OverlayDropdownPreference(title = title, items = values, selectedIndex = selected, onSelectedIndexChange = onChange)
 }

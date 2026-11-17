@@ -53,14 +53,15 @@ class McpCredentialRecoveryTest {
 
     @Test fun unrelatedSettingChangePreservesUnreadableCredential() = runBlocking(Dispatchers.IO) {
         seed()
-        McpServerRepository.update(server.copy(enabled = false))
+        McpServerRepository.update(server, server.copy(enabled = false))
         assertFalse(McpServerRepository.serverById(server.id)!!.enabled)
         assertEquals("broken-ciphertext", prefs.getString("bearer_${server.id}", null))
     }
 
     @Test fun userCanRemoveAuthenticationDespiteInvalidOldCiphertext() = runBlocking(Dispatchers.IO) {
         seed()
-        McpServerRepository.update(server.copy(authorizationType = McpAuthorizationType.NONE), bearerToken = "")
+        McpServerRepository.update(server, server.copy(authorizationType = McpAuthorizationType.NONE), bearerToken = "",
+            expectedCredentialRevision = "broken-ciphertext")
         assertEquals(McpAuthorizationType.NONE, McpServerRepository.serverById(server.id)!!.authorizationType)
         assertFalse(prefs.contains("bearer_${server.id}"))
     }
@@ -78,7 +79,8 @@ class McpCredentialRecoveryTest {
             "CREATE TRIGGER reject_mcp_update BEFORE UPDATE ON mcp_servers BEGIN SELECT RAISE(ABORT, 'test'); END",
         )
         val failure = runCatching {
-            McpServerRepository.update(server.copy(authorizationType = McpAuthorizationType.NONE), bearerToken = "")
+            McpServerRepository.update(server, server.copy(authorizationType = McpAuthorizationType.NONE), bearerToken = "",
+                expectedCredentialRevision = "broken-ciphertext")
         }.exceptionOrNull()
         assertNotNull(failure)
         assertEquals(McpAuthorizationType.BEARER, McpServerRepository.serverById(server.id)!!.authorizationType)
@@ -93,6 +95,18 @@ class McpCredentialRecoveryTest {
         assertNotNull(runCatching { McpServerRepository.delete(server.id) }.exceptionOrNull())
         assertNotNull(McpServerRepository.serverById(server.id))
         assertEquals("broken-ciphertext", prefs.getString("bearer_${server.id}", null))
+    }
+
+    @Test fun staleCredentialEditDoesNotReplaceANewerCredential() = runBlocking(Dispatchers.IO) {
+        seed()
+        val oldRevision = McpServerRepository.credentialRevision(server.id)
+        prefs.edit().putString("bearer_${server.id}", "newer-ciphertext").commit()
+        assertTrue(runCatching {
+            McpServerRepository.update(server, server.copy(authorizationType = McpAuthorizationType.NONE),
+                bearerToken = "", expectedCredentialRevision = oldRevision)
+        }.isFailure)
+        assertEquals("newer-ciphertext", prefs.getString("bearer_${server.id}", null))
+        assertEquals(McpAuthorizationType.BEARER, McpServerRepository.serverById(server.id)!!.authorizationType)
     }
 
     @Test fun missingBearerFailsBeforeRequestAndAnonymousServerIgnoresOrphanedSecret() {

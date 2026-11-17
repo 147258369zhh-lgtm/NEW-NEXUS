@@ -10,7 +10,8 @@ internal object EtaAppControlToolCatalog {
                 name = "eta_control",
                 description = "Discover and operate every public Nexus capability through stable ids. Use list/search before guessing. " +
                     "get reads current values; execute performs the declared operation; audit returns recent software-butler calls with " +
-                    "credentials redacted. Parameters are schema-validated. Capabilities marked CONFIRM open an in-app approval dialog.",
+                    "credentials redacted; undo restores an eligible settings auditId after checking for later changes. " +
+                    "Parameters are schema-validated. CONFIRM capabilities follow the Run's approval policy: full access executes within its task; smart uses an independent review; manual asks the user. Agents cannot change the approval mode or issue their own authority.",
                 parameters = JSONObject()
                     .put("type", "object")
                     .put(
@@ -20,9 +21,10 @@ internal object EtaAppControlToolCatalog {
                                 "action",
                                 JSONObject()
                                     .put("type", "string")
-                                    .put("enum", JSONArray(listOf("list", "search", "get", "execute", "audit"))),
+                                    .put("enum", JSONArray(listOf("list", "search", "get", "execute", "audit", "undo"))),
                             )
                             .put("id", JSONObject().put("type", "string"))
+                            .put("auditId", JSONObject().put("type", "string"))
                             .put("query", JSONObject().put("type", "string"))
                             .put("category", JSONObject().put("type", "string"))
                             .put("parameters", JSONObject().put("type", "object"))

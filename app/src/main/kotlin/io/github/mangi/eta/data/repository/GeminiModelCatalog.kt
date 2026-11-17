@@ -51,7 +51,8 @@ internal object GeminiModelCatalog {
                 contextWindow = row.positiveInt("inputTokenLimit"),
                 contextWindowOverride = row.positiveInt("inputTokenLimit"),
                 inputModalities = if (capabilities != null) listOf(Model.TEXT_MODALITY, Model.IMAGE_MODALITY) else emptyList(),
-                outputModalities = listOf(Model.TEXT_MODALITY),
+                outputModalities = if (modelId in setOf("gemini-2.5-flash-image", "gemini-3-pro-image"))
+                    listOf(Model.TEXT_MODALITY, Model.IMAGE_MODALITY) else listOf(Model.TEXT_MODALITY),
                 toolCall = true.takeIf { capabilities != null },
                 reasoning = true.takeIf { capabilities != null },
                 reasoningCapabilities = capabilities,

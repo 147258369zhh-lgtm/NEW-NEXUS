@@ -32,6 +32,10 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -47,7 +51,7 @@ internal object LlamaCppRuntimeManager {
     private val mutex = Mutex()
 
     @Volatile private var appContext: Context? = null
-    private var active: ActiveRuntime? = null
+    @Volatile private var active: ActiveRuntime? = null
     private var idleJob: Job? = null
 
     fun initialize(context: Context) {
@@ -129,7 +133,7 @@ internal object LlamaCppRuntimeManager {
                 ),
             )
             val binding = runController.register {
-                nativeCancel(runtime)
+                nativeCancel(active ?: runtime)
             }
             val rendered = StringBuilder()
             val generationStartedAt = SystemClock.elapsedRealtime()
@@ -330,6 +334,9 @@ internal object LlamaCppRuntimeManager {
         }
         LlamaNative.unavailableReason?.let { fail(recordId, it) }
         require(descriptor.file.isFile) { "模型文件已丢失，请重新导入或下载" }
+        // Revalidate legacy imports as well. A file extension cannot identify a tokenizer,
+        // chat template, split shard or multimodal projection.
+        val modelMetadata = GgufModelMetadata.inspect(descriptor.file).also { it.validateTextRuntime() }
         LocalModelRepository.publishRuntimeSnapshot(
             LocalModelRuntimeSnapshot(
                 recordId = recordId,
@@ -384,6 +391,8 @@ internal object LlamaCppRuntimeManager {
         var lastFailure: Throwable? = null
         val loadStartedAt = SystemClock.elapsedRealtime()
         for (candidate in candidates) {
+            currentCoroutineContext().ensureActive()
+            val loadContext = currentCoroutineContext()
             val backendId = if (candidate == LocalRuntimeBackendPolicy.GPU) "gpu" else "cpu-${effectiveSettings.threads}"
             val attempt = LocalModelNativeCrashGuard.beginAttempt(
                 record = descriptor.record,
@@ -410,6 +419,7 @@ internal object LlamaCppRuntimeManager {
                     kvType = if (effectiveSettings.contextWindow >= 8_192) 1 else 0,
                     useMmap = true,
                     listener = LoadProgressListener { rawProgress ->
+                        if (!loadContext.isActive) return@LoadProgressListener false
                         val percent = (rawProgress.coerceIn(0f, 1f) * 100f).roundToInt()
                         // Native loading can report very densely. Publish only visible 5% steps so
                         // Compose does not recompose faster than a person can read the state.
@@ -426,8 +436,14 @@ internal object LlamaCppRuntimeManager {
                         true
                     },
                 )
+                currentCoroutineContext().ensureActive()
                 if (!loadError.isNullOrBlank()) throw IllegalStateException(loadError)
                 val meta = runCatching { JSONObject(LlamaNative.nativeMeta(handle)) }.getOrDefault(JSONObject())
+                if (modelMetadata.isMiniCpm) {
+                    check(meta.optBoolean("hasChatTemplate", false)) {
+                        "内置引擎未识别此 MiniCPM 的聊天模板，请更换兼容的纯文本 GGUF"
+                    }
+                }
                 val gpuName = meta.optString("gpu").trim()
                 if (gpu && gpuName.isBlank()) {
                     throw IllegalStateException("设备没有可用的 GPU 推理后端")
@@ -467,6 +483,7 @@ internal object LlamaCppRuntimeManager {
                 LocalModelNativeCrashGuard.failed(attempt)
                 runCatching { LlamaNative.nativeUnload(handle) }
                 runCatching { LlamaNative.nativeDestroy(handle) }
+                if (failure is CancellationException) throw failure
                 lastFailure = failure
             }
         }
@@ -534,9 +551,10 @@ internal object LlamaCppRuntimeManager {
      * so a watchdog cancels it from a separate dispatcher when initialisation or the first graph
      * stalls. A failed warm-up is not allowed to destroy an otherwise usable model.
      */
-    private fun warmLoadedRuntime(runtime: ActiveRuntime, attempt: NativeAttemptLease) {
+    private suspend fun warmLoadedRuntime(runtime: ActiveRuntime, attempt: NativeAttemptLease) {
         val timedOut = AtomicBoolean(false)
         val produced = AtomicBoolean(false)
+        val caller = currentCoroutineContext()
         var healthy = false
         val watchdog = scope.launch {
             delay(WARM_UP_TIMEOUT_MS)
@@ -554,6 +572,7 @@ internal object LlamaCppRuntimeManager {
                     floatArrayOf(0f, 1f, 0f, 1f, 0f, 0f),
                     intArrayOf(1, 64, 1, -1, 1, 1, 0, 4),
                     PieceSink { bytes ->
+                        if (!caller.isActive) return@PieceSink false
                         if (bytes.isNotEmpty()) {
                             produced.set(true)
                             attempt.firstTokenReceived()
@@ -562,6 +581,7 @@ internal object LlamaCppRuntimeManager {
                     },
                 ),
             )
+            currentCoroutineContext().ensureActive()
             val error = result.optString("error").trim()
             if (error.isNotEmpty()) throw IllegalStateException("GGUF 预热失败：$error")
             if (timedOut.get() || result.optInt("stop", 3) == 2) {

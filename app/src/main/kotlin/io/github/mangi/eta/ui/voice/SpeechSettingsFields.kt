@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.data.model.AsrProvider
 import io.github.mangi.eta.data.model.TtsProvider
+import io.github.mangi.eta.ui.components.NexaCompactAction
 import io.github.mangi.eta.ui.components.ListEmptyState
 import io.github.mangi.eta.ui.components.StatusError
 import io.github.mangi.eta.ui.components.StatusSuccess
@@ -45,6 +46,12 @@ internal fun AsrProvider.label(): String = stringResource(
         AsrProvider.QWEN_FILE -> R.string.speech_asr_qwen_file
         AsrProvider.DOUBAO -> R.string.speech_asr_doubao
         AsrProvider.LOCAL -> R.string.speech_asr_local
+        AsrProvider.AZURE -> R.string.speech_asr_azure
+        AsrProvider.BAIDU -> R.string.speech_asr_baidu
+        AsrProvider.IFLYTEK -> R.string.speech_asr_iflytek
+        AsrProvider.TENCENT -> R.string.speech_asr_tencent
+        AsrProvider.XIAOMI -> R.string.speech_asr_xiaomi
+        AsrProvider.DEEPSEEK -> R.string.speech_asr_deepseek
     },
 )
 
@@ -57,6 +64,12 @@ internal fun TtsProvider.label(): String = stringResource(
         TtsProvider.GEMINI -> R.string.speech_tts_gemini
         TtsProvider.MINIMAX -> R.string.speech_tts_minimax
         TtsProvider.LOCAL -> R.string.speech_tts_local
+        TtsProvider.AZURE -> R.string.speech_tts_azure
+        TtsProvider.BAIDU -> R.string.speech_tts_baidu
+        TtsProvider.IFLYTEK -> R.string.speech_tts_iflytek
+        TtsProvider.TENCENT -> R.string.speech_tts_tencent
+        TtsProvider.XIAOMI -> R.string.speech_tts_xiaomi
+        TtsProvider.DEEPSEEK -> R.string.speech_tts_deepseek
     },
 )
 
@@ -138,15 +151,14 @@ internal fun SpeechSaveBlock(store: SpeechSettingsStore, validate: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp)
+            .padding(horizontal = 16.dp)
             .padding(top = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        TextButton(
+        NexaCompactAction(
             text = stringResource(if (store.saving) R.string.speech_saving else R.string.speech_save),
             enabled = store.loaded && !store.saving,
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.textButtonColorsPrimary(),
+            selected = true,
             onClick = { store.save(validate) },
         )
         store.message?.let { message ->

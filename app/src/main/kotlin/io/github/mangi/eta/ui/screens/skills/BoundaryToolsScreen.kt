@@ -4,9 +4,11 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -18,11 +20,14 @@ import io.github.mangi.eta.agent.runtime.AgentBoundaryStore
 import io.github.mangi.eta.agent.runtime.AgentToolPolicy
 import io.github.mangi.eta.agent.tool.AgentToolRequirements
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle as SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.preference.SwitchPreference
+import io.github.mangi.eta.ui.components.NexusSettingsSwitchPreference as SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Tool permissions are intentionally separate from prompt templates: a prompt may shape behavior,
@@ -32,10 +37,17 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 internal fun BoundaryToolsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     var query by remember { mutableStateOf("") }
-    var policy by remember { mutableStateOf(AgentBoundaryStore.load()) }
+    var policy by remember { mutableStateOf(AgentToolPolicy(allowedTools = emptyList())) }
+    var loaded by remember { mutableStateOf(false) }
+    var saving by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     var status by remember { mutableStateOf<String?>(null) }
     val names = remember { AgentToolRequirements.registeredNames().sorted() }
     val saveFailed = stringResource(R.string.skills_tools_save_failed)
+    LaunchedEffect(Unit) {
+        policy = withContext(Dispatchers.IO) { AgentBoundaryStore.load() }
+        loaded = true
+    }
 
     BackHandler { onBack() }
     MiuixScaffoldPage(
@@ -68,7 +80,7 @@ internal fun BoundaryToolsScreen(onBack: () -> Unit) {
                 label = stringResource(R.string.skills_tools_search_tools),
                 useLabelAsPlaceholder = true,
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
             )
         }
         names.filter { name ->
@@ -87,8 +99,9 @@ internal fun BoundaryToolsScreen(onBack: () -> Unit) {
                         name
                     },
                     checked = policy.isAllowed(name),
-                    enabled = !blockedByGroup,
+                    enabled = loaded && !saving && !blockedByGroup,
                     onCheckedChange = { allowed ->
+                        if (!loaded || saving) return@SwitchPreference
                         val next = policy.copy(
                             allowedTools = policy.allowedTools?.let {
                                 if (allowed) (it + name).distinct() else it
@@ -99,11 +112,16 @@ internal fun BoundaryToolsScreen(onBack: () -> Unit) {
                                 (policy.disallowedTools + name).distinct()
                             },
                         )
-                        if (AgentBoundaryStore.save(next)) {
+                        saving = true
+                        scope.launch {
+                        try {
+                        if (withContext(Dispatchers.IO) { AgentBoundaryStore.save(next) }) {
                             policy = next
                             status = null
                         } else {
                             status = saveFailed
+                        }
+                        } finally { saving = false }
                         }
                     },
                 )

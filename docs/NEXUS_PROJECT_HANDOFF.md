@@ -11,6 +11,8 @@
 
 更细的阶段设计见 `docs/NEXUS_PORTABLE_MASTER_PLAN.md` 和 `docs/nexus/`；源码和测试是最终事实源。
 
+> **2026-11-10 实装审计更新：**下方为导入基线的开发声明。源码复核发现 Run API、Settings/Artifact/Host Registry、ContentPart 生产链、Profile 页面消费、资源策略和迁移校验器存在未接线或局部接线。当前状态以 [Runtime 审计](nexus/20_RUNTIME_AUDIT_2026-11-10.md) 和 [实装执行进度](nexus/22_IMPLEMENTATION_PROGRESS_2026-11-10.md) 的证据为准，旧“已实现”描述不等于完整功能通过。
+
 ## 1. 当前结论
 
 - Nexus 已作为独立 Android 应用和独立 Git 仓库建立。

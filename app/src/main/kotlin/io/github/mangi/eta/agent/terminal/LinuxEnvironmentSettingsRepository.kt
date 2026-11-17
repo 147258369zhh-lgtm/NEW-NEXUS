@@ -6,9 +6,14 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+
+internal data class LinuxExecutionSelection(val distribution: LinuxDistribution, val backend: LinuxExecutionBackend)
 
 /** Linux 发行版选择的单一持久化入口。 */
 internal object LinuxEnvironmentSettingsRepository {
+    private val selectionMutex = Mutex()
     @Volatile
     private var cachedSelection: LinuxDistribution? = null
     private val cachedBackends = java.util.concurrent.ConcurrentHashMap<LinuxDistribution, LinuxExecutionBackend>()
@@ -23,7 +28,7 @@ internal object LinuxEnvironmentSettingsRepository {
                 ?: defaultBackend(context, distribution)
         }
 
-    suspend fun selectBackend(distribution: LinuxDistribution, backend: LinuxExecutionBackend) {
+    suspend fun selectBackend(distribution: LinuxDistribution, backend: LinuxExecutionBackend) = selectionMutex.withLock {
         SettingsDataStore.setLinuxBackend(distribution.wireName, backend.wireName)
         cachedBackends[distribution] = backend
     }
@@ -51,7 +56,7 @@ internal object LinuxEnvironmentSettingsRepository {
     fun current(context: Context): LinuxDistribution =
         cachedSelection ?: defaultSelection(context.applicationContext)
 
-    suspend fun initialize(context: Context) {
+    suspend fun initialize(context: Context) = selectionMutex.withLock {
         LinuxDistribution.entries.forEach { distribution ->
             val value = SettingsDataStore.linuxBackendFlow(distribution.wireName).first()
             val selected = LinuxExecutionBackend.entries.firstOrNull { it.wireName == value }
@@ -60,9 +65,19 @@ internal object LinuxEnvironmentSettingsRepository {
         cachedSelection = selectedFlow(context.applicationContext).first()
     }
 
-    suspend fun select(distribution: LinuxDistribution) {
+    /** First runs must read persisted settings rather than freeze the startup fallback. */
+    suspend fun executionSelection(context: Context): LinuxExecutionSelection = selectionMutex.withLock {
+        val distribution = decode(SettingsDataStore.linuxDistributionFlow().first()) ?: defaultSelection(context.applicationContext)
+        val value = SettingsDataStore.linuxBackendFlow(distribution.wireName).first()
+        val backend = LinuxExecutionBackend.entries.firstOrNull { it.wireName == value } ?: defaultBackend(context, distribution)
+        cachedBackends[distribution] = backend
         cachedSelection = distribution
+        LinuxExecutionSelection(distribution, backend)
+    }
+
+    suspend fun select(distribution: LinuxDistribution) = selectionMutex.withLock {
         SettingsDataStore.setLinuxDistribution(distribution.wireName)
+        cachedSelection = distribution
     }
 
     private fun decode(value: String?): LinuxDistribution? =

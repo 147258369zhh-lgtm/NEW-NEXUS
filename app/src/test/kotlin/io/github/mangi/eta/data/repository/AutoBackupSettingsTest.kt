@@ -16,7 +16,7 @@ class AutoBackupSettingsTest {
     @Test fun settingsRoundTripFormatContentsScheduleAndRetention() {
         val context = RuntimeEnvironment.getApplication()
         val settings = AutoBackupSettings(true, "content://tree/example", 5, 22, 3, false,
-            EtaBackupOptions(EtaBackupFormat.JSON, setOf(EtaBackupContent.MEMORY)))
+            EtaBackupOptions(EtaBackupFormat.JSON, setOf(EtaBackupContent.MEMORY)), unmeteredOnly = false)
         AutoBackupStore.save(context, settings)
         assertEquals(settings, AutoBackupStore.read(context))
         AutoBackupStore.status(context, "失败")
@@ -24,6 +24,16 @@ class AutoBackupSettingsTest {
         AutoBackupStore.status(context, "成功", success = true)
         assertTrue(AutoBackupStore.lastSuccess(context) > 0)
         assertEquals("成功", AutoBackupStore.status(context))
+    }
+    @Test fun notepadSelectionSurvivesPersistenceAndControlEncoding() {
+        val context = RuntimeEnvironment.getApplication()
+        val settings = AutoBackupSettings(options = EtaBackupOptions(includeNotepad = false))
+        AutoBackupStore.save(context, settings)
+        assertFalse(AutoBackupStore.read(context).options.includeNotepad)
+        val encoded = AutoBackupSettingsRepository.encode(settings)
+        assertEquals(settings, AutoBackupSettingsRepository.decode(encoded))
+        encoded.remove("includeNotepad")
+        assertTrue(AutoBackupSettingsRepository.decode(encoded).options.includeNotepad)
     }
     @Test fun backupAndRestoreGateRejectsOverlapAndReleasesAfterFailure() = runBlocking {
         val started = CompletableDeferred<Unit>()

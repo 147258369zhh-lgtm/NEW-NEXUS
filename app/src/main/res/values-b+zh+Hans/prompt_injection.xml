@@ -3,7 +3,7 @@
     <string name="prompt_injection_title">提示词注入</string>
     <string name="prompt_injection_settings_summary">固定模板、作用域绑定、导入与导出</string>
     <string name="prompt_injection_capability_summary">模板、作用域绑定、导入与导出</string>
-    <string name="prompt_injection_tab_templates">模板库</string>
+    <string name="prompt_injection_tab_templates">行为方案</string>
     <string name="prompt_injection_tab_bindings">作用域</string>
     <string name="prompt_injection_tab_transfer">迁移</string>
     <string name="prompt_injection_new">新建模板</string>
@@ -100,7 +100,7 @@
     <string name="prompt_injection_block_content">提示词内容</string>
     <string name="prompt_injection_position">插入位置</string>
     <string name="prompt_injection_position_prefix">对话之前</string>
-    <string name="prompt_injection_position_post">历史之后</string>
+    <string name="prompt_injection_position_post">当前输入之后</string>
     <string name="prompt_injection_block_number">第 %1$d 块</string>
     <string name="prompt_injection_move_up">上移</string>
     <string name="prompt_injection_move_down">下移</string>
@@ -112,7 +112,7 @@
     <string name="prompt_injection_discard">放弃</string>
     <string name="prompt_injection_transfer_title">在设备之间迁移模板</string>
     <string name="prompt_injection_transfer_note">文件只包含模板与范围绑定，不会导出提供商凭据或会话内容。</string>
-    <string name="prompt_injection_native_json">Nexus 原生 JSON</string>
+    <string name="prompt_injection_native_json">NEXA 原生 JSON</string>
     <string name="prompt_injection_export_json">导出全部为 JSON</string>
     <string name="prompt_injection_export_json_summary">完整备份模板与范围绑定。</string>
     <string name="prompt_injection_import_json">导入 JSON</string>
@@ -144,7 +144,7 @@
     <string name="prompt_injection_export_txt">TXT</string>
     <string name="prompt_injection_export_picker_title">选择要导出的模板</string>
     <string name="prompt_injection_export_picker_note">每个文件包含一个模板；迁移整个模板库请使用 JSON。</string>
-    <string name="prompt_injection_format_native">Nexus 原生备份</string>
+    <string name="prompt_injection_format_native">NEXA 原生备份</string>
     <string name="prompt_injection_format_pro">小 PRO 预设</string>
     <string name="prompt_injection_format_sillytavern">SillyTavern 预设</string>
     <string name="prompt_injection_format_json">通用 JSON</string>
@@ -158,4 +158,5 @@
     <string name="skills_tools_search_tools">搜索工具</string>
     <string name="skills_tools_save_failed">工具权限保存失败</string>
     <string name="skills_tools_group_blocked">%1$s · 能力组已关闭</string>
+    <string name="prompt_injection_scope_project">项目</string>
 </resources>

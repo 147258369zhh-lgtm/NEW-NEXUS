@@ -17,6 +17,21 @@ import org.json.JSONObject
 internal suspend fun recognizeSpeechFile(context: Context, settings: SpeechSettings, credentials: SpeechCredentials,
     wav: ByteArray, onProgress: (String) -> Unit): String = withContext(Dispatchers.IO) {
     withTimeout(300_000) {
+        when (settings.asr) {
+            AsrProvider.DEEPSEEK -> {
+                onProgress("正在上传完整录音并识别")
+                return@withTimeout recognizeDeepSeek(settings.deepSeekAsr, credentials.deepSeekAsr, wav)
+            }
+            AsrProvider.XIAOMI -> return@withTimeout recognizeXiaomiMiMo(settings.xiaomiAsr, credentials.xiaomiAsr, wav)
+            AsrProvider.BAIDU -> return@withTimeout recognizeBaidu(settings.baiduAsr, credentials.baiduAsrApiKey, credentials.baiduAsrSecretKey, wav)
+            AsrProvider.IFLYTEK -> return@withTimeout recognizeIflytek(settings.iflytekAsr, credentials.iflytekAsrApiKey, credentials.iflytekAsrApiSecret, wav)
+            AsrProvider.TENCENT -> return@withTimeout recognizeTencent(settings.tencentAsr, credentials.tencentAsrSecretId, credentials.tencentAsrSecretKey, wav)
+            else -> Unit
+        }
+        if (settings.asr == AsrProvider.AZURE) {
+            onProgress("正在识别")
+            return@withTimeout recognizeAzure(settings.azureAsr, credentials.azureAsr, wav)
+        }
         val base = speechBaseUrl(settings.qwenAsr.endpoint())
         if (settings.asr == AsrProvider.QWEN_FLASH) {
             onProgress("正在识别")

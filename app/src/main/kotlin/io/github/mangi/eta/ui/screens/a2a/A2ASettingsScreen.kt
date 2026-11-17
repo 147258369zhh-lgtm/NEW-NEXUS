@@ -21,6 +21,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
@@ -38,16 +39,22 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import io.github.mangi.eta.R
 import io.github.mangi.eta.fork.a2a.A2AAgentEntity
 import io.github.mangi.eta.fork.a2a.A2AAgentRepository
 import io.github.mangi.eta.fork.a2a.A2AInboundConfigStore
+import io.github.mangi.eta.fork.a2a.A2AInboundSnapshot
+import io.github.mangi.eta.fork.a2a.A2AInboundApprovalRepository
+import io.github.mangi.eta.fork.a2a.A2AInboundTaskEntity
 import io.github.mangi.eta.fork.a2a.A2AInboundService
 import io.github.mangi.eta.fork.a2a.A2AAccessPolicyStore
 import io.github.mangi.eta.fork.a2a.A2AToolAccess
@@ -65,19 +72,23 @@ import io.github.mangi.eta.agent.device.LocalNetworkPermission
 import io.github.mangi.eta.ui.components.ListEmptyState
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.NexusSettingsTabs
 import io.github.mangi.eta.ui.components.StatusError
 import io.github.mangi.eta.ui.components.StatusSuccess
 import io.github.mangi.eta.ui.components.StatusWarning
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle as SmallTitle
 import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
@@ -98,54 +109,132 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
     }
     val inboundStore = remember(context.applicationContext) { A2AInboundConfigStore(context.applicationContext) }
     val accessStore = remember(context.applicationContext) { A2AAccessPolicyStore(context.applicationContext) }
-    val observedInbound by inboundStore.observe().collectAsState(initial = inboundStore.snapshot())
-    var inbound by remember { mutableStateOf(observedInbound) }
-    val observedPeerTiers by accessStore.observePeers().collectAsState(initial = accessStore.peerTiers())
-    var peerTiers by remember { mutableStateOf(observedPeerTiers) }
-    val agents by repository.observeAgents().collectAsState(initial = emptyList())
-    val tasks by repository.observeTasks().collectAsState(initial = emptyList())
+    val approvalRepository = remember(context.applicationContext) { A2AInboundApprovalRepository(context.applicationContext) }
+    val pendingApprovals by remember(approvalRepository) { approvalRepository.observe() }.collectAsState(initial = emptyList())
+    var inbound by remember { mutableStateOf(A2AInboundSnapshot(false, A2AInboundConfigStore.DEFAULT_PORT, null, null, "", null)) }
+    var peerTiers by remember { mutableStateOf(emptyMap<String, String>()) }
+    val inboundCredentialId = inbound.token.takeIf(String::isNotBlank)?.let { A2AAccessPolicyStore.tokenPeerId(it) }
+    val currentCredentialTiers = inboundCredentialId?.let { id ->
+        mapOf(id to (peerTiers[id] ?: A2AToolTier.READ_ONLY))
+    }.orEmpty()
+    val inactiveAuthorizationCount = peerTiers.keys.count { it != inboundCredentialId }
+    var inboundLoaded by remember { mutableStateOf(false) }
+    var inboundSaving by remember { mutableStateOf(false) }
+    val agents by remember(repository) { repository.observeAgents() }.collectAsState(initial = emptyList())
+    val tasks by remember(repository) { repository.observeTasks() }.collectAsState(initial = emptyList())
     var showAddDialog by remember { mutableStateOf(false) }
+    var editingAgent by remember { mutableStateOf<A2AAgentEntity?>(null) }
     var displayName by remember { mutableStateOf("") }
     var cardUrl by remember { mutableStateOf("") }
+    var endpointOverride by remember { mutableStateOf("") }
     var bearerToken by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var pairingNotice by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var showInboundToken by remember { mutableStateOf(false) }
     var inboundPermissionError by remember { mutableStateOf<String?>(null) }
+    var editingAccessPeer by remember { mutableStateOf<String?>(null) }
+    var selectedAccessTools by remember { mutableStateOf(emptySet<String>()) }
     var externalEndpoint by remember { mutableStateOf(inbound.advertisedEndpointUrl.orEmpty()) }
     var transportMode by remember { mutableStateOf(inbound.transportMode) }
     var endpointError by remember { mutableStateOf<String?>(null) }
-    var ignoringBatteryOptimizations by remember {
-        mutableStateOf(
-            context.getSystemService(PowerManager::class.java)
-                .isIgnoringBatteryOptimizations(context.packageName),
-        )
+    var selectedTab by rememberSaveable { mutableStateOf(0) }
+    val agentsListState = rememberLazyListState()
+    val serviceListState = rememberLazyListState()
+    val authorizationListState = rememberLazyListState()
+    val tasksListState = rememberLazyListState()
+    val listState = when (selectedTab) {
+        1 -> serviceListState
+        2 -> authorizationListState
+        3 -> tasksListState
+        else -> agentsListState
     }
-    LaunchedEffect(observedInbound) { inbound = observedInbound }
-    LaunchedEffect(observedPeerTiers) { peerTiers = observedPeerTiers }
+    var ignoringBatteryOptimizations by remember { mutableStateOf(false) }
     LaunchedEffect(inboundStore) {
-        while (true) {
-            delay(2_000)
-            inbound = inboundStore.snapshot()
-            peerTiers = accessStore.peerTiers()
+        try {
+            inboundStore.observe().collect { inbound = it; inboundLoaded = true }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (failure: Exception) { inboundPermissionError = failure.message ?: "无法读取 A2A 配置" }
+    }
+    LaunchedEffect(accessStore) {
+        accessStore.observePeers().collect { peerTiers = it }
+    }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(inboundStore, accessStore, lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            while (true) {
+                val refreshed = withContext(Dispatchers.IO) { inboundStore.snapshot() to accessStore.peerTiers() }
+                inbound = refreshed.first
+                peerTiers = refreshed.second
+                delay(5_000)
+            }
         }
     }
     LaunchedEffect(inbound.advertisedEndpointUrl, inbound.transportMode) {
         externalEndpoint = inbound.advertisedEndpointUrl.orEmpty()
         transportMode = inbound.transportMode
     }
-    val enableInbound = {
-        inboundStore.setEnabled(true)
-        runCatching { A2AInboundService.start(context.applicationContext) }
-            .onFailure { failure ->
-                inboundStore.setEnabled(false)
-                inboundStore.setLastError(failure.message ?: "无法启动 A2A 服务端")
+    fun changeInbound(endpoint: Boolean = false, operation: () -> Unit) {
+        if (!inboundLoaded || inboundSaving) return
+        inboundSaving = true
+        scope.launch {
+            try { withContext(Dispatchers.IO) { operation() } }
+            catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (failure: Exception) {
+                if (endpoint) endpointError = failure.message ?: "对外地址无效"
+                else inboundPermissionError = failure.message ?: "无法保存 A2A 配置"
+            } finally { inboundSaving = false }
+        }
+    }
+    editingAccessPeer?.let { peerId ->
+        WindowDialog(show = true, title = "编辑入站工具权限", onDismissRequest = { editingAccessPeer = null }) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("仅此凭证生效。任务恢复不会扩大最初授权；撤销将在下一次调用前生效。")
+                Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                    A2AToolAccess.CONFIGURABLE_TOOLS.forEach { tool ->
+                        Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(tool, style = MiuixTheme.textStyles.body2)
+                                Text(when (io.github.mangi.eta.agent.capability.NexusToolEffectClassifier.classify(tool)) {
+                                    io.github.zhh_lgtm.nexus.kernel.api.EffectClass.READ -> "读取"
+                                    io.github.zhh_lgtm.nexus.kernel.api.EffectClass.GUI_ACTION -> "设备操作"
+                                    io.github.zhh_lgtm.nexus.kernel.api.EffectClass.REVERSIBLE_WRITE -> "可恢复写入"
+                                    io.github.zhh_lgtm.nexus.kernel.api.EffectClass.IDEMPOTENT_WRITE -> "设置状态"
+                                    io.github.zhh_lgtm.nexus.kernel.api.EffectClass.EXTERNAL_SIDE_EFFECT -> "外部调用（可能计费）"
+                                    else -> "受本机策略约束"
+                                }, style = MiuixTheme.textStyles.footnote2)
+                            }
+                            Switch(checked = tool in selectedAccessTools, onCheckedChange = { checked ->
+                                selectedAccessTools = if (checked) selectedAccessTools + tool else selectedAccessTools - tool
+                            })
+                        }
+                    }
+                }
+                MiuixDialogActions(confirmText = "保存", onCancel = { editingAccessPeer = null }, onConfirm = {
+                    val tools = selectedAccessTools.toSet()
+                    changeInbound { accessStore.setCustomTools(peerId, tools) }
+                    editingAccessPeer = null
+                })
             }
+        }
+    }
+    val enableInbound: () -> Unit = {
+        changeInbound {
+        try {
+            // Persistence must finish before the separate :a2a process starts reading it.
+            inboundStore.setEnabled(true)
+            A2AInboundService.start(context.applicationContext)
+        } catch (failure: Exception) {
+                runCatching { inboundStore.setEnabled(false) }
+                runCatching { inboundStore.setLastError(failure.message ?: "无法启动 A2A 服务端") }
+                throw failure
+        }
+        }
     }
     LaunchedEffect(inbound.token) {
         if (inbound.token.isNotBlank()) {
-            accessStore.observePeer(A2AAccessPolicyStore.tokenPeerId(inbound.token))
+            runCatching { withContext(Dispatchers.IO) { accessStore.observePeer(A2AAccessPolicyStore.tokenPeerId(inbound.token)) } }
+                .onFailure { failure -> inboundPermissionError = failure.message ?: "无法初始化 A2A 权限" }
         }
     }
     val localNetworkPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -153,25 +242,33 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
             inboundPermissionError = null
             enableInbound()
         } else {
-            inboundPermissionError = "需要“本地网络”权限，其他设备才能访问 Nexus。"
+            inboundPermissionError = "需要“本地网络”权限，其他设备才能访问 NEXA。"
         }
     }
     val batteryOptimizationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        ignoringBatteryOptimizations = context.getSystemService(PowerManager::class.java)
-            .isIgnoringBatteryOptimizations(context.packageName)
+        scope.launch {
+        ignoringBatteryOptimizations = withContext(Dispatchers.IO) {
+            context.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(context.packageName)
+        }
+        }
     }
-    val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                ignoringBatteryOptimizations = context.getSystemService(PowerManager::class.java)
-                    .isIgnoringBatteryOptimizations(context.packageName)
+                scope.launch {
+                    ignoringBatteryOptimizations = withContext(Dispatchers.IO) {
+                        context.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(context.packageName)
+                    }
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     fun importPairingFromClipboard() {
+        editingAgent = null
+        endpointOverride = ""
+        bearerToken = ""
         val raw = readClipboardText(context)
         if (raw.isNullOrBlank()) {
             pairingNotice = null
@@ -202,28 +299,72 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
     MiuixScaffoldPage(
         title = "A2A Agent",
         onBack = onBack,
+        listState = listState,
+        aboveContent = {
+            Column {
+                NexusSettingsTabs(
+                    tabs = listOf(
+                        stringResource(R.string.settings_tab_connections),
+                        stringResource(R.string.settings_tab_local_service),
+                        stringResource(R.string.settings_tab_authorization),
+                        stringResource(R.string.settings_tab_tasks),
+                    ),
+                    selectedTab = selectedTab,
+                    onTabSelected = { selectedTab = it },
+                )
+                listOfNotNull(
+                    error.takeUnless { showAddDialog },
+                    inboundPermissionError,
+                    inbound.lastError?.let { "服务端错误：$it" },
+                    endpointError,
+                ).distinct().forEach { message ->
+                    Text(message, color = StatusError, style = MiuixTheme.textStyles.footnote1,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp))
+                }
+                if (pendingApprovals.isNotEmpty()) {
+                    TextButton(
+                        text = "等待本机授权 · ${pendingApprovals.size}",
+                        onClick = { selectedTab = 2 },
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                    )
+                }
+                val taskIssueCount = tasks.count { it.errorCode != null || it.cancelUnconfirmed }
+                if (taskIssueCount > 0) {
+                    TextButton(
+                        text = "任务需处理 · $taskIssueCount",
+                        onClick = { selectedTab = 3 },
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                    )
+                }
+            }
+        },
         actions = {
             IconButton(
                 enabled = !busy,
                 onClick = ::importPairingFromClipboard,
             ) {
-                Icon(Icons.Rounded.ContentPaste, contentDescription = "从剪贴板导入 A2A 配对信息")
+                Icon(Icons.Rounded.ContentPaste, contentDescription = stringResource(io.github.mangi.eta.R.string.a2a_import_pairing_from_clipboard))
             }
             IconButton(
                 enabled = !busy,
                 onClick = {
+                    editingAgent = null
+                    displayName = ""
+                    cardUrl = ""
+                    endpointOverride = ""
+                    bearerToken = ""
                     error = null
                     pairingNotice = null
                     showAddDialog = true
                 },
             ) {
-                Icon(Icons.Rounded.Add, contentDescription = "添加 A2A Agent")
+                Icon(Icons.Rounded.Add, contentDescription = stringResource(io.github.mangi.eta.R.string.a2a_add_agent))
             }
         },
         overlay = {
             WindowDialog(
                 show = showAddDialog,
-                title = "添加 A2A Agent",
+                title = if (editingAgent != null) "编辑 A2A 连接" else "添加 A2A Agent",
                 onDismissRequest = { if (!busy) showAddDialog = false },
             ) {
                 Column(Modifier.fillMaxWidth()) {
@@ -236,7 +377,7 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                     ) {
                         TextButton(
                             text = "从剪贴板导入配对信息",
-                            enabled = !busy,
+                            enabled = !busy && editingAgent == null,
                             onClick = ::importPairingFromClipboard,
                         )
                         pairingNotice?.let {
@@ -253,17 +394,35 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                         )
+                        if (editingAgent == null) {
+                            TextField(
+                                value = cardUrl,
+                                onValueChange = { cardUrl = it.trim() },
+                                label = "Agent Card URL（HTTPS 或局域网 HTTP）",
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        } else {
+                            Text("配对卡片：$cardUrl\n编辑会保留原 Agent 和任务记录；任务地址只能使用此卡片的主机。",
+                                style = MiuixTheme.textStyles.footnote2,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                        }
                         TextField(
-                            value = cardUrl,
-                            onValueChange = { cardUrl = it.trim() },
-                            label = "Agent Card URL（HTTPS 或局域网 HTTP）",
+                            value = endpointOverride,
+                            onValueChange = { endpointOverride = it.trim() },
+                            label = "任务地址（可选，覆盖卡片公布的地址）",
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
+                        )
+                        Text(
+                            text = "电脑卡片仍公布旧的 Tailscale 或公网地址时，可填写已确认可达的任务地址，如 http://192.168.1.20:9900/。刷新卡片会保留此地址。",
+                            style = MiuixTheme.textStyles.footnote2,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         )
                         TextField(
                             value = bearerToken,
                             onValueChange = { bearerToken = it },
-                            label = "Bearer Token（可选，存入 Android Keystore）",
+                            label = if (editingAgent != null) "新 Bearer Token（留空保留现有凭据）" else "Bearer Token（可选，存入 Android Keystore）",
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -278,7 +437,7 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                     }
                     Spacer(Modifier.height(12.dp))
                     MiuixDialogActions(
-                        confirmText = if (busy) "发现中…" else "添加",
+                        confirmText = if (busy) "保存中…" else if (editingAgent != null) "保存" else "添加",
                         cancelText = "取消",
                         onCancel = { if (!busy) showAddDialog = false },
                         onConfirm = {
@@ -295,21 +454,30 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                             error = null
                             scope.launch {
                                 runCatching {
-                                    A2AAgentRepository(
-                                        context = context.applicationContext,
-                                        client = A2AHttpClient(a2aPeerPolicyForManualEndpoint(cardUrl)),
-                                    ).discoverAndAddAgent(
-                                        displayName = displayName,
-                                        cardUrl = cardUrl,
-                                        bearerToken = bearerToken.takeIf(String::isNotBlank),
-                                    )
+                                    A2AHttpClient(a2aPeerPolicyForManualEndpoint(cardUrl)).use { client ->
+                                        val connectionRepository = A2AAgentRepository(context.applicationContext, client)
+                                        val editing = editingAgent
+                                        if (editing != null) connectionRepository.updateAgentConnection(
+                                            agentId = editing.id,
+                                            displayName = displayName,
+                                            endpointOverride = endpointOverride.takeIf(String::isNotBlank),
+                                            bearerToken = bearerToken.takeIf(String::isNotBlank),
+                                        ) else connectionRepository.discoverAndAddAgent(
+                                            displayName = displayName,
+                                            cardUrl = cardUrl,
+                                            bearerToken = bearerToken.takeIf(String::isNotBlank),
+                                            endpointOverride = endpointOverride.takeIf(String::isNotBlank),
+                                        )
+                                    }
                                 }.onSuccess {
                                     showAddDialog = false
+                                    editingAgent = null
                                     displayName = ""
                                     cardUrl = ""
+                                    endpointOverride = ""
                                     bearerToken = ""
                                 }.onFailure {
-                                    error = it.message ?: "Agent Card 发现失败"
+                                    error = it.message ?: "A2A 连接保存失败"
                                 }
                                 busy = false
                             }
@@ -319,25 +487,25 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
             }
         },
     ) {
-        item(key = "a2a_intro") {
+        if (selectedTab == 0) item(key = "a2a_intro") {
             Card(
                 modifier = Modifier
-                    .padding(horizontal = 12.dp)
+                    .padding(horizontal = 16.dp)
                     .padding(bottom = 12.dp),
             ) {
                 Text(
-                    text = "使用 A2A 1.0 JSON-RPC 双向连接外部 Agent，支持流式任务事件。Nexus 可主动调用已添加的 Agent，也可作为受 Token 保护、独立进程运行的局域网服务端接受请求。远端产物默认隔离，需明确批准。",
+                    text = "使用 A2A 1.0 JSON-RPC 双向连接外部 Agent，支持流式任务事件。NEXA 可主动调用已添加的 Agent，也可作为受 Token 保护、独立进程运行的局域网服务端接受请求。远端产物默认隔离，需明确批准。",
                     style = MiuixTheme.textStyles.body2,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     modifier = Modifier.padding(16.dp),
                 )
             }
         }
-        item(key = "inbound_title") { SmallTitle("本机作为 A2A 服务端") }
-        item(key = "inbound_service") {
+        if (selectedTab == 1) item(key = "inbound_title") { SmallTitle("本机作为 A2A 服务端") }
+        if (selectedTab == 1) item(key = "inbound_service") {
             Card(
                 modifier = Modifier
-                    .padding(horizontal = 12.dp)
+                    .padding(horizontal = 16.dp)
                     .padding(bottom = 12.dp),
             ) {
                 Column(
@@ -368,6 +536,7 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                         }
                         Switch(
                             checked = inbound.enabled,
+                            enabled = inboundLoaded && !inboundSaving,
                             onCheckedChange = { enabled ->
                                 inboundPermissionError = null
                                 if (enabled) {
@@ -379,14 +548,14 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                                             localNetworkPermission.launch(Manifest.permission.ACCESS_LOCAL_NETWORK)
                                     }
                                 } else {
-                                    inboundStore.setEnabled(false)
-                                    runCatching { A2AInboundService.stop(context.applicationContext) }
+                                    changeInbound {
+                                        inboundStore.setEnabled(false)
+                                        A2AInboundService.stop(context.applicationContext)
+                                    }
                                 }
                             },
                         )
                     }
-                    inboundPermissionError?.let { Text(it, color = StatusError, style = MiuixTheme.textStyles.footnote1) }
-                    inbound.lastError?.let { Text("服务端错误：$it", color = StatusError, style = MiuixTheme.textStyles.footnote1) }
                     inbound.lastListenAddress?.let {
                         Text(
                             text = "服务地址：$it · 自动重启 ${inbound.restartCount} 次",
@@ -401,18 +570,18 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                         TextButton(
                             text = "局域网直连",
                             onClick = {
-                                inboundStore.setTransportMode(A2ATransportMode.DIRECT)
-                                if (inbound.enabled) {
-                                    runCatching { A2AInboundService.restart(context.applicationContext) }
+                                changeInbound {
+                                    inboundStore.setTransportMode(A2ATransportMode.DIRECT)
+                                    if (inbound.enabled) A2AInboundService.restart(context.applicationContext)
                                 }
                             },
                         )
                         TextButton(
                             text = "Tailscale",
                             onClick = {
-                                inboundStore.setTransportMode(A2ATransportMode.TAILSCALE)
-                                if (inbound.enabled) {
-                                    runCatching { A2AInboundService.restart(context.applicationContext) }
+                                changeInbound {
+                                    inboundStore.setTransportMode(A2ATransportMode.TAILSCALE)
+                                    if (inbound.enabled) A2AInboundService.restart(context.applicationContext)
                                 }
                             },
                         )
@@ -437,18 +606,16 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                         TextButton(
                             text = "保存对外地址",
                             onClick = {
-                                runCatching {
-                                    inboundStore.setAdvertisedEndpoint(externalEndpoint.ifBlank { null })
+                                val endpoint = externalEndpoint.ifBlank { null }
+                                changeInbound(endpoint = true) {
+                                    inboundStore.setAdvertisedEndpoint(endpoint)
                                     if (inbound.enabled) {
                                         A2AInboundService.restart(context.applicationContext)
                                     }
-                                }.onFailure { failure ->
-                                    endpointError = failure.message ?: "对外地址无效"
                                 }
                             },
                         )
                     }
-                    endpointError?.let { Text(it, color = StatusError, style = MiuixTheme.textStyles.footnote1) }
                     Text(
                         text = "未设置对外地址时，Agent Card 会按请求 Host 动态生成。入站请求只能进行模型对话，终端、文件、设备操作和 Subagent 工具均关闭。",
                         style = MiuixTheme.textStyles.footnote2,
@@ -478,12 +645,14 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                             TextButton(
                                 text = "复制",
                                 onClick = {
-                                    copyText(context, "Nexus A2A Token", inbound.token, sensitive = true)
+                                    copyText(context, "NEXA A2A Token", inbound.token, sensitive = true)
                                 },
                             )
                             TextButton(
                                 text = "轮换",
-                                onClick = { inboundStore.rotateToken() },
+                                onClick = {
+                                    changeInbound { inboundStore.rotateToken() }
+                                },
                             )
                         }
                         Text(
@@ -519,9 +688,9 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                                     onClick = {
                                         copyText(
                                             context = context,
-                                            label = "Nexus A2A 配对信息",
+                                            label = "NEXA A2A 配对信息",
                                             value = A2APairingCode.encode(
-                                                displayName = "Nexus 手机",
+                                                displayName = "NEXA 手机",
                                                 agentCardUrl = cardUrl,
                                                 bearerToken = inbound.token,
                                             ),
@@ -541,9 +710,9 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                 }
             }
         }
-        item(key = "battery_optimization") {
+        if (selectedTab == 1) item(key = "battery_optimization") {
             SmallTitle("后台稳定性")
-            Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+            Card(Modifier.padding(horizontal = 16.dp).padding(bottom = 12.dp)) {
                 Column(
                     modifier = Modifier.fillMaxWidth().padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -581,55 +750,91 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                         )
                     }
                     Text(
-                        text = "ColorOS / MIUI / EMUI：请同时允许后台活动，并在最近任务中给 Nexus 加锁。不同系统名称可能略有差异。",
+                        text = "ColorOS / MIUI / EMUI：请同时允许后台活动，并在最近任务中给 NEXA 加锁。不同系统名称可能略有差异。",
                         style = MiuixTheme.textStyles.footnote2,
                         color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     )
                 }
             }
         }
-        item(key = "inbound_tool_access") {
+        if (selectedTab == 2) {
+            item(key = "approval_title") { SmallTitle("等待本机授权") }
+            if (pendingApprovals.isEmpty()) {
+                item(key = "approval_empty") {
+                    Text("暂无待授权请求", style = MiuixTheme.textStyles.footnote1,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+                }
+            } else {
+                items(pendingApprovals, key = { "approval_${it.taskId}" }) { task ->
+                    Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("${task.accessJson?.let { runCatching { kotlinx.serialization.json.Json.decodeFromString<A2AToolAccess>(it).peerId }.getOrNull() } ?: "A2A peer"} · 任务 ${task.taskId.take(12)}", fontWeight = FontWeight.SemiBold)
+                            Text("请求摘要：${task.prompt.take(100)}", style = MiuixTheme.textStyles.footnote2)
+                            TextButton(text = "允许本轮已授权工具继续", onClick = { scope.launch { approvalRepository.decide(task.taskId, true) } }, modifier = Modifier.fillMaxWidth())
+                            TextButton(text = "拒绝", onClick = { scope.launch { approvalRepository.decide(task.taskId, false) } }, modifier = Modifier.align(Alignment.End))
+                        }
+                    }
+                }
+            }
+        }
+        if (selectedTab == 2) item(key = "inbound_tool_access") {
             SmallTitle("对端工具权限")
-            Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+            Card(Modifier.padding(horizontal = 16.dp).padding(bottom = 12.dp)) {
                 Column(
                     modifier = Modifier.fillMaxWidth().padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Text(
-                        text = "只读档默认开启；受限档必须逐节点授权；高危档永久关闭，不能通过 A2A 白名单开启。",
+                        text = "当前入站凭证默认只读。持有同一 Token 的对端共享此处权限；可按具体工具编辑，调用时仍受本机权限与审批约束。高危能力不能通过此处开启。",
                         style = MiuixTheme.textStyles.footnote2,
                         color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     )
-                    if (peerTiers.isEmpty()) {
-                        Text("尚未识别对端。首次请求后会自动记录节点或 Token 指纹。")
+                    if (inactiveAuthorizationCount > 0) {
+                        Text(
+                            text = "已保留 $inactiveAuthorizationCount 条旧节点名或其他凭证的授权记录；它们不适用于当前凭证，也不会自动继承。请在下方为当前凭证重新选择所需权限。",
+                            style = MiuixTheme.textStyles.footnote2,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                    }
+                    if (currentCredentialTiers.isEmpty()) {
+                        Text("正在读取本机入站凭证，读取完成后可设置权限。")
                     } else {
-                        peerTiers.forEach { (peerId, tier) ->
+                        currentCredentialTiers.forEach { (peerId, tier) ->
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(peerId, style = MiuixTheme.textStyles.body2, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text("当前入站凭证 · $peerId", style = MiuixTheme.textStyles.body2, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     Text(
-                                        text = if (tier == A2AToolTier.RESTRICTED) "受限工具已授权" else "只读工具",
+                                        text = when (tier) { A2AToolTier.CUSTOM -> "自定义工具授权"; A2AToolTier.RESTRICTED -> "受限工具已授权"; else -> "只读工具" },
                                         style = MiuixTheme.textStyles.footnote2,
                                         color = if (tier == A2AToolTier.RESTRICTED) StatusWarning else StatusSuccess,
                                     )
                                 }
                                 TextButton(
                                     text = "只读",
-                                    onClick = { accessStore.setTier(peerId, A2AToolTier.READ_ONLY) },
+                                    onClick = {
+                                        changeInbound { accessStore.setTier(peerId, A2AToolTier.READ_ONLY) }
+                                    },
                                     enabled = tier != A2AToolTier.READ_ONLY,
                                 )
                                 TextButton(
                                     text = "授权受限",
-                                    onClick = { accessStore.setTier(peerId, A2AToolTier.RESTRICTED) },
+                                    onClick = {
+                                        changeInbound { accessStore.setTier(peerId, A2AToolTier.RESTRICTED) }
+                                    },
                                     enabled = tier != A2AToolTier.RESTRICTED,
                                 )
                             }
+                            TextButton(text = "编辑具体工具权限", onClick = {
+                                selectedAccessTools = accessStore.accessFor(peerId).allowedTools.intersect(A2AToolAccess.CONFIGURABLE_TOOLS)
+                                editingAccessPeer = peerId
+                            }, enabled = !inboundSaving)
                             Text(
-                                text = "可配置工具：${(if (tier == A2AToolTier.RESTRICTED) A2AToolAccess.RESTRICTED_TOOLS else A2AToolAccess.READ_ONLY_TOOLS).joinToString("、")}",
+                                text = "当前授权：${accessStore.accessFor(peerId).allowedTools.sorted().joinToString("、").ifBlank { "无" }}",
                                 style = MiuixTheme.textStyles.footnote2,
                                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                             )
@@ -643,21 +848,30 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                 }
             }
         }
-        item(key = "agent_title") { SmallTitle("已连接 Agent") }
-        if (agents.isEmpty()) {
+        if (selectedTab == 0) item(key = "agent_title") { SmallTitle("已连接 Agent") }
+        if (selectedTab == 0 && agents.isEmpty()) {
             item(key = "agent_empty") {
-                Card(modifier = Modifier.padding(horizontal = 12.dp)) {
+                Card(modifier = Modifier.padding(horizontal = 16.dp)) {
                     ListEmptyState(
                         title = "尚未添加 A2A Agent",
                         summary = "先取得对方的 Agent Card 地址，再通过右上角添加。",
                         icon = Icons.Rounded.CloudQueue,
                         action = {
-                            TextButton(text = "添加 Agent", onClick = { showAddDialog = true })
+                            TextButton(text = "添加 Agent", onClick = {
+                                editingAgent = null
+                                displayName = ""
+                                cardUrl = ""
+                                endpointOverride = ""
+                                bearerToken = ""
+                                error = null
+                                pairingNotice = null
+                                showAddDialog = true
+                            })
                         },
                     )
                 }
             }
-        } else {
+        } else if (selectedTab == 0) {
             items(agents, key = { it.id }) { agent ->
                 A2AAgentCard(
                     agent = agent,
@@ -676,19 +890,28 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                     onRefresh = {
                         scope.launch {
                             runCatching {
-                                A2AAgentRepository(
-                                    context = context.applicationContext,
-                                    client = A2AHttpClient(a2aPeerPolicyForManualEndpoint(agent.cardUrl)),
-                                ).refreshAgentCard(agent.id)
-                            }
+                                A2AHttpClient(a2aPeerPolicyForManualEndpoint(agent.cardUrl)).use { client ->
+                                    A2AAgentRepository(context.applicationContext, client).refreshAgentCard(agent.id)
+                                }
+                            }.onFailure { failure -> error = failure.message ?: "Agent Card 刷新失败" }
                         }
                     },
                     onDelete = { scope.launch { repository.removeAgent(agent.id) } },
+                    onEdit = {
+                        editingAgent = agent
+                        displayName = agent.displayName
+                        cardUrl = agent.cardUrl
+                        endpointOverride = agent.endpointUrl
+                        bearerToken = ""
+                        error = null
+                        pairingNotice = null
+                        showAddDialog = true
+                    },
                 )
             }
         }
-        item(key = "tasks_title") { SmallTitle("远端任务与产物") }
-        if (tasks.isEmpty()) {
+        if (selectedTab == 3) item(key = "tasks_title") { SmallTitle("远端任务与产物") }
+        if (selectedTab == 3 && tasks.isEmpty()) {
             item(key = "tasks_empty") {
                 Text(
                     text = "还没有 A2A 任务。可从定时任务或后续会议室参与者发起。",
@@ -697,7 +920,7 @@ internal fun A2ASettingsScreen(onBack: () -> Unit) {
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
                 )
             }
-        } else {
+        } else if (selectedTab == 3) {
             items(tasks.take(20), key = { it.localId }) { task ->
                 A2ATaskCard(task = task, repository = repository)
             }
@@ -759,10 +982,11 @@ private fun A2AAgentCard(
     onEnabledChange: (Boolean) -> Unit,
     onRefresh: () -> Unit,
     onDelete: () -> Unit,
+    onEdit: () -> Unit,
 ) {
     Card(
         modifier = Modifier
-            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .padding(horizontal = 16.dp, vertical = 4.dp)
             .fillMaxWidth(),
     ) {
         Row(
@@ -792,12 +1016,13 @@ private fun A2AAgentCard(
                 onCheckedChange = onEnabledChange,
             )
             IconButton(onClick = onRefresh) {
-                Icon(Icons.Rounded.Refresh, contentDescription = "刷新 Agent Card")
+                Icon(Icons.Rounded.Refresh, contentDescription = stringResource(io.github.mangi.eta.R.string.a2a_refresh_agent_card))
             }
+            TextButton(text = "编辑", onClick = onEdit)
             IconButton(onClick = onDelete) {
                 Icon(
                     Icons.Rounded.DeleteOutline,
-                    contentDescription = "删除 Agent",
+                    contentDescription = stringResource(io.github.mangi.eta.R.string.a2a_delete_agent),
                     tint = StatusError,
                 )
             }
@@ -807,10 +1032,10 @@ private fun A2AAgentCard(
 
 @Composable
 private fun A2ATaskCard(task: A2ATaskEntity, repository: A2AAgentRepository) {
-    val artifacts by repository.observeArtifacts(task.localId).collectAsState(initial = emptyList())
+    val artifacts by remember(repository, task.localId) { repository.observeArtifacts(task.localId) }.collectAsState(initial = emptyList())
     Card(
         modifier = Modifier
-            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .padding(horizontal = 16.dp, vertical = 4.dp)
             .fillMaxWidth(),
     ) {
         Column(

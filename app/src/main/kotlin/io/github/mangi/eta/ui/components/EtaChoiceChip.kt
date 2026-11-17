@@ -1,14 +1,11 @@
 package io.github.mangi.eta.ui.components
 
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.padding
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -39,12 +36,6 @@ internal fun EtaChoiceChip(
     enabled: Boolean = true,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
-    val pressed by interactionSource.collectIsPressedAsState()
-    val scale by animateFloatAsState(
-        targetValue = if (enabled && pressed) 0.97f else 1f,
-        animationSpec = EtaMotion.pressSpring(),
-        label = "choice_chip_press",
-    )
     val container by animateColorAsState(
         targetValue = if (selected) {
             MiuixTheme.colorScheme.tertiaryContainer
@@ -81,7 +72,12 @@ internal fun EtaChoiceChip(
                 ambientColor = MiuixTheme.colorScheme.primary.copy(alpha = 0.14f),
                 spotColor = MiuixTheme.colorScheme.primary.copy(alpha = 0.14f),
             )
-            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .etaPressScale(
+                interactionSource = interactionSource,
+                enabled = enabled,
+                pressedScale = 0.97f,
+                label = "choice_chip_press",
+            )
             .semantics { this.selected = selected }
             .squircleBorder(width = 1.dp, color = border, cornerRadius = 16.dp)
             .squircleSurface(color = container, cornerRadius = 16.dp)

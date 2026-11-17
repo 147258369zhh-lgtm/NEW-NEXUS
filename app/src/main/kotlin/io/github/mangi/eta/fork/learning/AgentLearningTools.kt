@@ -8,6 +8,10 @@ import org.json.JSONObject
 /** 学习工具只创建候选和检索已确认规则；晋升必须由用户在审计页面完成。 */
 internal class AgentLearningTools(
     private val repository: LearningRepository,
+    private val scopes: Set<String> = setOf("global"),
+    private val writeScope: String = "global",
+    private val sourceRef: String = "agent-proposal",
+    private val observedEvidence: (() -> String)? = null,
 ) {
     fun execute(call: AgentModelClient.ToolCall): AgentModelClient.ToolResult {
         val arguments = runCatching { JSONObject(call.argumentsJson.ifBlank { "{}" }) }
@@ -17,7 +21,7 @@ internal class AgentLearningTools(
                 val query = arguments.optString("query").trim()
                 if (query.isBlank()) return failure("LEARNING_QUERY_REQUIRED", "query 不能为空")
                 val rules = runBlocking {
-                    repository.search(query, arguments.optInt("limit", 12))
+                    repository.search(query, arguments.optInt("limit", 12), scopes)
                 }
                 AgentModelClient.ToolResult(JSONObject().put("ok", true).put(
                     "rules",
@@ -25,6 +29,7 @@ internal class AgentLearningTools(
                         rules.forEach { rule ->
                             array.put(JSONObject()
                                 .put("id", rule.id)
+                                .put("scope", rule.scope)
                                 .put("kind", rule.kind.wireValue)
                                 .put("title", rule.title)
                                 .put("content", rule.content)
@@ -41,8 +46,10 @@ internal class AgentLearningTools(
                         kind = kind,
                         title = arguments.optString("title"),
                         content = arguments.optString("content"),
-                        evidence = arguments.optString("evidence"),
-                        sourceRef = arguments.optString("source_ref").ifBlank { "agent-proposal" },
+                        // Runtime-owned evidence/source cannot be replaced by model assertions.
+                        evidence = observedEvidence?.invoke() ?: arguments.optString("evidence"),
+                        sourceRef = sourceRef,
+                        scope = writeScope.also { require(it in scopes && LearningScope.valid(it)) },
                     ))
                 }
                 proposalResult(result)
@@ -72,6 +79,7 @@ internal class AgentLearningTools(
             .put("ok", !rejected)
             .put("code", if (rejected) "LEARNING_BUTLER_REJECTED" else "")
             .put("candidate_id", candidate.id)
+            .put("scope", candidate.scope)
             .put("status", candidate.status.wireValue)
             .put("deduplicated", deduplicated)
             .put("butler_review", candidate.reviewSummary)
@@ -87,7 +95,7 @@ internal class AgentLearningTools(
         fun schemas(): JSONArray = JSONArray()
             .put(tool(
                 name = SEARCH_TOOL,
-                description = "检索已经用户确认并晋升的学习规则。开始可能重复的任务或处理已知失败前先查询。",
+                description = "检索当前合法作用域内已经用户确认并晋升的经验库规则。开始可能重复的任务或处理已知失败前先查询。",
                 properties = JSONObject()
                     .put("query", property("string", "要检索的任务、技术或错误关键词"))
                     .put("limit", property("integer", "最多返回条数，1-20", minimum = 1, maximum = 20)),
@@ -101,7 +109,7 @@ internal class AgentLearningTools(
                     .put("title", property("string", "简短、可检索的候选标题"))
                     .put("content", property("string", "经过归纳的规则或经验，不含密钥和个人数据"))
                     .put("evidence", property("string", "支持该候选的具体观察或失败证据"))
-                    .put("source_ref", property("string", "来源消息、运行或工具标识")),
+                    .put("source_ref", property("string", "兼容字段；实际来源和作用域由运行时绑定，不能自行扩大")),
                 required = JSONArray().put("kind").put("title").put("content"),
             ))
 

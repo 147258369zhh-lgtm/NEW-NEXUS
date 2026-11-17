@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="system_tools_linux">Linux toolbox</string>
+    <string name="system_tools_linux_summary">Choose an environment, install tools and manage downloads</string>
+    <string name="system_tools_terminal">Terminal</string>
+    <string name="system_tools_assistant_summary">Android default assistant works without Root; system interception needs an active framework</string>
+    <string name="system_tools_hooks_summary">System search gestures need a compatible framework and enabled scope</string>
+    <string name="system_tools_access">System enhancement &amp; permissions</string>
+    <string name="system_tools_root_summary">Root grants and optional framework enhancements</string>
+    <string name="system_tools_permissions_summary">Overlay, accessibility, notifications and background execution</string>
+    <string name="system_tools_browser">Web browsing</string>
+</resources>

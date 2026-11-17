@@ -19,6 +19,10 @@ import androidx.compose.material.icons.rounded.ChatBubble
 import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.Contacts
 import androidx.compose.material.icons.rounded.ContentPaste
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.CreateNewFolder
+import androidx.compose.material.icons.rounded.DriveFileMove
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.ContentPasteGo
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.DocumentScanner
@@ -26,6 +30,7 @@ import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.FindReplace
+import androidx.compose.material.icons.rounded.Flag
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Hub
@@ -62,6 +67,12 @@ import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.ui.graphics.vector.ImageVector
 
 internal fun iconForTool(toolId: String): ImageVector = when (toolId) {
+    "goal_manage" -> Icons.Rounded.Flag
+    "plan_manage" -> Icons.Rounded.AccountTree
+    "notepad_manage" -> Icons.Rounded.EditNote
+    "request_user_input" -> Icons.Rounded.ChatBubble
+    "memory_search" -> Icons.Rounded.Psychology
+    "conversation_history" -> Icons.Rounded.ChatBubble
     "automation_manage" -> Icons.Rounded.AccountTree
     "observe", "observe_screen" -> Icons.Rounded.DocumentScanner
     "click", "tap", "tap_element" -> Icons.Rounded.AdsClick
@@ -141,6 +152,12 @@ internal fun iconForTool(toolId: String): ImageVector = when (toolId) {
     "subagent", "subagent_profile" -> Icons.Rounded.Hub
     "read_file", "stat_file" -> Icons.Rounded.Description
     "write_file", "edit_file" -> Icons.Rounded.EditNote
+    "make_directory" -> Icons.Rounded.CreateNewFolder
+    "project_workspace_status" -> Icons.Rounded.FolderOpen
+    "project_workspace_publish" -> Icons.Rounded.DriveFileMove
+    "copy_file" -> Icons.Rounded.ContentCopy
+    "move_file" -> Icons.Rounded.DriveFileMove
+    "delete_file" -> Icons.Rounded.DeleteOutline
     "list_directory", "glob_files", "grep_files" -> Icons.Rounded.FolderOpen
     else -> when {
         toolId in io.github.mangi.eta.agent.context.PersonalSearchTools.names -> Icons.Rounded.Insights

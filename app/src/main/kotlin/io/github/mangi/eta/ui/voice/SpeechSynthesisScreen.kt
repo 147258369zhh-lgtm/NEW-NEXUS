@@ -21,9 +21,9 @@ import io.github.mangi.eta.data.model.TtsProvider
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.BasicComponentDefaults
-import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle as SmallTitle
+import io.github.mangi.eta.ui.components.NexusSettingsDropdownPreference as OverlayDropdownPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
@@ -33,6 +33,11 @@ internal fun SpeechSynthesisScreen(onBack: () -> Unit, onOpenLocalModels: () -> 
     val store = remember { SpeechSettingsStore(context, scope) }
     SpeechLifecycle { store.stop() }
     val settings = store.settings
+    val voiceContent = rememberSpeechVoiceContent(store, onOpenLocalModels)
+    val defaultCloudText = stringResource(R.string.speech_preview_default_text)
+    val defaultLocalText = stringResource(R.string.speech_local_preview_sample)
+    var cloudPreviewText by rememberSaveable { mutableStateOf(defaultCloudText) }
+    var localPreviewText by rememberSaveable { mutableStateOf(defaultLocalText) }
 
     MiuixScaffoldPage(
         title = stringResource(R.string.speech_synthesis_title),
@@ -47,8 +52,8 @@ internal fun SpeechSynthesisScreen(onBack: () -> Unit, onOpenLocalModels: () -> 
             SmallTitle(stringResource(R.string.speech_group_service))
             Card(
                 modifier = Modifier
-                    .padding(horizontal = 12.dp)
-                    .padding(bottom = 12.dp),
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 8.dp),
             ) {
                 OverlayDropdownPreference(
                     title = stringResource(R.string.speech_tts_service),
@@ -65,13 +70,13 @@ internal fun SpeechSynthesisScreen(onBack: () -> Unit, onOpenLocalModels: () -> 
                 SpeechConnectionSection(store, synthesis = true, onOpenLocalModels = onOpenLocalModels)
             }
             item(key = "voice") {
-                SpeechVoiceSection(store, onOpenLocalModels)
+                voiceContent()
             }
             item(key = "preview") {
                 if (settings.tts == TtsProvider.LOCAL) {
-                    LocalSpeechPreviewSection(store)
+                    LocalSpeechPreviewSection(store, localPreviewText) { localPreviewText = it }
                 } else {
-                    SpeechPreviewSection(store)
+                    SpeechPreviewSection(store, cloudPreviewText) { cloudPreviewText = it }
                 }
             }
         }
@@ -87,18 +92,16 @@ internal fun SpeechSynthesisScreen(onBack: () -> Unit, onOpenLocalModels: () -> 
 
 /** 试听使用当前草稿；播放中再次点击停止，错误直接显示在行摘要里。 */
 @Composable
-private fun SpeechPreviewSection(store: SpeechSettingsStore) {
+private fun SpeechPreviewSection(store: SpeechSettingsStore, text: String, onTextChange: (String) -> Unit) {
     val playback by store.playback.state.collectAsState()
     val playing = playback.messageId != null
-    val defaultText = stringResource(R.string.speech_preview_default_text)
-    var text by rememberSaveable { mutableStateOf(defaultText) }
 
     Column {
         SmallTitle(stringResource(R.string.speech_preview_voice))
         Card(
             modifier = Modifier
-                .padding(horizontal = 12.dp)
-                .padding(bottom = 12.dp),
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 8.dp),
         ) {
             SpeechFieldColumn {
                 SpeechField(
@@ -109,7 +112,7 @@ private fun SpeechPreviewSection(store: SpeechSettingsStore) {
                     onChange = {
                         if (it.length <= 500) {
                             store.playback.stop()
-                            text = it
+                            onTextChange(it)
                         }
                     },
                 )

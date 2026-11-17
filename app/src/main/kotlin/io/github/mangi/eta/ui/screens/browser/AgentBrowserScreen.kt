@@ -3,15 +3,20 @@ package io.github.mangi.eta.ui.screens.browser
 import android.content.Intent
 import android.widget.Toast
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.WindowInsetsSides
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.only
-import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.QrCodeScanner
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import io.github.mangi.eta.ui.app.LocalEtaDesignTokens
+import io.github.mangi.eta.ui.components.NexaCompactAction
+import io.github.mangi.eta.ui.components.NexusGlassBackdrop
+import top.yukonga.miuix.kmp.basic.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -46,6 +51,7 @@ import top.yukonga.miuix.kmp.window.WindowDialog
 internal fun AgentBrowserScreen(
     session: AgentBrowserSession,
     onBack: () -> Unit,
+    onScanQr: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -105,7 +111,7 @@ internal fun AgentBrowserScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(MiuixTheme.colorScheme.surface)
+            .background(MiuixTheme.colorScheme.background)
             .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
             .imePadding()
             .navigationBarsPadding(),
@@ -143,8 +149,48 @@ internal fun AgentBrowserScreen(
                 launchBrowserAction { session.resetFromUser() }
             },
             onClearData = { showClearDataDialog = true },
+            onScanQr = onScanQr,
+            onFinishTakeover = onBack,
         )
+        // Keep a fixed progress slot so loading does not repeatedly resize the WebView.
+        Row(Modifier.fillMaxWidth().heightIn(min = 28.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = snapshot.title.ifBlank { stringResource(R.string.page_agent_browser_a66bd5) },
+                modifier = Modifier.weight(1f),
+                style = MiuixTheme.textStyles.footnote2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (snapshot.isLoading) Text(
+                text = stringResource(R.string.tool_browser_loading, snapshot.progress),
+                modifier = Modifier.padding(start = 12.dp),
+                style = MiuixTheme.textStyles.footnote2,
+                color = MiuixTheme.colorScheme.primary,
+            )
+        }
+        Box(Modifier.fillMaxWidth().height(3.dp)) {
+            if (snapshot.isLoading) Box(
+                Modifier.fillMaxWidth(snapshot.progress.coerceIn(0, 100) / 100f).fillMaxHeight()
+                    .background(MiuixTheme.colorScheme.primary.copy(alpha = .65f), RoundedCornerShape(2.dp)),
+            )
+        }
+        snapshot.error?.let { message ->
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(message, Modifier.weight(1f), style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.error, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                NexaCompactAction(text = stringResource(R.string.browser_refresh), enabled = snapshot.available && !actionPending, onClick = { launchBrowserAction { session.reloadFromUser() } })
+            }
+        }
         BrowserWebViewHost(session = session, modifier = Modifier.weight(1f))
+        Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+            val tokens = LocalEtaDesignTokens.current
+            if (tokens.skin.isGlass) NexusGlassBackdrop(Modifier.matchParentSize(), cornerRadius = 22.dp, refract = false)
+            else Box(Modifier.matchParentSize().background(tokens.surfaceElevated, RoundedCornerShape(22.dp)))
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                NexaCompactAction(text = stringResource(R.string.browser_scan_qr), icon = Icons.Rounded.QrCodeScanner, enabled = !actionPending, onClick = onScanQr)
+                NexaCompactAction(text = stringResource(R.string.browser_finish_takeover), icon = Icons.AutoMirrored.Rounded.ArrowBack, onClick = onBack)
+            }
+        }
     }
 
     if (showClearDataDialog) {

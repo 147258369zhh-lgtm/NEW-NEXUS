@@ -22,6 +22,11 @@ internal class AgentRuntimeSession(
     val telemetry: AgentRunTelemetry? = null,
     private val eventRecorder: ((AgentEvent) -> Unit)? = null,
     private val terminalRecorder: ((AgentRuntimeWire.RunResult) -> Unit)? = null,
+    private val executionStartRecorder: () -> Unit = {},
+    private val checkpointRecorder: (List<AgentModelClient.ConversationMessage>, AgentContextSnapshot?) -> Unit = { _, _ -> },
+    private val childExecutionFactory: ((String,String,io.github.zhh_lgtm.nexus.kernel.api.RunBudget,AgentRunController) -> NexusExecutionRecorder)? = null,
+    private val inputRecorder: (List<AgentModelClient.ConversationMessage>,String,Int) -> Unit = { _,_,_ -> },
+    val executionRequest: io.github.zhh_lgtm.nexus.kernel.api.RunRequest? = null,
 ) {
     private enum class State {
         RUNNING,
@@ -35,7 +40,10 @@ internal class AgentRuntimeSession(
         get() = lock.withLock { latestTranscript }
 
     fun updateTranscript(messages: List<AgentModelClient.ConversationMessage>) = lock.withLock {
-        if (state == State.RUNNING) latestTranscript = messages
+        if (state == State.RUNNING) {
+            checkpointRecorder(messages,latestContext)
+            latestTranscript = messages
+        }
     }
 
     private var latestContext: AgentContextSnapshot? = null
@@ -43,12 +51,20 @@ internal class AgentRuntimeSession(
         get() = lock.withLock { latestContext }
 
     fun updateContext(snapshot: AgentContextSnapshot) = lock.withLock {
-        if (state == State.RUNNING) latestContext = snapshot
+        if (state == State.RUNNING) {
+            checkpointRecorder(latestTranscript,snapshot)
+            latestContext = snapshot
+        }
     }
     private var state = State.RUNNING
+    @Volatile var terminalResult: AgentRuntimeWire.RunResult? = null
+        private set
     private val replayEvents = mutableListOf<AgentEvent>()
     private val searchSuggestionsBudget = SearchSuggestionsBudget()
     private val subscribers = mutableListOf<Subscriber>()
+    private val approvalObserver = controller.observeApprovals { change ->
+        emit(AgentEvent.ApprovalChanged(change.id, change.toolName, change.phase))
+    }
 
     private data class Subscriber(
         val eventSink: (AgentEvent) -> Unit,
@@ -70,13 +86,30 @@ internal class AgentRuntimeSession(
     val isCommitting: Boolean
         get() = lock.withLock { state == State.COMMITTING }
 
+    fun beginExecution() = lock.withLock {
+        check(state == State.RUNNING) { "RUN_NOT_EXECUTABLE" }
+        executionStartRecorder()
+    }
+
+    fun openChildExecution(operation: String, session: String, budget: io.github.zhh_lgtm.nexus.kernel.api.RunBudget,
+        childController: AgentRunController): NexusExecutionRecorder? = childExecutionFactory?.invoke(operation,session,budget,childController)
+
+    fun prepareInput(request: AgentRuntimeWire.RunRequest) = lock.withLock {
+        check(state == State.RUNNING)
+        inputRecorder(request.history,request.prompt,request.images.size)
+    }
+
     fun emit(event: AgentEvent): Boolean =
         lock.withLock {
             if (state != State.RUNNING) return false
+            if (event is AgentEvent.PluginUiFrame) {
+                subscribers.forEach { it.eventSink(event) }
+                return true
+            }
             if (event is AgentEvent.SearchSuggestions &&
                 !searchSuggestionsBudget.accept(event.round, event.index, event.html)) return false
             recordForReplay(event)
-            runCatching { eventRecorder?.invoke(event) }
+            eventRecorder?.invoke(event)
             subscribers.forEach { it.eventSink(event) }
             true
         }
@@ -111,7 +144,7 @@ internal class AgentRuntimeSession(
             if (state != State.RUNNING || operation != AgentRuntimeWire.OP_CHAT || !controller.steer(text)) return null
             eventFactory().also { event ->
                 recordForReplay(event)
-                runCatching { eventRecorder?.invoke(event) }
+                eventRecorder?.invoke(event)
                 subscribers.forEach { it.eventSink(event) }
             }
         }
@@ -159,23 +192,31 @@ internal class AgentRuntimeSession(
      */
     fun complete(
         result: AgentRuntimeWire.RunResult,
-        beforePublish: () -> Unit = {},
+        beforePublish: (AgentRuntimeWire.RunResult) -> Unit = {},
     ): Boolean {
         lock.withLock {
             if (state != State.RUNNING) return false
             require(result.runId == runId) { "Result runId does not match the active session" }
             state = State.COMMITTING
         }
-        val commitFailure = runCatching(beforePublish).exceptionOrNull()
+        val ledgerFailure = runCatching { terminalRecorder?.invoke(result) }.exceptionOrNull()
+        val publishResult = if (ledgerFailure == null) result else result.copy(
+            ok = false,
+            error = (ledgerFailure as? EffectReviewPendingException)?.message
+                ?: "执行结果记录未完成；已发生的操作状态需要核对，请勿从头重复执行",
+        )
+        // Persist the same outcome that live clients see, including a failed terminal commit.
+        val commitFailure = runCatching { beforePublish(publishResult) }.exceptionOrNull()
         lock.withLock {
             state = State.TERMINAL
-            telemetry?.finish(result.ok, controller.isCancelled)
+            terminalResult = publishResult
+            telemetry?.finish(publishResult.ok, controller.isUserCancelled)
         }
-        runCatching { terminalRecorder?.invoke(result) }
+        approvalObserver.close()
         // 客户端收到结果即可续发；释放会话占用不能晚于结果，也不能持锁回调宿主。
-        beforeTerminalPublish(result)
+        beforeTerminalPublish(publishResult)
         lock.withLock {
-            subscribers.forEach { it.resultSink(result) }
+            subscribers.forEach { it.resultSink(publishResult) }
             subscribers.clear()
             replayEvents.clear()
             searchSuggestionsBudget.clear()
@@ -199,7 +240,10 @@ internal class AgentRuntimeSession(
             )
         }
         controller.cancel()
+        approvalObserver.close()
+        terminalResult = result
         telemetry?.finish(ok = false, cancelled = true)
+        runCatching { terminalRecorder?.invoke(result) }
         beforeTerminalPublish(result)
         lock.withLock {
             subscribers.forEach { it.resultSink(result) }

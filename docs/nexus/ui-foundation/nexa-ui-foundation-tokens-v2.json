@@ -1,0 +1,262 @@
+{
+  "$schema": "https://nexa.local/design-tokens/v1",
+  "version": "1.4.0",
+  "date": "2026-11-14",
+  "status": "proposed-review-baseline",
+  "scope": "Visual and interaction foundation with the v1.4 Android visual adaptation: two skins, continuous curvature, vivid semantics, bare icons and dual voice orbs.",
+  "auditSnapshot": {
+    "sourceRoots": [
+      "app/src/main/kotlin",
+      "app/src/main/res/drawable"
+    ],
+    "inputApiCalls": {
+      "total": 146,
+      "textField": 125,
+      "basicTextField": 8,
+      "inputField": 10,
+      "searchBar": 3
+    },
+    "visibleSearchRoutes": 23,
+    "directButtonCalls": {
+      "total": 401,
+      "textButton": 257,
+      "iconButton": 144,
+      "customActionComposableNameHits": 58
+    },
+    "iconReferences": {
+      "total": 916,
+      "rounded": 842,
+      "outlined": 36,
+      "autoMirrored": 38,
+      "drawableXmlFiles": 13
+    },
+    "note": "Call counts show fragmentation and are not feature counts. Custom action-name matches can include non-button semantics."
+  },
+  "searchRoutes": [
+    "settings-home",
+    "unified-list",
+    "meeting-room",
+    "character-library",
+    "model-picker",
+    "community-providers",
+    "community-models",
+    "provider-list",
+    "provider-detail-models",
+    "remote-model-import",
+    "capability-skills",
+    "conversation-branches",
+    "learning-experiences",
+    "mcp-catalog",
+    "memory-library",
+    "token-pricing",
+    "project-objects",
+    "prompt-templates",
+    "prompt-targets",
+    "tool-boundaries",
+    "subagent-models-providers",
+    "workspace-files",
+    "browser-address-search"
+  ],
+  "space": {
+    "base": 4,
+    "values": [4, 8, 12, 16, 20, 24, 32, 40, 48],
+    "pageInset": 16,
+    "cardPadding": 16,
+    "cardGap": 8,
+    "groupGap": 24,
+    "sectionTitleGap": 8,
+    "rowMinHeight": 56,
+    "overlayPadding": 20
+  },
+  "typography": {
+    "presets": ["system", "humanist", "editorial"],
+    "defaultPreset": "system",
+    "presetPolicy": {
+      "system": "system UI first; Segoe UI Variable on Windows, Roboto on Android, platform CJK fallback",
+      "humanist": "MiSans / HarmonyOS Sans / Noto Sans SC-compatible humanist fallback",
+      "editorial": "New York / Iowan / Songti display fallback, with system sans body",
+      "embedAppleSF": false
+    },
+    "display": {"size": 34, "lineHeight": 40, "weight": 600},
+    "title": {"size": 24, "lineHeight": 32, "weight": 600},
+    "item": {"size": 16, "lineHeight": 24, "weight": 550},
+    "body": {"size": 15, "lineHeight": 23, "weight": 400},
+    "support": {"size": 12, "lineHeight": 18, "weight": 400},
+    "caption": {"size": 11, "lineHeight": 16, "weight": 400}
+  },
+  "radius": {
+    "micro": 12,
+    "controlSmall": 16,
+    "control": 18,
+    "card": 24,
+    "cardLarge": 30,
+    "overlay": 34,
+    "hero": 44,
+    "capsule": 999,
+    "cornerStyle": "continuous",
+    "classicPolicy": "cubic tangent-continuous corners; no square shelf or semicircle-plus-straight-edge appearance",
+    "liquidPolicy": "continuous curvature with a controlled squircle exponent, supporting refraction on edge only"
+  },
+  "stroke": {
+    "hairline": 0.5,
+    "focus": 2,
+    "focusOffset": 2,
+    "glassBoundary": "local-specular-only"
+  },
+  "touch": {
+    "minimum": 48,
+    "separation": 8,
+    "iconGlyph": 24,
+    "iconVisualButton": 40,
+    "standard": 44,
+    "primary": 48,
+    "hero": 52,
+    "row": 56
+  },
+  "motion": {
+    "press": {"duration": 90, "easing": "spring", "scaleRange": [0.93, 0.975]},
+    "state": {"duration": 180, "easing": "cubic-bezier(.2,0,0,1)"},
+    "enter": {"duration": 240, "easing": "spring"},
+    "overlay": {"duration": 300, "easing": "spring"},
+    "scene": {"duration": 380, "easing": "cubic-bezier(.2,0,0,1)"},
+    "releaseSpring": {"dampingRange": [0.78, 0.88], "stiffnessRange": [360, 540], "bounces": 1},
+    "reduceMotion": "opacity-only-120ms"
+  },
+  "states": {
+    "interactive": ["default", "pressed", "focused", "selected", "disabled", "loading", "error", "success"],
+    "field": ["empty", "focused", "filled", "disabled", "readOnly", "validating", "valid", "error"],
+    "focusRing": {"width": 2, "offset": 2, "semanticColor": "accent"},
+    "disabled": {"interactive": false, "opacityRange": [0.36, 0.5]},
+    "loading": {"preserveLabel": true, "fixedLayout": true},
+    "error": {"showText": true, "colorOnly": false}
+  },
+  "material": {
+    "canvas": {"blur": 0, "lightHex": "#F0F1F3", "realtime": false, "role": "pearl mist and subtle local light; never used as content-card fill"},
+    "groupSurface": {"blur": 0, "lightHex": "#FFFFFF", "fillRange": [0.58, 1.0], "realtime": false, "divider": "0.5dp at 6-10% contrast"},
+    "field": {"blur": 0, "fillRange": [0.48, 0.7], "insetShadow": true},
+    "focalControl": {"blurRange": [22, 30], "fillRange": [0.34, 0.76], "liveRegionsPerScreen": 1},
+    "overlay": {"blurRange": [24, 30], "fillRange": [0.84, 0.94]},
+    "scrim": {"blurRange": [4, 8], "fillRange": [0.38, 0.58]},
+    "edgePolicy": {
+      "closedOuterGlow": false,
+      "localTopSpecular": true,
+      "bottomShadowRange": [0.01, 0.08],
+      "everyLayerTransparent": false
+    }
+  },
+  "skins": {
+    "classic": {
+      "blur": 0,
+      "canvasHex": "#F0F1F3",
+      "contentCardHex": "#FFFFFF",
+      "focalFillRange": [0.88, 0.96],
+      "edgeRefraction": "none",
+      "ordinaryCardsRealtimeBlur": false
+    },
+    "liquid": {
+      "focalBlurRange": [16, 22],
+      "focalFillRange": [0.42, 0.68],
+      "edgeRefraction": "medium",
+      "ordinaryCardsRealtimeBlur": false,
+      "fallback": "static-glass"
+    }
+  },
+  "inputs": {
+    "baseBehavior": "shared-text-editing-validation-and-keyboard-primitives",
+    "roles": {
+      "composerInput": {"heightRange": [48, 144], "radius": [22, 26], "cornerStyle": "continuous", "material": "focalControl", "multiLine": true},
+      "inlineSearch": {"heightRange": [44, 48], "radius": [14, 18], "cornerStyle": "continuous", "material": "field", "leadingIcon": "search", "clearAction": true},
+      "textFieldSingle": {"heightRange": [48, 56], "radius": [14, 18], "cornerStyle": "continuous", "material": "field"},
+      "textFieldMultiline": {"heightRange": [64, 180], "radius": 18, "cornerStyle": "continuous", "material": "field", "internalScrollAboveMax": true},
+      "secretField": {"heightRange": [48, 56], "radius": [14, 18], "cornerStyle": "continuous", "material": "field", "visibilityToggle": true},
+      "numberField": {"heightRange": [48, 56], "radius": [14, 18], "cornerStyle": "continuous", "material": "field", "numericKeyboard": true},
+      "locatorField": {"heightRange": [48, 56], "radius": [14, 18], "cornerStyle": "continuous", "material": "field", "validationAction": true},
+      "codeField": {"heightRange": [120, 360], "radius": 18, "cornerStyle": "continuous", "material": "field", "monospace": true},
+      "selectField": {"heightRange": [48, 56], "radius": [14, 18], "cornerStyle": "continuous", "material": "field", "searchableVariant": true},
+      "tagEditor": {"minHeight": 48, "radius": 18, "cornerStyle": "continuous", "material": "field", "wrapping": true}
+    }
+  },
+  "buttons": {
+    "roles": {
+      "primary": {"visualHeight": 48, "radius": 24, "cornerStyle": "continuous", "style": "ink-solid-with-inner-specular-and-contact-shadow", "touch": 48},
+      "secondary": {"visualHeight": 48, "radius": 18, "cornerStyle": "continuous", "style": "paper-raised", "touch": 48},
+      "quiet": {"visualHeight": 44, "radius": 14, "cornerStyle": "continuous", "touch": 48},
+      "destructive": {"visualHeight": 48, "radius": 18, "cornerStyle": "continuous", "touch": 48},
+      "iconAction": {"visualSize": 44, "radius": 22, "cornerStyle": "continuous", "touch": 48, "defaultContainer": "none", "sendEmphasis": "filled-round-primary"},
+      "floatingPill": {"visualHeight": 44, "radius": 999, "touch": 48},
+      "segmented": {"visualHeight": 38, "radius": 999, "touch": 48, "itemRange": [2, 4]},
+      "choiceChip": {"visualHeight": 32, "radius": 999, "touch": 48},
+      "statusPill": {"visualHeight": 26, "radius": 999, "interactive": false},
+      "actionRow": {"minHeight": 56, "radius": "group-clipped", "touch": "full-row"}
+    }
+  },
+  "icons": {
+    "functionalSource": "Material Symbols Rounded SVG",
+    "androidRepresentation": ["Compose ImageVector", "Android Vector Drawable XML for native surfaces"],
+    "opticalSizes": {"inline": 16, "navigation": 20, "default": 24, "large": 28},
+    "strokeRange": [1.55, 1.85],
+    "cap": "round",
+    "join": "round",
+    "defaultTint": "one vivid semantic currentColor with a hairline shadow for optical depth",
+    "palette": ["#3C8CFF", "#8B6CFF", "#24BFD4", "#27C47B", "#FFB13B", "#FF607C", "#FF60A8", "#4A7DFF"],
+    "containerPolicy": {
+      "default": "none",
+      "allowedExceptions": ["pressed-or-focus-feedback", "status-badge", "brand-logo", "standalone-floating-entry"],
+      "settingsColoredCircleBase": false
+    },
+    "formats": {
+      "functional": ["SVG", "ImageVector", "VectorDrawable"],
+      "brand": ["SVG", "WebP", "PNG-multidensity-if-source-is-raster"],
+      "complexMotion": ["Lottie JSON", "AnimatedVectorDrawable"],
+      "forbiddenForFunctionalIcons": ["PNG", "GIF", "font-glyph-as-icon"]
+    },
+    "directionality": {"autoMirrorWhenMeaningChanges": true, "contentDescriptionRequiredForActions": true}
+  },
+  "semanticColor": {
+    "positive": "#27C47B",
+    "warning": "#FFB13B",
+    "danger": "#FF5470",
+    "info": "#24BFD4",
+    "plan": "#8B6CFF",
+    "goal": "#4A7DFF",
+    "approvalAuto": "#27C47B",
+    "approvalSmart": "#FFB13B",
+    "approvalManual": "#FF607C",
+    "textPolicy": "use the darker text variants from the UI palette where the vivid glyph color does not reach 4.5:1"
+  },
+  "colorOSReference": {
+    "evidenceCount": 9,
+    "derivedPrinciples": [
+      "pearl-mist page canvas and true-white content cards; never a single gray blob",
+      "continuous grouped surfaces with fine dividers",
+      "bare semantic glyph icons by default",
+      "one dominant action color per local task",
+      "restrained text hierarchy",
+      "local component shapes may differ while shared rhythm stays constant"
+    ],
+    "copiesPrivateTokens": false
+  },
+  "voice": {
+    "source": "VoiceOrbs (MIT) visual algorithm study; rewritten for Compose Canvas, no React/WebGL runtime dependency",
+    "classic": {"preset": "1 · Plasma Orb", "description": "layered plasma filaments, bright core, soft specular highlight and breathing level response"},
+    "liquidGlass": {"preset": "13 · Waveform Ring", "description": "radial time-domain waveform bars around a transparent glass core", "input": "latest bounded PCM window, 128 normalized samples"},
+    "stateMapping": {"idle": "low-motion idle", "starting": "connecting pulse", "listening": "real waveform", "recognizing": "thinking rhythm", "speaking": "speaking rhythm", "error": "coral static halo"},
+    "performance": {"frameLoopStopsWhenInvisible": true, "boundedWaveformSamples": 128, "softwareCanvasFallback": true}
+  },
+  "accessibility": {
+    "minimumTouchTargetDp": 48,
+    "minimumTextContrast": 4.5,
+    "minimumLargeTextContrast": 3.0,
+    "minimumFontScale": 2.0,
+    "minimumWidthDp": 320,
+    "reduceMotion": true,
+    "highContrast": true
+  },
+  "performance": {
+    "liveBackdropRegionsPerScreen": 1,
+    "ordinaryCardsUseLiveBlur": false,
+    "textInsideRefractionLayer": false,
+    "backgroundAnimationWhenAppInactive": false,
+    "fallback": "static-glass"
+  }
+}

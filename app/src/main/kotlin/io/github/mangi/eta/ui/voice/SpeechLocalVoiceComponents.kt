@@ -38,21 +38,21 @@ import io.github.mangi.eta.ui.pages.providers.TagChip
 import io.github.mangi.eta.ui.pages.providers.TagChipTone
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle as SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import io.github.mangi.eta.ui.components.NexusSettingsDropdownPreference as OverlayDropdownPreference
 
 @Composable
-internal fun LocalSpeechVoiceSection(
+internal fun rememberLocalSpeechVoiceContent(
     store: SpeechSettingsStore,
     onOpenLocalModels: () -> Unit,
-) {
+): @Composable () -> Unit {
     val context = LocalContext.current.applicationContext
-    LocalModelRepository.init(context)
-    val records by LocalModelRepository.models.collectAsState()
+    val records by rememberLocalModelRecords()
     val runtimeStates by LocalSpeechRuntime.states.collectAsState()
     val settings = store.settings
     val record = records.firstOrNull { it.id == settings.localTtsModelId }
@@ -78,9 +78,11 @@ internal fun LocalSpeechVoiceSection(
         val next = SpeechLocalVoiceCatalog.normalize(store.settings, record)
         if (next != store.settings) store.edit(next)
     }
-    LaunchedEffect(record?.id, runtime?.phase) {
-        availableVoices = if (record != null && runtime?.phase == LocalSpeechRuntimePhase.READY) {
-            runCatching { LocalSpeechRuntime.listVoices(store.settings) }.getOrDefault(emptyList())
+    LaunchedEffect(record?.id, runtime?.recordId, runtime?.phase) {
+        availableVoices = if (record != null && runtime?.recordId == record.id && runtime?.phase == LocalSpeechRuntimePhase.READY) {
+            try { LocalSpeechRuntime.listVoices(store.settings) }
+            catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (_: Exception) { emptyList() }
         } else {
             emptyList()
         }
@@ -89,12 +91,13 @@ internal fun LocalSpeechVoiceSection(
         store.playback.stop()
     }
 
+    return {
     Column {
         SmallTitle(stringResource(R.string.speech_group_voice))
         Card(
             modifier = Modifier
-                .padding(horizontal = 12.dp)
-                .padding(bottom = 12.dp),
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 8.dp),
         ) {
             if (record == null) {
                 BasicComponent(
@@ -198,6 +201,16 @@ internal fun LocalSpeechVoiceSection(
                                 TagChipTone.Emphasized,
                             )
                         }
+                    } else if (availableVoices.size > 12) {
+                        OverlayDropdownPreference(
+                            title = stringResource(R.string.speech_voice),
+                            items = availableVoices.map { it.displayName },
+                            selectedIndex = availableVoices.indexOfFirst { it.id == settings.localTtsVoiceId }.coerceAtLeast(0),
+                            onSelectedIndexChange = { index -> availableVoices.getOrNull(index)?.let { voice ->
+                                store.playback.stop()
+                                store.edit(settings.copy(localTtsVoiceId = voice.id, localTtsLocale = voice.locale.ifBlank { settings.localTtsLocale }))
+                            } },
+                        )
                     } else if (availableVoices.isNotEmpty()) {
                         FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(7.dp),
@@ -249,25 +262,23 @@ internal fun LocalSpeechVoiceSection(
             }
         }
     }
+    }
 }
 
 @Composable
-internal fun LocalSpeechPreviewSection(store: SpeechSettingsStore) {
+internal fun LocalSpeechPreviewSection(store: SpeechSettingsStore, previewText: String, onPreviewTextChange: (String) -> Unit) {
     val context = LocalContext.current.applicationContext
-    LocalModelRepository.init(context)
-    val records by LocalModelRepository.models.collectAsState()
+    val records by rememberLocalModelRecords()
     val record = records.firstOrNull { it.id == store.settings.localTtsModelId }
     val playback by store.playback.state.collectAsState()
     val playing = playback.messageId != null
-    val sample = stringResource(R.string.speech_local_preview_sample)
-    var previewText by remember { mutableStateOf(sample) }
 
     Column {
         SmallTitle(stringResource(R.string.speech_preview_voice))
         Card(
             modifier = Modifier
-                .padding(horizontal = 12.dp)
-                .padding(bottom = 12.dp),
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 8.dp),
         ) {
             Column(
                 modifier = Modifier.padding(14.dp),
@@ -281,7 +292,7 @@ internal fun LocalSpeechPreviewSection(store: SpeechSettingsStore) {
                         onChange = {
                             if (it.length <= 500) {
                                 store.playback.stop()
-                                previewText = it
+                                onPreviewTextChange(it)
                             }
                         },
                     )
@@ -349,6 +360,7 @@ private fun SpeechRuntimeTag(
             runtime.activeBackend.ifBlank { record.runtimeSettings.backend.name },
         )
         LocalSpeechRuntimePhase.STARTING -> stringResource(R.string.speech_local_voice_starting)
+        LocalSpeechRuntimePhase.STOPPING -> stringResource(R.string.local_models_runtime_stopping)
         LocalSpeechRuntimePhase.FAILED -> stringResource(R.string.speech_local_voice_failed)
         LocalSpeechRuntimePhase.STOPPED, null -> stringResource(R.string.speech_local_voice_unloaded)
     }

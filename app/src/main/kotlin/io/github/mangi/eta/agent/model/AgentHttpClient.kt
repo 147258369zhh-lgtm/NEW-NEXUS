@@ -44,11 +44,17 @@ internal object AgentHttpClient {
         modelClient.newBuilder().callTimeout(90, TimeUnit.SECONDS).build()
     }
 
+    private val approvalClient: OkHttpClient by lazy {
+        modelClient.newBuilder().callTimeout(30, TimeUnit.SECONDS).build()
+    }
+
     fun modelClient(purpose: ProviderRequestPurpose): OkHttpClient =
         when (purpose) {
             ProviderRequestPurpose.COMPACTION -> compactionClient
             ProviderRequestPurpose.MEMORY_EXTRACTION -> memoryClient
-            else -> modelClient
+            ProviderRequestPurpose.APPROVAL_REVIEW -> approvalClient
+            ProviderRequestPurpose.CHAT, ProviderRequestPurpose.REPLY_REWRITE,
+            ProviderRequestPurpose.TRANSCRIPT_REFINE, ProviderRequestPurpose.FALLBACK -> modelClient
         }
 
     val client: OkHttpClient by lazy {

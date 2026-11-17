@@ -273,6 +273,17 @@ class RemoteModelFetcherTest {
     }
 
     @Test
+    fun nullOrMalformedVisionMetadataDoesNotSuppressCatalogCapabilities() {
+        val parsed = RemoteModelFetcher.parseOpenAiModels(
+            """{"data":[{"id":"qwen3.7-plus","vision":null,"supports_video_in":"unknown"}]}"""
+        ).single()
+
+        assertTrue(parsed.inputModalities.isEmpty())
+        val enriched = OfficialModelCatalog.enrich(ProviderSourceTypes.BAILIAN, listOf(parsed)).single()
+        assertTrue(enriched.supportsVision)
+    }
+
+    @Test
     fun parsesKimiListModelsMetadata() {
         val models = RemoteModelFetcher.parseOpenAiModels(
             """
@@ -432,6 +443,24 @@ class RemoteModelFetcherTest {
             ),
             model.reasoningCapabilities?.selectableEfforts,
         )
+    }
+
+    @Test
+    fun anthropicPartialCapabilitiesDoNotClaimReasoningIsUnsupported() {
+        val models = RemoteModelFetcher.parseAnthropicModels(
+            """{"data":[
+                {"id":"image-only-metadata","capabilities":{"image_input":{"supported":true}}},
+                {"id":"one-negative","capabilities":{"thinking":{"supported":false}}},
+                {"id":"both-negative","capabilities":{"thinking":{"supported":false},"effort":{"supported":false}}},
+                {"id":"explicit-positive","capabilities":{"thinking":{"supported":true}}}
+            ]}"""
+        )
+
+        assertEquals(null, models[0].reasoning)
+        assertEquals(true, models[0].attachment)
+        assertEquals(null, models[1].reasoning)
+        assertEquals(false, models[2].reasoning)
+        assertEquals(true, models[3].reasoning)
     }
 
     @Test

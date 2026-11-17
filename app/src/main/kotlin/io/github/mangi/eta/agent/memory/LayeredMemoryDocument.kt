@@ -12,10 +12,14 @@ internal enum class MemoryLayer(val heading: String, val priority: Int) {
 
 internal data class LayeredMemoryDocument(
     val sections: Map<MemoryLayer, String> = emptyMap(),
+    val preamble: String = "",
 ) {
-    fun render(): String = MemoryLayer.entries
-        .mapNotNull { layer -> sections[layer]?.trim()?.takeIf { it.isNotEmpty() }?.let { "# ${layer.heading}\n$it" } }
-        .joinToString("\n\n")
+    fun render(): String = buildList {
+        preamble.trim().takeIf { it.isNotEmpty() }?.let { add(it) }
+        MemoryLayer.entries.forEach { layer ->
+            sections[layer]?.trim()?.takeIf { it.isNotEmpty() }?.let { add("# ${layer.heading}\n$it") }
+        }
+    }.joinToString("\n\n")
 
     fun promptContent(maxChars: Int): String = MemoryLayer.entries
         .sortedBy { it.priority }
@@ -34,6 +38,7 @@ internal data class LayeredMemoryDocument(
         fun parse(markdown: String): LayeredMemoryDocument {
             val lines = markdown.lines()
             val parsed = linkedMapOf<MemoryLayer, StringBuilder>()
+            val preamble = StringBuilder()
             var current: MemoryLayer? = null
             lines.forEach { line ->
                 val heading = line.trim().removePrefix("# ").trim()
@@ -43,9 +48,14 @@ internal data class LayeredMemoryDocument(
                     parsed.getOrPut(next) { StringBuilder() }
                 } else if (current != null) {
                     parsed.getValue(current!!).appendLine(line)
+                } else {
+                    preamble.appendLine(line)
                 }
             }
-            return LayeredMemoryDocument(parsed.mapValues { it.value.toString().trim() })
+            return LayeredMemoryDocument(
+                sections = parsed.mapValues { it.value.toString().trim() },
+                preamble = preamble.toString().trim(),
+            )
         }
 
         fun fromLegacy(markdown: String): LayeredMemoryDocument = parse(markdown).let { parsed ->

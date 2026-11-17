@@ -24,6 +24,18 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
 class ModelRepositoryTest {
+    @Test fun automaticDiscoveryAddsOnlyNewModelsWithoutChangingSelectionOrOverrides() = runBlocking {
+        addEmptyProvider()
+        val existing = Model(id = "local", modelId = "existing", displayName = "Custom", contextWindowOverride = 12_345)
+        val savedExisting = ModelRepository.saveModel(PROVIDER_ID, existing)
+        SettingsDataStore.setSelection(PROVIDER_ID, existing.id)
+        val provider = requireNotNull(ProviderRepository.providerById(PROVIDER_ID))
+        val catalog = RemoteModelCatalog(listOf(existing.copy(displayName = "Remote", contextWindow = 99_999),
+            Model(id = "new", modelId = "new", displayName = "New")), provider, null)
+        assertEquals(1, ModelRepository.addDiscoveredCatalog(catalog))
+        assertEquals(savedExisting, ModelRepository.modelsByProvider(PROVIDER_ID).first { it.id == existing.id })
+        assertEquals(existing.id, SettingsDataStore.settings().selectedModelId)
+    }
     private lateinit var context: Context
 
     @Before
@@ -51,6 +63,19 @@ class ModelRepositoryTest {
         assertEquals("custom-model", restored.modelId)
         assertEquals("自定义模型", restored.displayName)
         assertEquals(ModelSource.MANUAL, restored.source)
+    }
+
+    @Test
+    fun explicitlyUnknownCapabilitiesArePreservedForRequestBuilding() = runBlocking {
+        addEmptyProvider()
+        val saved = ModelRepository.saveModel(PROVIDER_ID,
+            Model(id = "", modelId = "strict-model", displayName = "Strict",
+                toolCall = false, attachment = false, contextWindowOverride = 32_768))
+        val restored = ModelRepository.modelsByProvider(PROVIDER_ID).single()
+        assertEquals(saved.id, restored.id)
+        assertEquals(false, restored.toolCall)
+        assertEquals(false, restored.attachment)
+        assertEquals(32_768, restored.effectiveContextWindow)
     }
 
     @Test

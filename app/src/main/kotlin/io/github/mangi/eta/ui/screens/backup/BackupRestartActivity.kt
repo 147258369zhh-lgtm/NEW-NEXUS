@@ -33,7 +33,7 @@ class BackupRestartActivity : Activity() {
             try {
                 startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
             } catch (failure: Exception) {
-                AndroidAgentLogger.warn("Backup restart could not reopen Nexus: ${failure.safeLogType()}")
+                AndroidAgentLogger.warn("Backup restart could not reopen NEXA: ${failure.safeLogType()}")
             }
             finishAndRemoveTask()
         }, 700)

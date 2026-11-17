@@ -27,6 +27,21 @@ internal fun highlightCode(
 ): AnnotatedString {
     if (source.isEmpty() || language.isNullOrBlank()) return AnnotatedString(source)
     val normalized = language.lowercase().substringBefore(' ').substringBefore('{')
+    if (normalized in setOf("diff", "patch")) {
+        val result = AnnotatedString.Builder(source)
+        var offset = 0
+        source.lineSequence().forEach { line ->
+            val color = when {
+                line.startsWith("+++") || line.startsWith("---") || line.startsWith("@@") -> palette.keyword
+                line.startsWith('+') -> palette.string
+                line.startsWith('-') -> Color(0xFFD85050)
+                else -> null
+            }
+            if (color != null && line.isNotEmpty()) result.addStyle(SpanStyle(color = color, background = color.copy(alpha = .13f)), offset, offset + line.length)
+            offset += line.length + 1
+        }
+        return result.toAnnotatedString()
+    }
     val keywords = KEYWORDS[normalized] ?: return AnnotatedString(source)
     val lineComment = LINE_COMMENTS[normalized]
     val blockComment = normalized !in setOf("python", "py", "ruby", "yaml", "yml", "shell", "bash")

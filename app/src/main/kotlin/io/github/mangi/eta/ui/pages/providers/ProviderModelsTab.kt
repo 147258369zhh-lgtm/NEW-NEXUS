@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -49,6 +50,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -74,6 +77,7 @@ import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.auth.ProviderAuthException
 import io.github.mangi.eta.data.model.Model
+import io.github.mangi.eta.data.model.isChatModel
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
 import io.github.mangi.eta.data.model.ProviderAuthModes
 import io.github.mangi.eta.data.model.GeminiProviderSetting
@@ -101,13 +105,14 @@ import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InputField
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle as SmallTitle
 import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
+import io.github.mangi.eta.ui.components.NexusSettingsSwitchPreference as SwitchPreference
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
-import top.yukonga.miuix.kmp.preference.ArrowPreference
+import io.github.mangi.eta.ui.components.NexusSettingsArrowPreference as ArrowPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
@@ -133,12 +138,10 @@ internal val contextWindowPresets = listOf(128_000, 200_000, 256_000, 1_000_000)
 private val localContextWindowPresets = listOf(8_192, 16_384, 32_768, 65_536, 131_072)
 
 private val modelDialogBodyMaxHeight = 520.dp
-private val modelDialogChromeHeight = 112.dp
-
-private fun Modifier.modelDialogScrollableBody(): Modifier = layout { measurable, constraints ->
+internal fun Modifier.providerDialogScrollableBody(chromeHeight: Dp = 112.dp): Modifier = layout { measurable, constraints ->
     // 从弹窗实际约束中为标题、间距和操作栏让出空间，避免横屏时底部按钮被内容挤出边界。
     val fallbackMaxHeight = modelDialogBodyMaxHeight.roundToPx()
-    val reservedHeight = modelDialogChromeHeight.roundToPx()
+    val reservedHeight = chromeHeight.roundToPx()
     val maxHeight = if (constraints.hasBoundedHeight) {
         (constraints.maxHeight - reservedHeight)
             .coerceAtLeast(1)
@@ -179,13 +182,15 @@ internal fun filterProviderModels(models: List<Model>, query: String): List<Mode
 @Composable
 internal fun ProviderModelsTab(
     provider: ProviderSetting,
+    visible: Boolean,
     scope: CoroutineScope,
     scrollBehavior: ScrollBehavior,
     contentSidePadding: Dp,
 ) {
+    if (!visible) return
     val context = LocalContext.current
     val fetchScope = rememberCoroutineScope()
-    val selectedModelId by RuntimeConfigRepository.selectedModelIdFlow().collectAsState(initial = null)
+    val selectedModelId by remember { RuntimeConfigRepository.selectedModelIdFlow() }.collectAsState(initial = null)
     var isFetching by remember { mutableStateOf(false) }
     var isMutatingModel by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -200,6 +205,7 @@ internal fun ProviderModelsTab(
     var showBatchDeleteDialog by remember { mutableStateOf(false) }
     var modelSearchQuery by remember(provider.id) { mutableStateOf("") }
     var pendingImport by remember(provider.id) { mutableStateOf<RemoteModelImport?>(null) }
+    val listState = rememberLazyListState()
     val normalizedModelSearchQuery = modelSearchQuery.trim()
     val filteredModels = remember(provider.models, modelSearchQuery) {
         filterProviderModels(provider.models, modelSearchQuery)
@@ -208,7 +214,7 @@ internal fun ProviderModelsTab(
     val selectionBackState = rememberNavigationEventState(NavigationEventInfo.None)
     NavigationBackHandler(
         state = selectionBackState,
-        isBackEnabled = selectionMode,
+        isBackEnabled = visible && selectionMode,
         onBackCompleted = {
             selectionMode = false
         },
@@ -216,6 +222,7 @@ internal fun ProviderModelsTab(
 
     Box(modifier = Modifier.fillMaxSize()) {
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .fillMaxSize()
                 .scrollEndHaptic()
@@ -325,7 +332,7 @@ internal fun ProviderModelsTab(
                     label = stringResource(R.string.ui_search_model_df5586),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp)
+                        .padding(horizontal = 16.dp)
                         .padding(top = 4.dp, bottom = 8.dp),
                 )
             }
@@ -432,8 +439,14 @@ internal fun ProviderModelsTab(
                             onSetCurrent = {
                                 scope.launch {
                                     try {
-                                        RuntimeConfigRepository.setSelectedModelId(model.id)
-                                        RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
+                                        if (model.isChatModel()) {
+                                            RuntimeConfigRepository.setSelectedModelId(model.id)
+                                            RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
+                                        } else {
+                                            editorError = null
+                                            isCreatingModel = false
+                                            editingModel = model
+                                        }
                                     } catch (cancelled: CancellationException) {
                                         throw cancelled
                                     } catch (failure: ProviderAuthException) {
@@ -499,10 +512,18 @@ internal fun ProviderModelsTab(
                     isMutatingModel = true
                     editorError = null
                     try {
-                        val saved = ModelRepository.saveModel(provider.id, updated)
+                        val saved = io.github.mangi.eta.agent.control.NexusSettingsControlPlane.get(context).saveModel(provider.id, updated)
                         RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
+                        val created = isCreatingModel
+                        if (created && saved.isChatModel()) {
+                            RuntimeConfigRepository.setSelectedModelId(saved.id)
+                        }
                         editingModel = null
                         message = context.getString(R.string.provider_model_saved, saved.displayName)
+                        if (created) {
+                            editingModel = saved
+                            isCreatingModel = false
+                        }
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (throwable: Throwable) {
@@ -815,6 +836,9 @@ private fun ModelEditDialog(
     onDelete: (() -> Unit)?,
 ) {
     val context = LocalContext.current
+    var selectedTab by rememberSaveable(model.id, isNew) { mutableIntStateOf(0) }
+    val configurationScrollState = rememberScrollState()
+    val capabilitiesScrollState = rememberScrollState()
     var displayName by remember(model.id, isNew) { mutableStateOf(model.displayName) }
     var modelId by remember(model.id, isNew) { mutableStateOf(model.modelId) }
     var contextWindowOverrideText by remember(model.id, isNew, localService) {
@@ -832,6 +856,12 @@ private fun ModelEditDialog(
     var reasoningEnabled by remember(model.id, isNew) {
         mutableStateOf(model.supportsReasoning)
     }
+    var toolsSupported by remember(model.id, isNew) { mutableStateOf(model.toolCall) }
+    var visionSupported by remember(model.id, isNew) { mutableStateOf(model.attachment) }
+    var imageOutput by remember(model.id, isNew) {
+        mutableStateOf(model.outputModalities.any { it.equals(Model.IMAGE_MODALITY, ignoreCase = true) })
+    }
+    var textOutput by remember(model.id, isNew) { mutableStateOf(model.isChatModel()) }
     var selectedReasoningEfforts by remember(model.id, isNew) {
         mutableStateOf(
             model.effectiveReasoningCapabilities
@@ -878,6 +908,11 @@ private fun ModelEditDialog(
         } else {
             null
         },
+        toolCall = toolsSupported,
+        attachment = visionSupported,
+        outputModalities = if (!imageOutput && model.outputModalities.none { it.equals(Model.IMAGE_MODALITY, true) }) {
+            model.outputModalities
+        } else imageOutputModalities(model.outputModalities, imageOutput, textOutput),
     )
 
     OverlayDialog(
@@ -886,167 +921,211 @@ private fun ModelEditDialog(
         onDismissRequest = { if (!isSaving) onDismiss() },
     ) {
         Column {
+            io.github.mangi.eta.ui.components.NexusSettingsTabs(
+                tabs = listOf(
+                    stringResource(R.string.page_configuration_d7d7ce),
+                    stringResource(R.string.settings_tab_capabilities),
+                ),
+                selectedTab = selectedTab,
+                onTabSelected = { selectedTab = it },
+            )
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .modelDialogScrollableBody()
+                    .providerDialogScrollableBody(chromeHeight = 168.dp)
                     .scrollEndHaptic()
-                    .verticalScroll(rememberScrollState()),
+                    .verticalScroll(if (selectedTab == 0) configurationScrollState else capabilitiesScrollState),
             ) {
-                TextField(
-                    value = displayName,
-                    onValueChange = { displayName = it },
-                    label = stringResource(R.string.ui_display_name_ed16be),
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                TextField(
-                    value = modelId,
-                    onValueChange = { modelId = it },
-                    label = "Model ID",
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Ascii,
-                        imeAction = ImeAction.Next,
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                TextField(
-                    value = contextWindowOverrideText,
-                    onValueChange = { value -> contextWindowOverrideText = value.filter(Char::isDigit) },
-                    label = stringResource(R.string.ui_context_length_tokens_227860),
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Number,
-                        imeAction = ImeAction.Done,
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.padding(top = 10.dp),
-                ) {
-                    availableContextPresets.forEach { preset ->
-                        EtaChoiceChip(
-                            text = formatCompactTokenCount(preset),
-                            selected = contextValue == preset,
-                            onClick = { contextWindowOverrideText = preset.toString() },
-                            enabled = !isSaving,
-                        )
-                    }
-                }
-                Text(
-                    text = when {
-                        contextWindowOverrideText.isBlank() ->
-                            stringResource(R.string.provider_context_window_hint)
-                        contextError != null ->
-                            stringResource(R.string.provider_context_window_invalid)
-                        contextValue != null && contextValue !in availableContextPresets ->
-                            stringResource(R.string.provider_context_window_value, formatCompactTokenCount(contextValue))
-                        else -> stringResource(R.string.provider_context_window_usage)
-                    },
-                    style = MiuixTheme.textStyles.footnote2,
-                    color = if (contextError != null && contextWindowOverrideText.isNotBlank()) {
-                        StatusError
-                    } else {
-                        MiuixTheme.colorScheme.onSurfaceVariantSummary
-                    },
-                    modifier = Modifier.padding(start = 4.dp, top = 8.dp),
-                )
-                if (localService) {
-                    Text(
-                        text = "本地小模型常见上下文为 8K–32K；请按模型实际能力选择，填得过大会在请求前触发不必要的压缩。",
-                        style = MiuixTheme.textStyles.footnote2,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        modifier = Modifier.padding(start = 4.dp, top = 6.dp),
+                if (selectedTab == 0) {
+                    TextField(
+                        value = displayName,
+                        onValueChange = { displayName = it },
+                        label = stringResource(R.string.ui_display_name_ed16be),
+                        singleLine = true,
+                        enabled = !isSaving,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                        modifier = Modifier.fillMaxWidth(),
                     )
-                }
-                Spacer(modifier = Modifier.height(16.dp))
-                // 弹窗内不再套卡片：卡片与弹窗同色看不出边界，内边距只会让这一段错开左缘。
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .clickable(enabled = !isSaving && geminiCapabilities == null) {
-                            reasoningOverrideActive = true
-                            reasoningEnabled = !reasoningEnabled
-                        }
-                        .padding(horizontal = 4.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = if (geminiCapabilities != null && !geminiCapabilities.mandatory) "思考档位使用 Default"
-                                else stringResource(R.string.ui_support_thinking_5b9e4c),
-                            style = MiuixTheme.textStyles.body1,
-                            color = MiuixTheme.colorScheme.onSurface,
-                        )
-                        Text(
-                            text = if (geminiCapabilities != null) {
-                                if (geminiCapabilities.mandatory) "该模型必须思考，不支持 Off；Default 使用模型默认档位。"
-                                else "尚未确认该模型的思考档位；仅使用 Default，不发送自定义思考档位。"
-                            } else if (reasoningOverrideActive) {
-                                stringResource(R.string.page_covered_model_automatic_capabilities_3fa7d4)
-                            } else {
-                                stringResource(
-                                    if (model.reasoning == true) {
-                                        R.string.provider_auto_reasoning_detected
-                                    } else {
-                                        R.string.provider_auto_reasoning_unknown
-                                    },
-                                )
-                            },
-                            style = MiuixTheme.textStyles.footnote2,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                            modifier = Modifier.padding(top = 2.dp),
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Switch(
-                        checked = geminiCapabilities != null || reasoningEnabled,
-                        onCheckedChange = { enabled ->
-                            reasoningOverrideActive = true
-                            reasoningEnabled = enabled
-                        },
-                        enabled = !isSaving && geminiCapabilities == null,
+                    Spacer(modifier = Modifier.height(12.dp))
+                    TextField(
+                        value = modelId,
+                        onValueChange = { modelId = it },
+                        label = "Model ID",
+                        singleLine = true,
+                        enabled = !isSaving,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Ascii,
+                            imeAction = ImeAction.Next,
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
                     )
-                }
-                if (geminiCapabilities != null || reasoningEnabled) {
-                    // Default 始终可用（交给模型或 Provider 决定），不作为可选项展示。
+                    Spacer(modifier = Modifier.height(12.dp))
+                    TextField(
+                        value = contextWindowOverrideText,
+                        onValueChange = { value -> contextWindowOverrideText = value.filter(Char::isDigit) },
+                        label = stringResource(R.string.ui_context_length_tokens_227860),
+                        singleLine = true,
+                        enabled = !isSaving,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Number,
+                            imeAction = ImeAction.Done,
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.padding(top = 10.dp),
                     ) {
-                        (geminiCapabilities?.supportedEfforts ?: editableReasoningEfforts).forEach { effort ->
-                            val checked = geminiCapabilities != null || effort in selectedReasoningEfforts
+                        availableContextPresets.forEach { preset ->
                             EtaChoiceChip(
-                                text = effort.displayName,
-                                selected = checked,
-                                onClick = {
-                                    reasoningOverrideActive = true
-                                    selectedReasoningEfforts = if (checked) {
-                                        selectedReasoningEfforts - effort
-                                    } else {
-                                        selectedReasoningEfforts + effort
-                                    }
-                                },
-                                enabled = !isSaving && geminiCapabilities == null,
+                                text = formatCompactTokenCount(preset),
+                                selected = contextValue == preset,
+                                onClick = { contextWindowOverrideText = preset.toString() },
+                                enabled = !isSaving,
                             )
                         }
                     }
+                    Text(
+                        text = when {
+                            contextWindowOverrideText.isBlank() ->
+                                stringResource(R.string.provider_context_window_hint)
+                            contextError != null ->
+                                stringResource(R.string.provider_context_window_invalid)
+                            contextValue != null && contextValue !in availableContextPresets ->
+                                stringResource(R.string.provider_context_window_value, formatCompactTokenCount(contextValue))
+                            else -> stringResource(R.string.provider_context_window_usage)
+                        },
+                        style = MiuixTheme.textStyles.footnote2,
+                        color = if (contextError != null && contextWindowOverrideText.isNotBlank()) {
+                            StatusError
+                        } else {
+                            MiuixTheme.colorScheme.onSurfaceVariantSummary
+                        },
+                        modifier = Modifier.padding(start = 4.dp, top = 8.dp),
+                    )
+                    if (localService) {
+                        Text(
+                            text = "本地小模型常见上下文为 8K–32K；请按模型实际能力选择，填得过大会在请求前触发不必要的压缩。",
+                            style = MiuixTheme.textStyles.footnote2,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            modifier = Modifier.padding(start = 4.dp, top = 6.dp),
+                        )
+                    }
                 }
-                Text(
-                    text = if (nativeGemini) "Gemini 原生连接只发送已确认支持的思考档位。"
-                        else stringResource(R.string.ui_only_check_the_ranges_actually_supported_by_the_mode_2c343d),
-                    style = MiuixTheme.textStyles.footnote2,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    modifier = Modifier.padding(start = 4.dp, top = 8.dp),
-                )
+                if (selectedTab == 1) {
+                    // 弹窗内不再套卡片：卡片与弹窗同色看不出边界，内边距只会让这一段错开左缘。
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable(enabled = !isSaving && geminiCapabilities == null) {
+                                reasoningOverrideActive = true
+                                reasoningEnabled = !reasoningEnabled
+                            }
+                            .padding(horizontal = 4.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (geminiCapabilities != null && !geminiCapabilities.mandatory) "思考档位使用 Default"
+                                    else stringResource(R.string.ui_support_thinking_5b9e4c),
+                                style = MiuixTheme.textStyles.body1,
+                                color = MiuixTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                text = if (geminiCapabilities != null) {
+                                    if (geminiCapabilities.mandatory) "该模型必须思考，不支持 Off；Default 使用模型默认档位。"
+                                    else "尚未确认该模型的思考档位；仅使用 Default，不发送自定义思考档位。"
+                                } else if (reasoningOverrideActive) {
+                                    stringResource(R.string.page_covered_model_automatic_capabilities_3fa7d4)
+                                } else {
+                                    stringResource(
+                                        if (model.reasoning == true) {
+                                            R.string.provider_auto_reasoning_detected
+                                        } else {
+                                            R.string.provider_auto_reasoning_unknown
+                                        },
+                                    )
+                                },
+                                style = MiuixTheme.textStyles.footnote2,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Switch(
+                            checked = geminiCapabilities != null || reasoningEnabled,
+                            onCheckedChange = { enabled ->
+                                reasoningOverrideActive = true
+                                reasoningEnabled = enabled
+                            },
+                            enabled = !isSaving && geminiCapabilities == null,
+                        )
+                    }
+                    if (geminiCapabilities != null || reasoningEnabled) {
+                        // Default 始终可用（交给模型或 Provider 决定），不作为可选项展示。
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.padding(top = 10.dp),
+                        ) {
+                            (geminiCapabilities?.supportedEfforts ?: editableReasoningEfforts).forEach { effort ->
+                                val checked = geminiCapabilities != null || effort in selectedReasoningEfforts
+                                EtaChoiceChip(
+                                    text = effort.displayName,
+                                    selected = checked,
+                                    onClick = {
+                                        reasoningOverrideActive = true
+                                        selectedReasoningEfforts = if (checked) {
+                                            selectedReasoningEfforts - effort
+                                        } else {
+                                            selectedReasoningEfforts + effort
+                                        }
+                                    },
+                                    enabled = !isSaving && geminiCapabilities == null,
+                                )
+                            }
+                        }
+                    }
+                    SwitchPreference(
+                        title = "工具调用",
+                        summary = "只有明确开启后才会向模型发送工具定义；未声明时按不支持处理，避免 HTTP 400",
+                        checked = toolsSupported == true,
+                        onCheckedChange = { toolsSupported = it },
+                        enabled = !isSaving,
+                    )
+                    SwitchPreference(
+                        title = "图片输入",
+                        summary = "模型是否接受图片内容",
+                        checked = visionSupported == true,
+                        onCheckedChange = { visionSupported = it },
+                        enabled = !isSaving,
+                    )
+                    SwitchPreference(
+                        title = "图片输出",
+                        summary = "用于文生图；自定义供应商须提供 OpenAI Images 接口",
+                        checked = imageOutput,
+                        onCheckedChange = { imageOutput = it },
+                        enabled = !isSaving,
+                    )
+                    if (imageOutput) {
+                        SwitchPreference(
+                            title = "文本输出",
+                            summary = "开启后也可作为聊天模型使用",
+                            checked = textOutput,
+                            onCheckedChange = { textOutput = it },
+                            enabled = !isSaving,
+                        )
+                    }
+                    Text(
+                        text = if (nativeGemini) "Gemini 原生连接只发送已确认支持的思考档位。"
+                            else stringResource(R.string.ui_only_check_the_ranges_actually_supported_by_the_mode_2c343d),
+                        style = MiuixTheme.textStyles.footnote2,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        modifier = Modifier.padding(start = 4.dp, top = 8.dp),
+                    )
+                }
                 error?.let { message ->
                     Text(
                         text = message,
@@ -1062,7 +1141,7 @@ private fun ModelEditDialog(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        if (reasoningOverrideActive) {
+                        if (selectedTab == 1 && reasoningOverrideActive) {
                             Text(
                                 text = stringResource(R.string.ui_restore_automatic_8d4e1e),
                                 style = MiuixTheme.textStyles.body2,
@@ -1096,7 +1175,7 @@ private fun ModelEditDialog(
             confirmEnabled = !isSaving &&
                 displayName.isNotBlank() &&
                 modelId.isNotBlank() &&
-                hasConfirmedContextWindow,
+                (hasConfirmedContextWindow || imageOutput && contextWindowOverrideText.isBlank()),
             cancelEnabled = !isSaving,
             onCancel = onDismiss,
             onConfirm = { onSubmit(updated()) },

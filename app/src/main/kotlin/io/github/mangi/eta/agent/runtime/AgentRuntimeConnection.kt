@@ -14,21 +14,11 @@ import io.github.mangi.eta.fork.diagnostics.RuntimeDebugTrace
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
-/**
- * 进程内共享的 Runtime Binder 连接。
- *
- * 活跃调用共享同一连接，最后一个调用结束后短暂保活，以覆盖连续对话和结果确认；
- * 空闲超时后主动解绑，避免入口进程长期拉住 Eta。
- */
+/** Shared connection; failed or abandoned binds never become the next request's connection. */
 internal object AgentRuntimeConnection {
-    class Lease internal constructor(
-        val messenger: Messenger,
-        private val releaseAction: () -> Unit,
-    ) : AutoCloseable {
+    class Lease internal constructor(val messenger: Messenger, private val releaseAction: () -> Unit) : AutoCloseable {
         val binder: IBinder get() = messenger.binder
-
         private var released = false
-
         override fun close() {
             synchronized(this) {
                 if (released) return
@@ -38,175 +28,143 @@ internal object AgentRuntimeConnection {
         }
     }
 
-    private val lock = Any()
-    private val mainHandler = Handler(Looper.getMainLooper())
+    private val shared = Owner()
+    fun acquire(context: Context, callLogger: AgentLogger): Lease? = shared.acquire(context, callLogger)
 
-    private var appContext: Context? = null
-    private var logger: AgentLogger? = null
-    private var messenger: Messenger? = null
-    private var bound = false
-    private var binding = false
-    private var activeLeases = 0
-    private var connectionLatch = CountDownLatch(0)
-    private var bindStartedAt = 0L
+    internal class Owner(private val bindTimeoutMs: Long = 8_000L) {
+        private val lock = Any()
+        private val mainHandler = Handler(Looper.getMainLooper())
+        private var current: Attempt? = null
+        private val idleUnbind = Runnable { unbindIfIdle() }
 
-    private val idleUnbind = Runnable { unbindIfIdle() }
+        private inner class Attempt(val context: Context, val logger: AgentLogger) : ServiceConnection {
+            var messenger: Messenger? = null
+            var latch = CountDownLatch(1)
+            var bound = false
+            var waiting = 0
+            var leases = 0
+            var startedAt = SystemClock.elapsedRealtime()
 
-    private val serviceConnection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName, service: IBinder) {
-            synchronized(lock) {
-                messenger = Messenger(service)
-                binding = false
-                bound = true
-                connectionLatch.countDown()
-                logger?.debug {
-                    "Agent runtime service connected: elapsed_ms=" +
-                        (SystemClock.elapsedRealtime() - bindStartedAt)
-                }
-                RuntimeDebugTrace.serviceConnected(SystemClock.elapsedRealtime() - bindStartedAt)
-                scheduleIdleUnbindLocked()
-            }
-        }
-
-        override fun onServiceDisconnected(name: ComponentName) {
-            RuntimeDebugTrace.serviceDisconnected()
-            synchronized(lock) {
-                messenger = null
-                // 普通断线由系统自动重连当前 binding；不要叠加第二次 bindService。
-                binding = true
-                connectionLatch = CountDownLatch(1)
-                bindStartedAt = SystemClock.elapsedRealtime()
-            }
-        }
-
-        override fun onBindingDied(name: ComponentName) {
-            resetDeadBinding()
-        }
-
-        override fun onNullBinding(name: ComponentName) {
-            resetDeadBinding()
-        }
-    }
-
-    fun acquire(context: Context, callLogger: AgentLogger): Lease? {
-        check(Looper.myLooper() != Looper.getMainLooper()) {
-            "Agent Runtime 同步客户端不能在主线程调用"
-        }
-
-        val shouldBind: Boolean
-        val latch: CountDownLatch
-        synchronized(lock) {
-            mainHandler.removeCallbacks(idleUnbind)
-            messenger?.let { connected ->
-                activeLeases += 1
-                return Lease(connected, ::release)
-            }
-
-            appContext = context.applicationContext
-            logger = callLogger
-            shouldBind = !binding
-            if (shouldBind) {
-                binding = true
-                connectionLatch = CountDownLatch(1)
-                bindStartedAt = SystemClock.elapsedRealtime()
-            }
-            latch = connectionLatch
-        }
-
-        if (shouldBind) {
-            mainHandler.post { bind() }
-        }
-        if (!latch.await(BIND_TIMEOUT_SECONDS, TimeUnit.SECONDS)) return null
-
-        return synchronized(lock) {
-            messenger?.let { connected ->
-                mainHandler.removeCallbacks(idleUnbind)
-                activeLeases += 1
-                Lease(connected, ::release)
-            }
-        }
-    }
-
-    private fun bind() {
-        val context = synchronized(lock) { appContext } ?: return failBinding()
-        val succeeded = runCatching {
-            context.bindService(
-                AgentRuntimeWire.serviceIntent(),
-                serviceConnection,
-                Context.BIND_AUTO_CREATE or Context.BIND_IMPORTANT or Context.BIND_INCLUDE_CAPABILITIES,
-            )
-        }.onFailure { throwable ->
-            synchronized(lock) {
-                logger?.warn("Agent runtime service bind failed: type=${throwable.safeLogType()}")
-            }
-            RuntimeDebugTrace.bindingFailed(throwable.safeLogType())
-        }.getOrDefault(false)
-
-        synchronized(lock) {
-            if (!succeeded) {
-                bound = false
-                binding = false
-                connectionLatch.countDown()
-                RuntimeDebugTrace.bindingFailed("bindService returned false")
-            } else if (binding || messenger != null) {
-                // onNullBinding/onBindingDied 可能紧邻 bindService 返回；不要覆盖其清理结果。
-                bound = true
-            }
-        }
-    }
-
-    private fun failBinding() {
-        synchronized(lock) {
-            binding = false
-            connectionLatch.countDown()
-        }
-    }
-
-    private fun release() {
-        synchronized(lock) {
-            activeLeases = (activeLeases - 1).coerceAtLeast(0)
-            scheduleIdleUnbindLocked()
-        }
-    }
-
-    private fun scheduleIdleUnbindLocked() {
-        if (activeLeases != 0 || !bound) return
-        mainHandler.removeCallbacks(idleUnbind)
-        mainHandler.postDelayed(idleUnbind, IDLE_UNBIND_DELAY_MS)
-    }
-
-    private fun unbindIfIdle() {
-        val context = synchronized(lock) {
-            if (activeLeases != 0 || !bound) return
-            val currentContext = appContext
-            messenger = null
-            binding = false
-            bound = false
-            currentContext
-        } ?: return
-        runCatching { context.unbindService(serviceConnection) }
-            .onFailure { throwable ->
+            override fun onServiceConnected(name: ComponentName, service: IBinder) {
                 synchronized(lock) {
-                    logger?.warn("Agent runtime service unbind failed: type=${throwable.safeLogType()}")
+                    if (current !== this) return
+                    messenger = Messenger(service)
+                    latch.countDown()
+                    RuntimeDebugTrace.serviceConnected(SystemClock.elapsedRealtime() - startedAt)
+                    scheduleIdleLocked(this)
                 }
             }
-        RuntimeDebugTrace.serviceDisconnected()
-    }
 
-    private fun resetDeadBinding() {
-        val context = synchronized(lock) {
-            val currentContext = appContext.takeIf { bound }
-            messenger = null
-            binding = false
-            bound = false
-            connectionLatch.countDown()
-            currentContext
+            override fun onServiceDisconnected(name: ComponentName) {
+                synchronized(lock) {
+                    if (current !== this) return
+                    messenger = null
+                    latch.countDown()
+                    latch = CountDownLatch(1)
+                    startedAt = SystemClock.elapsedRealtime()
+                    // Android reconnects this registration; do not bind it twice.
+                    RuntimeDebugTrace.serviceDisconnected()
+                    if (leases == 0 && waiting == 0) resetLocked(this)
+                }
+            }
+
+            override fun onBindingDied(name: ComponentName) = reset(this)
+            override fun onNullBinding(name: ComponentName) = reset(this)
         }
-        if (context != null) {
-            runCatching { context.unbindService(serviceConnection) }
+
+        fun acquire(context: Context, logger: AgentLogger): Lease? {
+            check(Looper.myLooper() != Looper.getMainLooper()) { "Agent Runtime 同步客户端不能在主线程调用" }
+            val attempt: Attempt
+            val latch: CountDownLatch
+            val shouldBind: Boolean
+            synchronized(lock) {
+                mainHandler.removeCallbacks(idleUnbind)
+                current?.let { existing ->
+                    existing.messenger?.let { return leaseLocked(existing, it) }
+                }
+                shouldBind = current == null
+                attempt = current ?: Attempt(context.applicationContext, logger).also { current = it }
+                attempt.waiting++
+                latch = attempt.latch
+            }
+            if (shouldBind) mainHandler.post { bind(attempt) }
+            try {
+                if (!latch.await(bindTimeoutMs, TimeUnit.MILLISECONDS)) return null
+                return synchronized(lock) {
+                    if (current !== attempt) null else attempt.messenger?.let { leaseLocked(attempt, it) }
+                }
+            } finally {
+                synchronized(lock) {
+                    attempt.waiting--
+                    if (current === attempt && attempt.waiting == 0 && attempt.leases == 0) {
+                        if (attempt.messenger == null) resetLocked(attempt) else scheduleIdleLocked(attempt)
+                    }
+                }
+            }
+        }
+
+        private fun leaseLocked(attempt: Attempt, messenger: Messenger): Lease {
+            attempt.leases++
+            return Lease(messenger) {
+                synchronized(lock) {
+                    attempt.leases--
+                    if (current === attempt) {
+                        if (attempt.messenger == null && attempt.leases == 0 && attempt.waiting == 0) resetLocked(attempt)
+                        else scheduleIdleLocked(attempt)
+                    }
+                }
+            }
+        }
+
+        private fun bind(attempt: Attempt) {
+            synchronized(lock) { if (current !== attempt) return }
+            val succeeded = runCatching {
+                attempt.context.bindService(AgentRuntimeWire.serviceIntent(), attempt,
+                    Context.BIND_AUTO_CREATE or Context.BIND_IMPORTANT or Context.BIND_INCLUDE_CAPABILITIES)
+            }.onFailure { failure ->
+                attempt.logger.warn("Agent runtime service bind failed: type=${failure.safeLogType()}")
+                RuntimeDebugTrace.bindingFailed(failure.safeLogType())
+            }.getOrDefault(false)
+            synchronized(lock) {
+                attempt.bound = succeeded
+                if (current !== attempt) {
+                    if (succeeded) mainHandler.post { unbind(attempt) }
+                } else if (!succeeded) {
+                    resetLocked(attempt)
+                } else {
+                    scheduleIdleLocked(attempt)
+                }
+            }
+        }
+
+        private fun scheduleIdleLocked(attempt: Attempt) {
+            if (attempt.leases != 0 || attempt.waiting != 0 || !attempt.bound) return
+            mainHandler.removeCallbacks(idleUnbind)
+            mainHandler.postDelayed(idleUnbind, 30_000L)
+        }
+
+        private fun unbindIfIdle() = synchronized(lock) {
+            current?.takeIf { it.leases == 0 && it.waiting == 0 && it.bound }?.let(::resetLocked)
+        }
+
+        private fun reset(attempt: Attempt) = synchronized(lock) {
+            if (current === attempt) resetLocked(attempt)
+        }
+
+        private fun resetLocked(attempt: Attempt) {
+            current = null
+            attempt.messenger = null
+            attempt.latch.countDown()
+            mainHandler.removeCallbacks(idleUnbind)
+            if (attempt.bound) mainHandler.post { unbind(attempt) }
+        }
+
+        private fun unbind(attempt: Attempt) {
+            if (!attempt.bound) return
+            attempt.bound = false
+            runCatching { attempt.context.unbindService(attempt) }.onFailure { failure ->
+                attempt.logger.warn("Agent runtime service unbind failed: type=${failure.safeLogType()}")
+            }
         }
     }
-
-    private const val BIND_TIMEOUT_SECONDS = 8L
-    private const val IDLE_UNBIND_DELAY_MS = 30_000L
 }

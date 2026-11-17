@@ -6,6 +6,7 @@ import io.github.mangi.eta.data.db.ConversationDao
 import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.data.db.openTextStream
 import java.io.Reader
+import android.database.Cursor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -15,6 +16,15 @@ import org.json.JSONException
 
 /** 只返回命中的会话标识，搜索不把未打开会话的正文带回界面状态。 */
 internal object ConversationSearchRepository {
+    suspend fun searchArchivedIds(context: Context, query: String, ids: List<String>): Set<String> = withContext(Dispatchers.IO) {
+        if (query.isBlank() || ids.isEmpty()) return@withContext emptySet()
+        val database = EtaDatabase.get(context.applicationContext)
+        database.withTransaction {
+            val dao = database.conversationDao()
+            searchMessageStreams(dao, query, dao.archiveMessageSearchCursor(ids))
+        }
+    }
+
     suspend fun search(context: Context, query: String, matchingNoticeCodes: List<String>): Set<String> = withContext(Dispatchers.IO) {
         if (query.isBlank()) return@withContext emptySet()
         val database = EtaDatabase.get(context.applicationContext)
@@ -25,10 +35,10 @@ internal object ConversationSearchRepository {
         }
     }
 
-    private suspend fun searchMessageStreams(dao: ConversationDao, query: String): Set<String> {
+    private suspend fun searchMessageStreams(dao: ConversationDao, query: String, input: Cursor = dao.messageSearchCursor()): Set<String> {
         val matches = mutableSetOf<String>()
         val cancellation = currentCoroutineContext()
-        dao.messageSearchCursor().use { cursor ->
+        input.use { cursor ->
             while (cursor.moveToNext()) {
                 cancellation.ensureActive()
                 val conversationId = cursor.getString(1)

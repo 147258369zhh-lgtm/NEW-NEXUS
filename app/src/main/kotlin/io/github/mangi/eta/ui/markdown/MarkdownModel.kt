@@ -110,3 +110,10 @@ internal data class MarkdownTableCell(
 internal enum class MarkdownColumnAlign { Start, Center, End }
 
 internal data class MarkdownRule(override val offset: Int) : MarkdownBlock
+
+/** A paragraph containing inline image nodes, in source order without dropping surrounding text. */
+internal data class MarkdownFlow(override val offset: Int, val blocks: List<MarkdownBlock>) : MarkdownBlock
+
+/** Explicit safe HTML table extension; standard GFM tables retain their existing semantics. */
+internal data class MarkdownMergedTable(override val offset: Int, val rows: Int, val columns: Int, val cells: List<MarkdownMergedCell>) : MarkdownBlock
+internal data class MarkdownMergedCell(val row: Int, val column: Int, val rowSpan: Int, val columnSpan: Int, val header: Boolean, val text: String)

@@ -4,6 +4,7 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import androidx.room.ColumnInfo
 
 @Entity(
     tableName = "a2a_agents",
@@ -123,6 +124,48 @@ internal data class A2AInboundTaskEntity(
     val answer: String?,
     val createdAt: Long,
     val updatedAt: Long,
+    /** Last continuation message accepted for this task; also fences duplicated retries. */
+    val continuationMessageId: String? = null,
+    /** Supplemental text supplied with the last accepted continuation. */
+    val continuationInput: String? = null,
+    /** Number of accepted continuations; non-zero means [prompt] is no longer the current turn. */
+    @ColumnInfo(defaultValue = "0") val continuationCount: Int = 0,
+    /** Original tool grant captured when the task was accepted; continuations never widen it. */
+    val accessJson: String? = null,
+    /**
+     * Local-only resume ledger of the paused turn: the exact pending call identity and digests of
+     * calls that already settled. It never holds transcript text, tool results or argument values
+     * and is never returned by the A2A protocol. Verified by [approvalSummaryDigest].
+     */
+    val approvalSummaryJson: String? = null,
+    val approvalSummaryDigest: String? = null,
+    @ColumnInfo(defaultValue = "0") val approvalSummaryChars: Int = 0,
+)
+
+/** Every accepted or rejected follow-up message, keyed by the peer message id for idempotency. */
+@Entity(
+    tableName = "a2a_inbound_continuations",
+    foreignKeys = [
+        ForeignKey(
+            entity = A2AInboundTaskEntity::class,
+            parentColumns = ["taskId"],
+            childColumns = ["taskId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [
+        Index("taskId"),
+        Index(value = ["messageId"], unique = true),
+    ],
+)
+internal data class A2AInboundContinuationEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val messageId: String,
+    val taskId: String,
+    val contextId: String,
+    val input: String,
+    val outcome: String,
+    val acceptedAt: Long,
 )
 
 @Entity(
@@ -143,4 +186,15 @@ internal data class A2AInboundArtifactEntity(
     val artifactId: String,
     val rawJson: String,
     val receivedAt: Long,
+)
+
+/** One-shot local owner decision bound to the exact waiting continuation and grant snapshot. */
+@Entity(tableName = "a2a_inbound_approvals", indices = [Index("taskId")])
+internal data class A2AInboundApprovalEntity(
+    @PrimaryKey val taskId: String,
+    val messageId: String,
+    val originalGrantFingerprint: String,
+    val currentGrantFingerprint: String,
+    val decision: String,
+    val decidedAt: Long,
 )

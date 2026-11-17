@@ -9,6 +9,14 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 internal interface ConversationExtensionDao {
+    @Query("SELECT * FROM conversation_extensions WHERE archived_at IS NOT NULL AND " +
+        "(:before IS NULL OR archived_at < :before OR (:includeSameTime AND archived_at = :before AND conversation_id > :afterId)) " +
+        "ORDER BY archived_at DESC, conversation_id LIMIT :limit")
+    suspend fun archivedPage(before: Long?, afterId: String, includeSameTime: Boolean, limit: Int): List<ConversationExtensionEntity>
+
+    @Query("UPDATE conversation_extensions SET last_message_at = MAX(last_message_at, :now) WHERE conversation_id = :id")
+    suspend fun touchMessageActivity(id: String, now: Long)
+
     @Query("SELECT EXISTS(SELECT 1 FROM branch_setup_receipts WHERE setup_id = :id)")
     suspend fun hasBranchSetupReceipt(id: String): Boolean
 
@@ -92,6 +100,17 @@ internal interface ConversationExtensionDao {
 
     @Query("UPDATE conversation_extensions SET context_window_override = :contextWindow, updated_at = :now WHERE conversation_id = :conversationId")
     suspend fun setContextWindowOverride(conversationId: String, contextWindow: Int?, now: Long): Int
+
+    @Query(
+        "UPDATE conversation_extensions SET compaction_model_id = :modelId, " +
+            "compaction_provider_id = :providerId, updated_at = :now WHERE conversation_id = :conversationId"
+    )
+    suspend fun setCompactionBinding(
+        conversationId: String,
+        modelId: String?,
+        providerId: String?,
+        now: Long,
+    ): Int
 
     @Query("UPDATE conversation_extensions SET folder_id = NULL, folder_sort_order = 0, updated_at = :now WHERE folder_id = :folderId")
     suspend fun clearFolderMembers(folderId: String, now: Long)

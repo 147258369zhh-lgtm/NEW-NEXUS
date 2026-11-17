@@ -17,15 +17,22 @@ import org.json.JSONObject
 /** Newline-delimited MCP stdio transport. The process is started on demand and reaped on close. */
 internal class McpStdioClient(
     private val server: McpServerSetting,
+    private val elicitation: ((JSONObject) -> JSONObject)? = null,
+    private val recovery: McpRecoveryContext? = null,
 ) : McpClient {
     private val requestIds = AtomicLong(1)
-    private val responses = LinkedBlockingQueue<JSONObject>()
+    private data class QueuedMessage(val json: JSONObject, val bytes: Long)
+    private val responses = LinkedBlockingQueue<QueuedMessage>(64)
+    private val queuedBytes = AtomicLong(0)
+    @Volatile private var readerFailure: IOException? = null
     private val closed = AtomicBoolean(false)
     private val started = AtomicBoolean(false)
     private val writeLock = Any()
     private val stderr = StringBuilder()
     @Volatile private var process: Process? = null
-    @Volatile private var protocolVersion: String? = null
+    @Volatile private var ownedProcess: McpExecutionProcess? = null
+    @Volatile override var protocolVersion: String? = null
+        private set
 
     override fun discoverTools(): McpHttpClient.Discovery {
         ensureInitialized()
@@ -37,6 +44,12 @@ internal class McpStdioClient(
             val params = JSONObject()
             cursor?.let { params.put("cursor", it) }
             val result = request("tools/list", params)
+            if (protocolVersion == McpProtocolMode.LATEST && !result.has("resultType")) {
+                check(server.protocolMode == McpProtocolMode.AUTO) { "MCP_LATEST_RESULT_TYPE_REQUIRED" }
+                initializeLegacy()
+                return discoverTools()
+            }
+            if (protocolVersion == McpProtocolMode.LATEST) require(result.optString("resultType") == "complete")
             val array = result.optJSONArray("tools") ?: JSONArray()
             for (index in 0 until array.length()) {
                 parseTool(array.optJSONObject(index))?.let(tools::add)
@@ -54,10 +67,17 @@ internal class McpStdioClient(
 
     override fun callTool(tool: McpToolDefinition, arguments: JSONObject): JSONObject {
         ensureInitialized()
-        return request(
-            "tools/call",
-            JSONObject().put("name", tool.name).put("arguments", arguments),
-        )
+        val params = JSONObject().put("name", tool.name).put("arguments", arguments)
+        val initial = request("tools/call", params)
+        return if (protocolVersion == McpProtocolMode.LATEST) McpInputRoundTrips.complete(initial, params, elicitation, recovery, "tools/call") { retry -> request("tools/call", retry) } else initial
+    }
+
+    override fun resumeRequest(method: String, params: JSONObject): JSONObject {
+        require(server.protocolMode != McpProtocolMode.LEGACY && method in setOf("tools/call", "resources/read", "prompts/get"))
+        require(params.optString("requestState").isNotEmpty()) { "MCP_OPAQUE_STATE_REQUIRED" }
+        startProcess()
+        protocolVersion = McpProtocolMode.LATEST
+        return request(method, params)
     }
 
     override fun discoverCatalog(): McpHttpClient.Catalog {
@@ -77,22 +97,26 @@ internal class McpStdioClient(
     override fun readResource(uri: String): String = readResourcePreview(uri).text
 
     override fun readResourcePreview(uri: String): McpHttpClient.ContentPreview {
-        require(uri.isNotBlank()) { "MCP 资源地址无效" }
-        val result = request("resources/read", JSONObject().put("uri", uri))
-        return McpContentPreview.fromResources(
-            result.optJSONArray("contents") ?: error("MCP 资源响应缺少 contents"),
-            MAX_CONTENT_BYTES,
-        )
+        return McpContentPreview.fromResources(readResourceContents(uri), MAX_CONTENT_BYTES)
+    }
+
+    override fun readResourceContents(uri: String): JSONArray {
+        require(uri.isNotBlank() && uri.length <= 4096 && uri.none(Char::isISOControl)) { "MCP 资源地址无效" }
+        ensureInitialized()
+        val params = JSONObject().put("uri", uri)
+        val initial = request("resources/read", params)
+        val result = if (protocolVersion == McpProtocolMode.LATEST) McpInputRoundTrips.complete(initial, params, elicitation, recovery, "resources/read") { retry -> request("resources/read", retry) } else initial
+        return result.optJSONArray("contents") ?: error("MCP 资源响应缺少 contents")
     }
 
     override fun getPrompt(
         prompt: McpHttpClient.PromptSummary,
         arguments: Map<String, String>,
     ): McpHttpClient.ContentPreview {
-        val result = request(
-            "prompts/get",
-            JSONObject().put("name", prompt.name).put("arguments", JSONObject(arguments)),
-        )
+        ensureInitialized()
+        val params = JSONObject().put("name", prompt.name).put("arguments", JSONObject(arguments))
+        val initial = request("prompts/get", params)
+        val result = if (protocolVersion == McpProtocolMode.LATEST) McpInputRoundTrips.complete(initial, params, elicitation, recovery, "prompts/get") { retry -> request("prompts/get", retry) } else initial
         return McpContentPreview.fromPrompt(
             result.optJSONArray("messages") ?: error("MCP 提示模板响应缺少 messages"),
             MAX_CONTENT_BYTES,
@@ -102,13 +126,32 @@ internal class McpStdioClient(
     private fun ensureInitialized() {
         if (protocolVersion != null) return
         startProcess()
-        val params = JSONObject()
-            .put("protocolVersion", McpProtocolMode.LATEST)
-            .put("capabilities", JSONObject())
-            .put("clientInfo", JSONObject().put("name", "Nexus").put("version", "1"))
+        if (server.protocolMode == McpProtocolMode.LEGACY || server.lastProtocolVersion in LEGACY_VERSIONS) {
+            initializeLegacy(); return
+        }
+        protocolVersion = McpProtocolMode.LATEST
+        if (server.protocolMode == McpProtocolMode.AUTO) {
+            // Negotiate with a read before an effectful tool, never by replaying tools/call.
+            val probe = try { request("tools/list", JSONObject()) }
+            catch (failure: McpJsonRpcException) {
+                if (failure.code !in setOf(-32600, -32601, -32000, -32002)) throw failure
+                initializeLegacy(); return
+            }
+            if (!probe.has("resultType")) initializeLegacy()
+            else require(probe.optString("resultType") == "complete") { "MCP_DISCOVERY_RESULT_INVALID" }
+        }
+    }
+
+    private fun initializeLegacy() {
+        startProcess()
+        protocolVersion = null
+        val params = JSONObject().put("protocolVersion", McpProtocolMode.LEGACY)
+            .put("capabilities", McpInputRoundTrips.capabilities(elicitation != null))
+            .put("clientInfo", JSONObject().put("name", "NEXA").put("version", "1"))
         val result = request("initialize", params)
-        protocolVersion = result.optString("protocolVersion").takeIf(String::isNotBlank)
-            ?: McpProtocolMode.LATEST
+        val selected = result.optString("protocolVersion")
+        require(selected in LEGACY_VERSIONS) { "MCP_PROTOCOL_VERSION_UNSUPPORTED" }
+        protocolVersion = selected
         send(JSONObject().put("jsonrpc", "2.0").put("method", "notifications/initialized"))
     }
 
@@ -117,17 +160,37 @@ internal class McpStdioClient(
         params: JSONObject,
     ): JSONObject {
         val id = requestIds.getAndIncrement()
+        val decorated = JSONObject(params.toString())
+        if (protocolVersion == McpProtocolMode.LATEST) decorated.put("_meta", (decorated.optJSONObject("_meta") ?: JSONObject())
+            .put("io.modelcontextprotocol/protocolVersion", McpProtocolMode.LATEST)
+            .put("io.modelcontextprotocol/clientInfo", JSONObject().put("name", "NEXA").put("version", "1"))
+            .put("io.modelcontextprotocol/clientCapabilities", McpInputRoundTrips.capabilities(elicitation != null)))
         send(
             JSONObject()
                 .put("jsonrpc", "2.0")
                 .put("id", id)
                 .put("method", method)
-                .put("params", params),
+                .put("params", decorated),
         )
-        val deadline = System.nanoTime() + REQUEST_TIMEOUT_MS * 1_000_000L
+        var deadline = System.nanoTime() + REQUEST_TIMEOUT_MS * 1_000_000L
+        var reverseCount = 0
         while (System.nanoTime() < deadline) {
-            val response = responses.poll(250, TimeUnit.MILLISECONDS) ?: continue
-            if (response.opt("id") is Number && response.optLong("id") != id) continue
+            if (closed.get()) throw IOException("MCP stdio client is closed")
+            io.github.mangi.eta.agent.runtime.RuntimeInvocationScope.controller?.throwIfStopped()
+            if (responses.isEmpty()) readerFailure?.let { throw it }
+            val incoming = responses.poll(250, TimeUnit.MILLISECONDS) ?: continue
+            queuedBytes.addAndGet(-incoming.bytes)
+            val response = incoming.json
+            if (response.has("method")) {
+                if (response.has("id")) {
+                    require(++reverseCount <= 8) { "MCP_REVERSE_REQUEST_LIMIT" }
+                    val started = System.nanoTime()
+                    send(McpInputRoundTrips.reverseReply(response, elicitation, protocolVersion))
+                    deadline += System.nanoTime() - started // User think time is not a transport timeout.
+                }
+                continue
+            }
+            if (response.opt("id")?.toString() != id.toString()) continue
             response.optJSONObject("error")?.let { error ->
                 throw McpJsonRpcException(
                     error.optInt("code"),
@@ -137,8 +200,7 @@ internal class McpStdioClient(
             return response.optJSONObject("result") ?: JSONObject()
         }
         throw IOException(
-            "MCP stdio 请求超时：$method" +
-                stderrSnapshot().takeIf(String::isNotBlank)?.let { "；$it" }.orEmpty(),
+            "MCP stdio 请求超时：$method",
         )
     }
 
@@ -153,6 +215,19 @@ internal class McpStdioClient(
         }
     }
 
+    private fun readBoundedWireLine(reader: BufferedReader): String? {
+        val line = StringBuilder()
+        var bytes = 0L
+        while (true) {
+            val value = reader.read()
+            if (value < 0) return line.takeIf { it.isNotEmpty() }?.toString()?.removeSuffix("\r")
+            if (value == '\n'.code) return line.toString().removeSuffix("\r")
+            bytes += when { value < 0x80 -> 1; value < 0x800 -> 2; else -> 3 }
+            require(bytes <= 12L * 1024 * 1024) { "MCP 响应超过大小限制" }
+            line.append(value.toChar())
+        }
+    }
+
     private fun startProcess() {
         if (closed.get()) throw IllegalStateException("MCP stdio client is closed")
         if (!started.compareAndSet(false, true)) return
@@ -161,40 +236,47 @@ internal class McpStdioClient(
             add(server.stdioCommand)
             addAll(server.stdioArguments)
         }.joinToString(" ", transform = ::shellQuote)
-        val builder = ProcessBuilder("sh", "-c", commandLine)
-            .redirectErrorStream(false)
-        server.workingDirectory.takeIf(String::isNotBlank)?.let { directory ->
-            val file = File(directory)
-            require(file.isDirectory) { "MCP 工作目录不存在" }
-            builder.directory(file)
-        }
-        val running = try {
-            builder.start()
+        val owned = try {
+            val context = if (server.executionTarget == io.github.mangi.eta.data.model.McpExecutionTarget.ANDROID) null
+                else io.github.mangi.eta.data.repository.McpServerRepository.appContext()
+            McpExecutionProcess.start(context, server, "exec $commandLine", mergeStderr = false)
         } catch (failure: Throwable) {
             started.set(false)
-            throw IOException("无法启动 MCP stdio 命令：${failure.message}", failure)
+            // The process may include credential arguments; never echo its command or stderr.
+            throw IOException(if (failure is IllegalArgumentException) failure.message ?: "MCP 执行位置无效" else "无法启动 MCP stdio 命令", failure)
         }
+        ownedProcess = owned
+        val running = owned.process
         process = running
+        if (closed.get()) { owned.close(); ownedProcess = null; process = null; throw IOException("MCP stdio client is closed") }
         Thread({
             runCatching {
                 BufferedReader(InputStreamReader(running.inputStream, Charsets.UTF_8)).use { reader ->
-                    while (!closed.get() && running.isAlive) {
-                        val line = reader.readLine() ?: break
+                    while (!closed.get()) {
+                        val line = readBoundedWireLine(reader) ?: break
                         if (line.isBlank()) continue
-                        runCatching { JSONObject(line) }.getOrNull()?.let(responses::offer)
+                        runCatching { JSONObject(line) }.getOrNull()?.let { json ->
+                            val bytes = line.toByteArray(Charsets.UTF_8).size.toLong()
+                            if (queuedBytes.addAndGet(bytes) > 16L * 1024 * 1024 || !responses.offer(QueuedMessage(json, bytes))) {
+                                queuedBytes.addAndGet(-bytes)
+                                throw IOException("MCP stdio 待读响应超过预算")
+                            }
+                        }
                     }
                 }
-            }
+                if (!closed.get()) readerFailure = IOException("MCP stdio 响应流已结束")
+            }.onFailure { failure -> if (!closed.get()) readerFailure = IOException("MCP stdio 响应流不可读取", failure) }
         }, "eta-mcp-stdio-reader").apply { isDaemon = true; start() }
         Thread({
             runCatching {
                 BufferedReader(InputStreamReader(running.errorStream, Charsets.UTF_8)).use { reader ->
                     while (!closed.get()) {
-                        val line = reader.readLine() ?: break
+                        val buffer = CharArray(1024)
+                        val count = reader.read(buffer)
+                        if (count < 0) break
                         synchronized(stderr) {
-                            if (stderr.length < MAX_STDERR_CHARS) {
-                                stderr.append(line.take(MAX_STDERR_CHARS - stderr.length)).append('\n')
-                            }
+                            val keep = minOf(count, (MAX_STDERR_CHARS - stderr.length).coerceAtLeast(0))
+                            if (keep > 0) stderr.append(buffer, 0, keep)
                         }
                     }
                 }
@@ -280,13 +362,8 @@ internal class McpStdioClient(
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         responses.clear()
-        process?.let { running ->
-            runCatching { running.outputStream.close() }
-            runCatching { running.inputStream.close() }
-            runCatching { running.errorStream.close() }
-            runCatching { running.destroy() }
-            if (running.isAlive) runCatching { running.destroyForcibly() }
-        }
+        ownedProcess?.close()
+        ownedProcess = null
         process = null
     }
 
@@ -300,7 +377,8 @@ internal class McpStdioClient(
     private fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
 
     private companion object {
-        const val REQUEST_TIMEOUT_MS = 20_000L
+        val LEGACY_VERSIONS = setOf("2024-11-05", "2025-03-26", "2025-06-18", McpProtocolMode.LEGACY)
+        const val REQUEST_TIMEOUT_MS = 120_000L
         const val MAX_PAGES = 8
         const val MAX_TOOLS = 128
         const val MAX_RESOURCES = 128

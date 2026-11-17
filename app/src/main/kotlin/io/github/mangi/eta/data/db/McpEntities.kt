@@ -23,6 +23,8 @@ internal data class McpServerEntity(
     @ColumnInfo(name = "stdio_arguments_json", defaultValue = "'[]'") val stdioArgumentsJson: String = "[]",
     @ColumnInfo(name = "launch_command", defaultValue = "''") val launchCommand: String = "",
     @ColumnInfo(name = "working_directory", defaultValue = "''") val workingDirectory: String = "",
+    @ColumnInfo(name = "execution_target", defaultValue = "'android'") val executionTarget: String = "android",
+    @ColumnInfo(name = "linux_backend", defaultValue = "'chroot'") val linuxBackend: String = "chroot",
     @ColumnInfo(name = "tools_json") val toolsJson: String,
     @ColumnInfo(name = "enabled_tool_names_json") val enabledToolNamesJson: String,
     @ColumnInfo(name = "created_at") val createdAt: Long,
@@ -52,6 +54,8 @@ internal fun McpServerSetting.toEntity(): McpServerEntity = McpServerEntity(
     stdioArgumentsJson = mcpJson.encodeToString(ListSerializer(String.serializer()), stdioArguments),
     launchCommand = launchCommand,
     workingDirectory = workingDirectory,
+    executionTarget = executionTarget,
+    linuxBackend = linuxBackend,
     toolsJson = mcpJson.encodeToString(ListSerializer(McpToolDefinition.serializer()), tools),
     enabledToolNamesJson = mcpJson.encodeToString(SetSerializer(String.serializer()), enabledToolNames),
     createdAt = createdAt,
@@ -78,6 +82,8 @@ internal fun McpServerEntity.toDomain(): McpServerSetting = McpServerSetting(
     }.getOrDefault(emptyList()),
     launchCommand = launchCommand,
     workingDirectory = workingDirectory,
+    executionTarget = executionTarget,
+    linuxBackend = linuxBackend,
     tools = runCatching {
         mcpJson.decodeFromString(ListSerializer(McpToolDefinition.serializer()), toolsJson)
     }.getOrDefault(emptyList()),

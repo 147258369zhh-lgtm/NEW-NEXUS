@@ -28,14 +28,14 @@ import io.github.mangi.eta.agent.runtime.AgentMetricRequestEntity
 import io.github.mangi.eta.agent.runtime.AgentMetricStatus
 import io.github.mangi.eta.agent.runtime.AgentTokenCostEstimator
 import io.github.mangi.eta.ui.components.PreferenceIcon
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
 internal fun AgentRequestRow(request: AgentMetricRequestEntity, onClick: () -> Unit) {
     val cost = AgentTokenCostEstimator.estimateRequest(request.usage, request.price)
-    Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 8.dp)) {
+    Card(Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -66,7 +66,7 @@ internal fun AgentRequestRow(request: AgentMetricRequestEntity, onClick: () -> U
                         )
                     }
                     Text(
-                        metricCostLabel(cost),
+                        metricCostLabel(cost, request.recordId),
                         style = MiuixTheme.textStyles.footnote1.copy(fontSize = 12.sp, lineHeight = 17.sp),
                         color = MiuixTheme.colorScheme.primary,
                         maxLines = 1,
@@ -142,7 +142,7 @@ internal fun AgentRequestDetails(request: AgentMetricRequestEntity) {
         RequestDetailLine(requestUsageSummary(request.usage))
         RequestDetailLine(stringResource(R.string.metrics_request_speed_line,
             requestOutputSpeed(request.usage, request.firstTextMs, request.totalMs) ?: "—"))
-        RequestDetailLine(metricCostLabel(cost))
+        RequestDetailLine(metricCostLabel(cost, request.recordId))
         if (request.failureCode.isNotBlank()) {
             RequestDetailLine(stringResource(R.string.metrics_request_failure, request.failureCode))
         }

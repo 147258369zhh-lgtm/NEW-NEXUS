@@ -17,6 +17,8 @@ import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -33,9 +35,11 @@ import io.github.mangi.eta.agent.prompt.PromptInjectionStore
 import io.github.mangi.eta.agent.prompt.PromptIssueLevel
 import io.github.mangi.eta.agent.prompt.PromptAnalysisReport
 import io.github.mangi.eta.agent.prompt.PromptTemplate
+import io.github.mangi.eta.agent.prompt.PromptStage
 import io.github.mangi.eta.ui.components.EtaChoiceChip
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.NexusSettingsTabs
 import io.github.mangi.eta.ui.components.etaGlassSurface
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Card
@@ -72,6 +76,9 @@ internal fun PromptTemplateEditorScreen(
     var error by rememberSaveable(template.id) { mutableStateOf<String?>(null) }
     var saving by remember(template.id) { mutableStateOf(false) }
     var showDiscard by rememberSaveable(template.id) { mutableStateOf(false) }
+    var selectedTab by rememberSaveable(template.id) { mutableIntStateOf(0) }
+    val metadataListState = rememberLazyListState()
+    val blocksListState = rememberLazyListState()
     val setBlocks: (List<PromptBlock>) -> Unit = { next -> blocksJson = encodeBlocks(next) }
 
     val dirty = name != template.name || description != template.description ||
@@ -134,6 +141,17 @@ internal fun PromptTemplateEditorScreen(
             stringResource(R.string.prompt_injection_edit_template)
         },
         onBack = requestBack,
+        listState = if (selectedTab == 0) metadataListState else blocksListState,
+        aboveContent = {
+            NexusSettingsTabs(
+                tabs = listOf(
+                    stringResource(R.string.prompt_injection_template_info),
+                    stringResource(R.string.prompt_injection_blocks),
+                ),
+                selectedTab = selectedTab,
+                onTabSelected = { selectedTab = it },
+            )
+        },
         actions = {
             TextButton(
                 text = if (saving) stringResource(R.string.prompt_injection_saving) else stringResource(R.string.prompt_injection_save),
@@ -142,118 +160,128 @@ internal fun PromptTemplateEditorScreen(
             )
         },
     ) {
-        item(key = "editor_meta") {
-            Column {
-                SmallTitle(stringResource(R.string.prompt_injection_template_info))
-                val colors = MiuixTheme.colorScheme
-                Card(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)
-                        .etaGlassSurface(accent = colors.primary, cornerRadius = 18.dp),
-                    colors = CardDefaults.defaultColors(
-                        color = colors.secondaryContainer.copy(alpha = 0.22f),
-                        contentColor = colors.onSurface,
-                    ),
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
+        error?.let { message ->
+            item(key = "editor_error") {
+                PromptInlineStatus(
+                    text = message,
+                    isError = true,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+            }
+        }
+        if (selectedTab == 0) {
+            item(key = "editor_meta") {
+                Column {
+                    SmallTitle(stringResource(R.string.prompt_injection_template_info))
+                    val colors = MiuixTheme.colorScheme
+                    Card(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)
+                            .etaGlassSurface(accent = colors.primary, cornerRadius = 18.dp),
+                        colors = CardDefaults.defaultColors(
+                            color = colors.secondaryContainer.copy(alpha = 0.22f),
+                            contentColor = colors.onSurface,
+                        ),
                     ) {
-                        TextField(
-                            value = name,
-                            onValueChange = {
-                                name = it.take(PromptInjectionStore.MAX_TEMPLATE_NAME_CHARS)
-                                error = null
-                            },
-                            label = stringResource(R.string.prompt_injection_name),
-                            useLabelAsPlaceholder = true,
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        TextField(
-                            value = description,
-                            onValueChange = { description = it.take(PromptInjectionStore.MAX_DESCRIPTION_CHARS) },
-                            label = stringResource(R.string.prompt_injection_description),
-                            useLabelAsPlaceholder = true,
-                            minLines = 2,
-                            maxLines = 5,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        SwitchPreference(
-                            title = stringResource(R.string.prompt_injection_template_enabled),
-                            summary = stringResource(R.string.prompt_injection_template_enabled_summary),
-                            checked = enabled,
-                            onCheckedChange = { enabled = it },
-                        )
-                        Text(
-                            text = stringResource(
-                                R.string.prompt_injection_editor_stats,
-                                blocks.size,
-                                promptCount(blocks.filter(PromptBlock::enabled).sumOf { it.content.length }),
-                            ),
-                            style = MiuixTheme.textStyles.footnote1,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        )
-                        PromptEditorAnalysis(analysis)
-                        error?.let { message ->
-                            PromptInlineStatus(text = message, isError = true)
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            TextField(
+                                value = name,
+                                onValueChange = {
+                                    name = it.take(PromptInjectionStore.MAX_TEMPLATE_NAME_CHARS)
+                                    error = null
+                                },
+                                label = stringResource(R.string.prompt_injection_name),
+                                useLabelAsPlaceholder = true,
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            TextField(
+                                value = description,
+                                onValueChange = { description = it.take(PromptInjectionStore.MAX_DESCRIPTION_CHARS) },
+                                label = stringResource(R.string.prompt_injection_description),
+                                useLabelAsPlaceholder = true,
+                                minLines = 2,
+                                maxLines = 5,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            SwitchPreference(
+                                title = stringResource(R.string.prompt_injection_template_enabled),
+                                summary = stringResource(R.string.prompt_injection_template_enabled_summary),
+                                checked = enabled,
+                                onCheckedChange = { enabled = it },
+                            )
+                            Text(
+                                text = stringResource(
+                                    R.string.prompt_injection_editor_stats,
+                                    blocks.size,
+                                    promptCount(blocks.filter(PromptBlock::enabled).sumOf { it.content.length }),
+                                ),
+                                style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            )
+                            PromptEditorAnalysis(analysis)
                         }
                     }
                 }
             }
         }
-        item(key = "editor_blocks_header") {
-            Column {
-                SmallTitle(stringResource(R.string.prompt_injection_blocks))
-                PromptSectionNote(stringResource(R.string.prompt_injection_blocks_note))
+        if (selectedTab == 1) {
+            item(key = "editor_blocks_header") {
+                Column {
+                    SmallTitle(stringResource(R.string.prompt_injection_blocks))
+                    PromptSectionNote(stringResource(R.string.prompt_injection_blocks_note))
+                }
             }
-        }
-        blocks.forEachIndexed { index, block ->
-            item(key = "editor_block_${block.id}") {
-                PromptBlockEditor(
-                    index = index,
-                    block = block,
-                    canMoveUp = index > 0,
-                    canMoveDown = index < blocks.lastIndex,
-                    onChange = { updated ->
-                        setBlocks(blocks.toMutableList().also { it[index] = updated })
+            blocks.forEachIndexed { index, block ->
+                item(key = "editor_block_${block.id}") {
+                    PromptBlockEditor(
+                        index = index,
+                        block = block,
+                        canMoveUp = index > 0,
+                        canMoveDown = index < blocks.lastIndex,
+                        onChange = { updated ->
+                            setBlocks(blocks.toMutableList().also { it[index] = updated })
+                        },
+                        onMoveUp = {
+                            if (index > 0) {
+                                setBlocks(blocks.toMutableList().also {
+                                    val previous = it[index - 1]
+                                    it[index - 1] = it[index]
+                                    it[index] = previous
+                                })
+                            }
+                        },
+                        onMoveDown = {
+                            if (index < blocks.lastIndex) {
+                                setBlocks(blocks.toMutableList().also {
+                                    val next = it[index + 1]
+                                    it[index + 1] = it[index]
+                                    it[index] = next
+                                })
+                            }
+                        },
+                        onDelete = { setBlocks(blocks.filterNot { it.id == block.id }) },
+                    )
+                }
+            }
+            item(key = "editor_add_block") {
+                TextButton(
+                    text = stringResource(R.string.prompt_injection_add_block),
+                    onClick = {
+                        setBlocks(
+                            blocks + PromptBlock(
+                                id = UUID.randomUUID().toString(),
+                                title = "",
+                                content = "",
+                                order = blocks.size * 10,
+                            ),
+                        )
                     },
-                    onMoveUp = {
-                        if (index > 0) {
-                            setBlocks(blocks.toMutableList().also {
-                                val previous = it[index - 1]
-                                it[index - 1] = it[index]
-                                it[index] = previous
-                            })
-                        }
-                    },
-                    onMoveDown = {
-                        if (index < blocks.lastIndex) {
-                            setBlocks(blocks.toMutableList().also {
-                                val next = it[index + 1]
-                                it[index + 1] = it[index]
-                                it[index] = next
-                            })
-                        }
-                    },
-                    onDelete = { setBlocks(blocks.filterNot { it.id == block.id }) },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
                 )
             }
-        }
-        item(key = "editor_add_block") {
-            TextButton(
-                text = stringResource(R.string.prompt_injection_add_block),
-                onClick = {
-                    setBlocks(
-                        blocks + PromptBlock(
-                            id = UUID.randomUUID().toString(),
-                            title = "",
-                            content = "",
-                            order = blocks.size * 10,
-                        ),
-                    )
-                },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-            )
         }
         item(key = "editor_bottom_save") {
             TextButton(
@@ -405,6 +433,15 @@ private fun PromptBlockEditor(
                 maxLines = 14,
                 modifier = Modifier.fillMaxWidth(),
             )
+            Text("生效阶段（空选为全部阶段）", style = MiuixTheme.textStyles.footnote1)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                EtaChoiceChip(text = "全部阶段", selected = block.stages.isEmpty(),
+                    onClick = { onChange(block.copy(stages = emptySet())) })
+                PromptStage.entries.filter { it != PromptStage.AUTO && it != PromptStage.UNSUPPORTED }.forEach { stage ->
+                    EtaChoiceChip(text = stage.title, selected = stage in block.stages,
+                        onClick = { onChange(block.copy(stages = if (stage in block.stages) block.stages - stage else block.stages + stage)) })
+                }
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,

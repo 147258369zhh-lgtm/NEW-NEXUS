@@ -4,6 +4,8 @@ import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import io.github.mangi.eta.agent.model.AgentModelClient
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -11,6 +13,61 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentRuntimeSessionTest {
+    @Test fun cancellationCompletesOpenCallsWithoutExecutingThem() {
+        val session = AgentRuntimeSession("open-calls")
+        val openCalls = listOf(
+            AgentModelClient.ConversationMessage(
+                role = "assistant",
+                content = "",
+                toolCallsJson = """[
+                    {"id":"read","type":"function","function":{"name":"read_file","arguments":"{}"}},
+                    {"id":"delete","type":"function","function":{"name":"delete_file","arguments":"{}"}},
+                    {"id":"unknown","type":"function","function":{"name":"unknown_tool","arguments":"{}"}}
+                ]""",
+            ),
+            AgentModelClient.ConversationMessage("tool", "preserved", toolCallId = "settled"),
+        )
+        var realExecutions = 0
+        session.updateTranscript(openCalls)
+
+        assertTrue(session.cancel("已停止"))
+
+        val transcript = session.terminalResult!!.transcript
+        assertEquals("preserved", transcript.single { it.toolCallId == "settled" }.content)
+        assertEquals("TOOL_INTERRUPTED_REPLAY_SAFE", transcript.interruptedCode("read"))
+        assertEquals("TOOL_INTERRUPTED_USER_CONFIRMATION", transcript.interruptedCode("delete"))
+        assertEquals("TOOL_INTERRUPTED_UNKNOWN_TOOL", transcript.interruptedCode("unknown"))
+        listOf("read", "delete", "unknown").forEach { id ->
+            assertFalse(JSONObject(transcript.single { it.toolCallId == id }.content).getBoolean("ok"))
+        }
+        assertEquals(0, realExecutions)
+    }
+
+    @Test fun terminalWriteFailureNeverPublishesOrPersistsAnUnverifiedSuccess() {
+        val delivered=mutableListOf<AgentRuntimeWire.RunResult>()
+        val stored=mutableListOf<AgentRuntimeWire.RunResult>()
+        val session=AgentRuntimeSession("commit-failed",resultSink=delivered::add,
+            terminalRecorder={throw IllegalStateException("fixture disk failure")})
+        assertTrue(session.complete(AgentRuntimeWire.RunResult("commit-failed",true,"existing file created"),stored::add))
+        assertFalse(delivered.single().ok)
+        assertEquals(delivered,stored)
+        assertEquals(delivered.single(),session.terminalResult)
+        assertTrue(delivered.single().content.contains("file created"))
+        assertTrue(delivered.single().error.orEmpty().contains("请勿从头重复执行"))
+    }
+
+    @Test fun directCancellationRecordsExactlyOneTerminalBeforePublishing() {
+        val order = mutableListOf<String>()
+        val session = AgentRuntimeSession("cancel-ledger",
+            terminalRecorder = { order += "ledger" },
+            resultSink = { order += "published" },
+        )
+        assertTrue(session.cancel("已停止"))
+        assertFalse(session.cancel("重复停止"))
+        assertFalse(session.complete(AgentRuntimeWire.RunResult("cancel-ledger", true, "late")))
+        assertEquals(listOf("ledger", "published"), order)
+    }
+
     @Test
     fun searchSuggestionsSurviveActiveReplayButStopAtCancellationAndBudget() {
         val delivered = mutableListOf<AgentEvent>()
@@ -340,3 +397,6 @@ class AgentRuntimeSessionTest {
         assertFalse(session.cancel("late"))
     }
 }
+
+private fun List<AgentModelClient.ConversationMessage>.interruptedCode(id: String): String =
+    JSONObject(single { it.toolCallId == id }.content).getString("code")

@@ -75,6 +75,40 @@ class AgentAppStateConversationLoadingTest {
     }
 
     @Test
+    fun preparationFailureSettlesRunAndPreservesSubmittedMessage() {
+        seed("first" to conversation("first"))
+        val state = AgentAppState(context, scope, prepareRuntimeConfig = { error("fixture configuration unavailable") })
+        awaitLoaded(state, "first")
+        assertTrue(state.sendCurrentMessage("保留这条任务"))
+        awaitCondition { !state.homeState.isStreaming && state.runStoreForTest().observedRunIds.isEmpty() }
+        assertTrue(state.homeState.messages.filterIsInstance<UserMessageUi>().any { it.content == "保留这条任务" })
+        assertTrue(state.sendCurrentMessage("可以继续发送"))
+        awaitCondition { !state.homeState.isStreaming && state.runStoreForTest().observedRunIds.isEmpty() }
+    }
+
+    @Test
+    fun stopDuringPreparationCannotStartRuntimeAfterConfigurationReturns() {
+        seed("first" to conversation("first"))
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val state = AgentAppState(context, scope, prepareRuntimeConfig = {
+            entered.countDown()
+            check(release.await(5, TimeUnit.SECONDS))
+            null
+        })
+        awaitLoaded(state, "first")
+        try {
+            assertTrue(state.sendCurrentMessage("在准备期间停止"))
+            awaitCondition { entered.count == 0L }
+            state.stopCurrentRun()
+            val runId = state.runStoreForTest().observedRunIds.single()
+            assertTrue(state.runStoreForTest().wasStoppedByUser(runId))
+            release.countDown()
+            awaitCondition { !state.homeState.isStreaming && state.runStoreForTest().observedRunIds.isEmpty() }
+        } finally { release.countDown() }
+    }
+
+    @Test
     fun fastConversationSwitchesKeepTheLastSelectionAndRestoreEveryBody() {
         seed("first" to conversation("first"), "second" to conversation("second"), "third" to conversation("third"))
         val state = AgentAppState(context, scope)

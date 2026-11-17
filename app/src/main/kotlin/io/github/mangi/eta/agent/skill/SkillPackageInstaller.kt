@@ -85,11 +85,13 @@ class SkillPackageInstaller internal constructor(
                     "重新读取的 ZIP 内容与已确认归档不一致",
                 )
             }
-        } else if (expectedReplacementId != null || expectedArchiveSha256 != null) {
+        } else if (expectedReplacementId != null) {
             fail(
                 SkillInstallErrorCode.INVALID_SELECTION,
-                "仅替换现有用户 Skill 时可指定替换身份与归档摘要",
+                "仅替换现有用户 Skill 时可指定替换身份",
             )
+        } else if (expectedArchiveSha256 != null) {
+            verifyExpectedArchive(operation, expectedArchiveSha256)
         }
         installCandidates(
             operation = operation,
@@ -100,17 +102,102 @@ class SkillPackageInstaller internal constructor(
         )
     }
 
+    internal fun installLocalZipWithDependencyTransaction(
+        openStream: () -> InputStream,
+        replaceUserSkill: Boolean,
+        expectedReplacementId: String?,
+        expectedArchiveSha256: String?,
+        dependencyOwners: Map<String, Set<String>>,
+        dependencyTransaction: SkillDependencyTransactionJournal,
+        dependencySkillId: String? = null,
+        isCancelled: () -> Boolean = { false },
+    ): SkillInstallResult = withArchive(openStream, isCancelled) { operation, extractedRoot ->
+        val candidates = discoverCandidates(extractedRoot, extractedRoot, isCancelled)
+        when {
+            candidates.isEmpty() -> fail(SkillInstallErrorCode.NO_SKILL_FOUND, "ZIP 中没有找到 SKILL.md")
+            candidates.size > 1 -> fail(SkillInstallErrorCode.MULTIPLE_SKILLS_FOUND, "本地 ZIP 必须只包含一个 Skill")
+        }
+        if (replaceUserSkill) {
+            val expectedId = expectedReplacementId?.trim().orEmpty()
+            val expectedDigest = expectedArchiveSha256?.trim().orEmpty()
+            if (candidates.single().id != expectedId || !SHA_256_REGEX.matches(expectedDigest) ||
+                operation.archiveSha256 != expectedDigest
+            ) {
+                fail(SkillInstallErrorCode.INVALID_SELECTION, "替换确认与本地 Skill ZIP 不匹配")
+            }
+        } else if (expectedReplacementId != null) {
+            fail(SkillInstallErrorCode.INVALID_SELECTION, "仅替换用户 Skill 时可指定替换身份")
+        } else if (expectedArchiveSha256 != null) {
+            verifyExpectedArchive(operation, expectedArchiveSha256)
+        }
+        dependencyTransaction.replaceOwnerSnapshot(
+            indexService.captureInstalledSkillDependencyOwners(candidates.map { it.id }),
+        )
+        installCandidates(
+            operation = operation,
+            candidates = candidates,
+            replaceUserSkills = replaceUserSkill,
+            isCancelled = isCancelled,
+            conflictArchiveSha256 = operation.archiveSha256,
+            dependencyOwners = dependencyOwners,
+            dependencyOwnerSnapshot = dependencyTransaction.ownerSnapshots,
+            dependencyTransaction = dependencyTransaction,
+            dependencySkillId = dependencySkillId,
+        )
+    }
+
     /** 检查仓库 ZIP。单一顶层目录按 GitHub codeload 的 envelope 处理。 */
     fun inspectRepositoryZip(
         openStream: () -> InputStream,
         isCancelled: () -> Boolean = { false },
-    ): SkillArchiveInspectionResult = withArchiveInspection(openStream, isCancelled) { extractedRoot ->
+    ): SkillArchiveInspectionResult = withArchiveInspection(openStream, isCancelled) { _, extractedRoot ->
         val repositoryRoot = repositoryContentRoot(extractedRoot)
         val candidates = discoverCandidates(repositoryRoot, repositoryRoot, isCancelled)
         if (candidates.isEmpty()) {
             fail(SkillInstallErrorCode.NO_SKILL_FOUND, "仓库 ZIP 中没有找到 SKILL.md")
         }
         SkillArchiveInspectionResult.Success(candidates.map { it.publicModel })
+    }
+
+    /** 检查本地 ZIP，只返回单个 Skill 的声明；与 installLocalZip 使用同一套解析和边界。 */
+    fun inspectLocalZip(
+        openStream: () -> InputStream,
+        isCancelled: () -> Boolean = { false },
+    ): SkillArchiveInspectionResult = withArchiveInspection(openStream, isCancelled) { operation, extractedRoot ->
+        val candidates = discoverCandidates(extractedRoot, extractedRoot, isCancelled)
+        when {
+            candidates.isEmpty() -> fail(
+                SkillInstallErrorCode.NO_SKILL_FOUND,
+                "ZIP 中没有找到 SKILL.md",
+            )
+            candidates.size > 1 -> fail(
+                SkillInstallErrorCode.MULTIPLE_SKILLS_FOUND,
+                "本地 ZIP 必须只包含一个 Skill，当前发现 " + candidates.size + " 个",
+            )
+        }
+        SkillArchiveInspectionResult.Success(
+            candidates = candidates.map { it.publicModel },
+            archiveSha256 = operation.archiveSha256,
+        )
+    }
+
+    /** Returns the same conflict response as installation without changing files or registry state. */
+    internal fun inspectLocalZipConflict(
+        candidate: SkillArchiveCandidate,
+        archiveSha256: String,
+        replaceUserSkill: Boolean,
+    ): SkillInstallResult.Conflict? = indexService.withMutationLock {
+        val prepared = PreparedCandidate(
+            id = candidate.id,
+            name = candidate.name,
+            description = candidate.description,
+            relativePath = candidate.relativePath,
+            directory = canonicalSkillsRoot,
+            skillDependencies = candidate.skillDependencies,
+        )
+        findConflicts(listOf(prepared), replaceUserSkills = replaceUserSkill)
+            .takeIf(List<SkillInstallConflict>::isNotEmpty)
+            ?.let { SkillInstallResult.Conflict(it, archiveSha256) }
     }
 
     /** selectedPaths 使用 [inspectRepositoryZip] 返回的仓库相对路径。 */
@@ -120,10 +207,12 @@ class SkillPackageInstaller internal constructor(
         replaceUserSkills: Boolean = false,
         expectedReplacementIds: Set<String> = emptySet(),
         isCancelled: () -> Boolean = { false },
+        expectedArchiveSha256: String? = null,
     ): SkillInstallResult {
         val selectedPathsSnapshot = selectedPaths.toList()
         val expectedIdsSnapshot = expectedReplacementIds.toSet()
         return withArchive(openStream, isCancelled) { operation, extractedRoot ->
+            verifyExpectedArchive(operation, expectedArchiveSha256)
             if (selectedPathsSnapshot.isEmpty()) {
                 fail(SkillInstallErrorCode.INVALID_SELECTION, "至少选择一个 Skill 路径")
             }
@@ -169,13 +258,71 @@ class SkillPackageInstaller internal constructor(
         }
     }
 
+    internal fun installRepositoryZipWithDependencyTransaction(
+        openStream: () -> InputStream,
+        selectedPaths: List<String>,
+        replaceUserSkills: Boolean,
+        expectedReplacementIds: Set<String>,
+        expectedArchiveSha256: String?,
+        dependencyOwners: Map<String, Set<String>>,
+        dependencyTransaction: SkillDependencyTransactionJournal,
+        dependencySkillId: String? = null,
+        isCancelled: () -> Boolean = { false },
+    ): SkillInstallResult {
+        val selectedPathsSnapshot = selectedPaths.toList()
+        val expectedIdsSnapshot = expectedReplacementIds.toSet()
+        return withArchive(openStream, isCancelled) { operation, extractedRoot ->
+            verifyExpectedArchive(operation, expectedArchiveSha256)
+            if (selectedPathsSnapshot.isEmpty()) {
+                fail(SkillInstallErrorCode.INVALID_SELECTION, "至少选择一个 Skill 路径")
+            }
+            val repositoryRoot = repositoryContentRoot(extractedRoot)
+            val candidates = discoverCandidates(repositoryRoot, repositoryRoot, isCancelled)
+            if (candidates.isEmpty()) {
+                fail(SkillInstallErrorCode.NO_SKILL_FOUND, "仓库 ZIP 中没有找到 SKILL.md")
+            }
+            val selected = selectedPathsSnapshot.map { path ->
+                candidates.firstOrNull { it.relativePath == normalizeSelectionPath(path) }
+                    ?: fail(SkillInstallErrorCode.INVALID_SELECTION, "所选路径不是有效的 Skill 根目录：$path")
+            }
+            rejectNestedCandidateSelections(selected, candidates)
+            val ids = selected.mapTo(linkedSetOf()) { it.id }
+            if (replaceUserSkills && (expectedIdsSnapshot.isEmpty() || ids != expectedIdsSnapshot)) {
+                fail(SkillInstallErrorCode.INVALID_SELECTION, "重新读取的仓库 Skill 与已确认替换集合不一致")
+            }
+            if (!replaceUserSkills && expectedIdsSnapshot.isNotEmpty()) {
+                fail(SkillInstallErrorCode.INVALID_SELECTION, "仅替换现有用户 Skill 时可指定替换集合")
+            }
+            dependencyTransaction.replaceOwnerSnapshot(
+                indexService.captureInstalledSkillDependencyOwners(selected.map { it.id }),
+            )
+            installCandidates(
+                operation = operation,
+                candidates = selected,
+                replaceUserSkills = replaceUserSkills,
+                isCancelled = isCancelled,
+                conflictArchiveSha256 = null,
+                dependencyOwners = dependencyOwners,
+                dependencyOwnerSnapshot = dependencyTransaction.ownerSnapshots,
+                dependencyTransaction = dependencyTransaction,
+                dependencySkillId = dependencySkillId,
+            )
+        }
+    }
+
     private fun installCandidates(
         operation: ArchiveOperation,
         candidates: List<PreparedCandidate>,
         replaceUserSkills: Boolean,
         isCancelled: () -> Boolean,
         conflictArchiveSha256: String?,
-    ): SkillInstallResult = indexService.withMutationLock {
+        dependencyOwners: Map<String, Set<String>> = emptyMap(),
+        dependencyOwnerSnapshot: List<SkillDependencyRecoverySnapshot> = emptyList(),
+        dependencyTransaction: SkillDependencyTransactionJournal? = null,
+        dependencySkillId: String? = null,
+    ): SkillInstallResult = indexService.withMutationLock(
+        excludedRecoveryDirectories = dependencyTransaction?.operationDirectory?.let(::setOf).orEmpty(),
+    ) {
         checkCancelled(isCancelled)
         installCandidatesLocked(
             operation,
@@ -183,6 +330,10 @@ class SkillPackageInstaller internal constructor(
             replaceUserSkills,
             isCancelled,
             conflictArchiveSha256,
+            dependencyOwners,
+            dependencyOwnerSnapshot,
+            dependencyTransaction,
+            dependencySkillId,
         )
     }
 
@@ -192,6 +343,10 @@ class SkillPackageInstaller internal constructor(
         replaceUserSkills: Boolean,
         isCancelled: () -> Boolean,
         conflictArchiveSha256: String?,
+        dependencyOwners: Map<String, Set<String>>,
+        dependencyOwnerSnapshot: List<SkillDependencyRecoverySnapshot>,
+        dependencyTransaction: SkillDependencyTransactionJournal?,
+        dependencySkillId: String?,
     ): SkillInstallResult {
         val duplicateIds = candidates.groupBy { it.id }.filterValues { it.size > 1 }.keys
         if (duplicateIds.isNotEmpty()) {
@@ -201,6 +356,100 @@ class SkillPackageInstaller internal constructor(
             )
         }
 
+        val conflicts = findConflicts(candidates, replaceUserSkills)
+        if (conflicts.isNotEmpty()) {
+            return SkillInstallResult.Conflict(
+                conflicts = conflicts.sortedBy { it.id },
+                archiveSha256 = conflictArchiveSha256,
+            )
+        }
+
+        // 从此处开始进入不可中断的短事务；取消只在任何正式文件变更发生前生效。
+        checkCancelled(isCancelled)
+        if (!canonicalSkillsRoot.exists() && !canonicalSkillsRoot.mkdirs()) {
+            fail(SkillInstallErrorCode.IO_ERROR, "无法创建 Skills 目录")
+        }
+        val backupRoot = File(operation.directory, "backup")
+        if (!backupRoot.mkdir()) {
+            fail(SkillInstallErrorCode.IO_ERROR, "无法创建安装备份目录")
+        }
+        val registrySnapshots = indexService
+            .captureRegistryRecoverySnapshots(candidates.map { it.id })
+            .associateBy { it.skillId }
+        val dependencySnapshots = (dependencyOwnerSnapshot + (dependencyTransaction?.ownerSnapshots.orEmpty()))
+            .associateBy { it.ownerId }
+        var recoveryJournal: PendingSkillRecoveryJournal? = null
+        try {
+            recoveryJournal = PendingSkillRecoveryJournal.begin(
+                skillsRoot = canonicalSkillsRoot,
+                operationDirectory = operation.directory,
+                records = candidates.map { candidate ->
+                    SkillRecoveryRecord(
+                        id = candidate.id,
+                        originalTargetExisted = Files.exists(
+                            File(canonicalSkillsRoot, candidate.id).toPath(),
+                            LinkOption.NOFOLLOW_LINKS,
+                        ),
+                        registrySnapshot = checkNotNull(registrySnapshots[candidate.id]),
+                        dependencySnapshot = dependencySnapshots[candidate.id],
+                    )
+                },
+            )
+            candidates.forEach { candidate ->
+                val target = File(canonicalSkillsRoot, candidate.id)
+                if (target.exists()) {
+                    val backup = File(backupRoot, candidate.id)
+                    directoryMover.move(target, backup)
+                    recoveryJournal.markBackupCompleted(candidate.id)
+                }
+            }
+            candidates.forEach { candidate ->
+                val target = File(canonicalSkillsRoot, candidate.id)
+                directoryMover.move(candidate.directory, target)
+                recoveryJournal.markNewTargetCommitted(candidate.id)
+            }
+            indexService.registerInstalledUserSkills(candidates.map { it.id })
+            indexService.recordInstalledSkillDependencies(dependencyOwners)
+            dependencySkillId?.let { dependencyTransaction?.markDependencyCommitted(it) }
+            if (dependencySkillId == null) dependencyTransaction?.markRootCommitted()
+            recoveryJournal.clear()
+        } catch (error: Exception) {
+            val journalExists = Files.exists(
+                File(operation.directory, JOURNAL_FILE_NAME).toPath(),
+                LinkOption.NOFOLLOW_LINKS,
+            )
+            val rollbackComplete = !journalExists || runCatching {
+                val recovered = recoverPendingSkillOperations(canonicalSkillsRoot, directoryMover)
+                indexService.restoreRecoveredRegistry(recovered)
+                completeRecoveredSkillOperations(canonicalSkillsRoot, recovered)
+            }.isSuccess
+            if (!rollbackComplete) operation.preserveForRecovery = true
+            val suffix = if (rollbackComplete) "，旧 Skill 已恢复" else "，且自动恢复未完整完成"
+            return SkillInstallResult.Failure(
+                SkillInstallError(
+                    code = SkillInstallErrorCode.COMMIT_FAILED,
+                    message = "Skill 安装提交失败$suffix",
+                ),
+                recoveryRequired = !rollbackComplete,
+            )
+        }
+
+        return SkillInstallResult.Success(
+            installed = candidates.map {
+                InstalledSkill(
+                    id = it.id,
+                    name = it.name,
+                    description = it.description,
+                    archiveSha256 = operation.archiveSha256,
+                )
+            }
+        )
+    }
+
+    private fun findConflicts(
+        candidates: List<PreparedCandidate>,
+        replaceUserSkills: Boolean,
+    ): List<SkillInstallConflict> {
         val installedEntries = indexService.listSkillsForManagement(forceRefresh = true)
             .associateBy { it.id }
         val conflicts = mutableListOf<SkillInstallConflict>()
@@ -236,82 +485,7 @@ class SkillPackageInstaller internal constructor(
                 )
             }
         }
-        if (conflicts.isNotEmpty()) {
-            return SkillInstallResult.Conflict(
-                conflicts = conflicts.sortedBy { it.id },
-                archiveSha256 = conflictArchiveSha256,
-            )
-        }
-
-        // 从此处开始进入不可中断的短事务；取消只在任何正式文件变更发生前生效。
-        checkCancelled(isCancelled)
-        if (!canonicalSkillsRoot.exists() && !canonicalSkillsRoot.mkdirs()) {
-            fail(SkillInstallErrorCode.IO_ERROR, "无法创建 Skills 目录")
-        }
-        val backupRoot = File(operation.directory, "backup")
-        if (!backupRoot.mkdir()) {
-            fail(SkillInstallErrorCode.IO_ERROR, "无法创建安装备份目录")
-        }
-        val registrySnapshots = indexService
-            .captureRegistryRecoverySnapshots(candidates.map { it.id })
-            .associateBy { it.skillId }
-        var recoveryJournal: PendingSkillRecoveryJournal? = null
-        try {
-            recoveryJournal = PendingSkillRecoveryJournal.begin(
-                skillsRoot = canonicalSkillsRoot,
-                operationDirectory = operation.directory,
-                records = candidates.map { candidate ->
-                    SkillRecoveryRecord(
-                        id = candidate.id,
-                        originalTargetExisted = Files.exists(
-                            File(canonicalSkillsRoot, candidate.id).toPath(),
-                            LinkOption.NOFOLLOW_LINKS,
-                        ),
-                        registrySnapshot = checkNotNull(registrySnapshots[candidate.id]),
-                    )
-                },
-            )
-            candidates.forEach { candidate ->
-                val target = File(canonicalSkillsRoot, candidate.id)
-                if (target.exists()) {
-                    val backup = File(backupRoot, candidate.id)
-                    directoryMover.move(target, backup)
-                    recoveryJournal.markBackupCompleted(candidate.id)
-                }
-            }
-            candidates.forEach { candidate ->
-                val target = File(canonicalSkillsRoot, candidate.id)
-                directoryMover.move(candidate.directory, target)
-                recoveryJournal.markNewTargetCommitted(candidate.id)
-            }
-            indexService.registerInstalledUserSkills(candidates.map { it.id })
-            recoveryJournal.clear()
-        } catch (error: Exception) {
-            val journalExists = Files.exists(
-                File(operation.directory, JOURNAL_FILE_NAME).toPath(),
-                LinkOption.NOFOLLOW_LINKS,
-            )
-            val rollbackComplete = !journalExists || runCatching {
-                val recovered = recoverPendingSkillOperations(canonicalSkillsRoot, directoryMover)
-                indexService.restoreRecoveredRegistry(recovered)
-                completeRecoveredSkillOperations(canonicalSkillsRoot, recovered)
-            }.isSuccess
-            if (!rollbackComplete) operation.preserveForRecovery = true
-            val suffix = if (rollbackComplete) "，旧 Skill 已恢复" else "，且自动恢复未完整完成"
-            return SkillInstallResult.Failure(
-                SkillInstallError(
-                    code = SkillInstallErrorCode.COMMIT_FAILED,
-                    message = "Skill 安装提交失败$suffix",
-                ),
-                recoveryRequired = !rollbackComplete,
-            )
-        }
-
-        return SkillInstallResult.Success(
-            installed = candidates.map {
-                InstalledSkill(id = it.id, name = it.name, description = it.description)
-            }
-        )
+        return conflicts.sortedBy { it.id }
     }
 
     private fun isReplaceableTarget(entry: SkillIndexEntry, expectedTarget: File): Boolean {
@@ -343,10 +517,13 @@ class SkillPackageInstaller internal constructor(
         relativeRoot: File,
         isCancelled: () -> Boolean,
     ): List<PreparedCandidate> {
-        val skillFiles = scanRoot.walkTopDown()
-            .onEnter { !Files.isSymbolicLink(it.toPath()) }
-            .filter { it.isFile && it.name == SKILL_FILE_NAME }
-            .toList()
+        val skillFiles = runCatching { SkillManifestCompatibility.discover(scanRoot) }
+            .getOrElse { failure ->
+                if (failure.message == "VENDOR_MANIFEST_LIMIT") {
+                    fail(SkillInstallErrorCode.TOO_MANY_ENTRIES, "兼容格式的 Skill 清单超过 64 个")
+                }
+                fail(SkillInstallErrorCode.INVALID_SKILL, "无法读取或转换 Skill 清单")
+            }
         return skillFiles.map { skillFile ->
             checkCancelled(isCancelled)
             val directory = requireNotNull(skillFile.parentFile).canonicalFile
@@ -360,6 +537,7 @@ class SkillPackageInstaller internal constructor(
                 description = metadata.description,
                 relativePath = relativePath,
                 directory = directory,
+                skillDependencies = metadata.skillDependencies,
             )
         }.sortedBy { it.relativePath }
     }
@@ -371,16 +549,21 @@ class SkillPackageInstaller internal constructor(
                 "${skillFile.name} 超过 ${limits.maxSkillFileBytes} 字节限制",
             )
         }
-        val raw = readStrictUtf8(skillFile, limits.maxSkillFileBytes)
-            ?: fail(SkillInstallErrorCode.INVALID_SKILL, "SKILL.md 必须是 UTF-8 文本")
+        val raw = (readStrictUtf8(skillFile, limits.maxSkillFileBytes)
+            ?: fail(SkillInstallErrorCode.INVALID_SKILL, "SKILL.md 必须是 UTF-8 文本"))
+            .removePrefix("\uFEFF")
         val frontmatter = strictFrontmatter(raw)
             ?: fail(
                 SkillInstallErrorCode.INVALID_SKILL,
                 "SKILL.md 必须包含以 --- 包围的 YAML frontmatter",
             )
         val parsed = SkillParser.parseSimpleFrontmatter(frontmatter)
+        parsed[SkillParser.PROBLEMS_KEY]?.let {
+            fail(SkillInstallErrorCode.INVALID_SKILL, "SKILL.md YAML 无法安全解析：$it")
+        }
         val name = parsed["name"]?.trim().orEmpty()
         val description = parsed["description"]?.trim().orEmpty()
+        val metadata = parsed["metadata"]?.let(SkillParser::parseIndentedBlock) ?: emptyMap()
         if (name.length !in 1..MAX_SKILL_NAME_LENGTH || !SKILL_NAME_REGEX.matches(name)) {
             fail(
                 SkillInstallErrorCode.INVALID_SKILL,
@@ -393,7 +576,11 @@ class SkillPackageInstaller internal constructor(
                 "Skill description 必填且不能超过 $MAX_SKILL_DESCRIPTION_LENGTH 字符",
             )
         }
-        return ValidatedSkillMetadata(name = name, description = description)
+        return ValidatedSkillMetadata(
+            name = name,
+            description = description,
+            skillDependencies = SkillDependencyParser.parseDeclarations(parsed, metadata),
+        )
     }
 
     private fun strictFrontmatter(raw: String): String? {
@@ -626,9 +813,9 @@ class SkillPackageInstaller internal constructor(
             SkillInstallResult.Failure(
                 SkillInstallError(SkillInstallErrorCode.INVALID_ARCHIVE, "ZIP 格式无效或内容已损坏")
             )
-        } catch (_: IOException) {
+        } catch (failure: IOException) {
             SkillInstallResult.Failure(
-                SkillInstallError(SkillInstallErrorCode.IO_ERROR, "读取或暂存 ZIP 失败")
+                SkillInstallError(SkillInstallErrorCode.IO_ERROR, ioFailureMessage(failure))
             )
         } catch (_: SecurityException) {
             SkillInstallResult.Failure(
@@ -644,7 +831,7 @@ class SkillPackageInstaller internal constructor(
     private fun withArchiveInspection(
         openStream: () -> InputStream,
         isCancelled: () -> Boolean,
-        block: (extractedRoot: File) -> SkillArchiveInspectionResult,
+        block: (operation: ArchiveOperation, extractedRoot: File) -> SkillArchiveInspectionResult,
     ): SkillArchiveInspectionResult {
         val operationDir = createOperationDirectory()
             ?: return SkillArchiveInspectionResult.Failure(
@@ -652,19 +839,20 @@ class SkillPackageInstaller internal constructor(
             )
         return try {
             val archiveFile = File(operationDir, "package.zip")
-            materializeArchive(openStream, archiveFile, isCancelled)
+            val operation = ArchiveOperation(operationDir)
+            operation.archiveSha256 = materializeArchive(openStream, archiveFile, isCancelled)
             val extractedRoot = File(operationDir, "extracted")
             extractArchive(archiveFile, extractedRoot, isCancelled)
-            block(extractedRoot)
+            block(operation, extractedRoot)
         } catch (error: SkillInstallException) {
             SkillArchiveInspectionResult.Failure(error.error)
         } catch (_: ZipException) {
             SkillArchiveInspectionResult.Failure(
                 SkillInstallError(SkillInstallErrorCode.INVALID_ARCHIVE, "ZIP 格式无效或内容已损坏")
             )
-        } catch (_: IOException) {
+        } catch (failure: IOException) {
             SkillArchiveInspectionResult.Failure(
-                SkillInstallError(SkillInstallErrorCode.IO_ERROR, "读取或暂存 ZIP 失败")
+                SkillInstallError(SkillInstallErrorCode.IO_ERROR, ioFailureMessage(failure))
             )
         } catch (_: SecurityException) {
             SkillArchiveInspectionResult.Failure(
@@ -690,6 +878,23 @@ class SkillPackageInstaller internal constructor(
     private fun fail(code: SkillInstallErrorCode, message: String): Nothing =
         throw SkillInstallException(SkillInstallError(code, message))
 
+    private fun ioFailureMessage(failure: IOException): String =
+        "读取或暂存 ZIP 失败（${failure.javaClass.simpleName}）" + failure.message?.takeIf(String::isNotBlank)?.let { "：${it.replace(Regex("\\s+"), " ").takeLast(200)}" }.orEmpty()
+
+    private fun verifyExpectedArchive(operation: ArchiveOperation, expectedSha256: String?) {
+        if (expectedSha256 == null) return
+        val expected = expectedSha256.trim()
+        if (!SHA_256_REGEX.matches(expected)) {
+            fail(SkillInstallErrorCode.INVALID_SELECTION, "Skill 归档摘要必须是小写 SHA-256")
+        }
+        if (operation.archiveSha256 != expected) {
+            fail(
+                SkillInstallErrorCode.CHECKSUM_MISMATCH,
+                "Skill 归档 SHA-256 与声明的校验和不一致",
+            )
+        }
+    }
+
     private fun checkCancelled(isCancelled: () -> Boolean) {
         if (isCancelled()) {
             fail(SkillInstallErrorCode.CANCELLED, "Skill 安装已取消")
@@ -702,6 +907,7 @@ class SkillPackageInstaller internal constructor(
         val description: String,
         val relativePath: String,
         val directory: File,
+        val skillDependencies: List<SkillDependencySpec>,
     ) {
         val publicModel: SkillArchiveCandidate
             get() = SkillArchiveCandidate(
@@ -709,13 +915,27 @@ class SkillPackageInstaller internal constructor(
                 name = name,
                 description = description,
                 relativePath = relativePath,
+                skillDependencies = skillDependencies,
             )
     }
 
     private data class ValidatedSkillMetadata(
         val name: String,
         val description: String,
+        val skillDependencies: List<SkillDependencySpec>,
     )
+
+    internal fun inspectLocalZipCandidateForDependency(
+        openStream: () -> InputStream,
+        isCancelled: () -> Boolean = { false },
+    ): Pair<SkillArchiveCandidate, String>? {
+        val inspection = inspectLocalZip(openStream, isCancelled)
+        return (inspection as? SkillArchiveInspectionResult.Success)?.let { success ->
+            success.candidates.singleOrNull()?.let { candidate ->
+                success.archiveSha256?.let { candidate to it }
+            }
+        }
+    }
 
     private data class ArchiveOperation(
         val directory: File,

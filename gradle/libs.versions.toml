@@ -28,11 +28,16 @@ json = "20260814"
 robolectric = "4.17"
 commonsCompress = "1.28.0"
 xz = "1.12"
+exp4j = "0.4.8"
+media3 = "1.9.0"
 
 [libraries]
 kotlin-gradle-plugin = { group = "org.jetbrains.kotlin", name = "kotlin-gradle-plugin", version.ref = "kotlin" }
 commons-compress = { group = "org.apache.commons", name = "commons-compress", version.ref = "commonsCompress" }
 xz = { group = "org.tukaani", name = "xz", version.ref = "xz" }
+exp4j = { group = "net.objecthunter", name = "exp4j", version.ref = "exp4j" }
+media3-exoplayer = { group = "androidx.media3", name = "media3-exoplayer", version.ref = "media3" }
+media3-ui-compose = { group = "androidx.media3", name = "media3-ui-compose", version.ref = "media3" }
 libxposed-api = { group = "io.github.libxposed", name = "api", version.ref = "libxposedApi" }
 libxposed-service = { group = "io.github.libxposed", name = "service", version.ref = "libxposedService" }
 dexkit = { group = "org.luckypray", name = "dexkit", version.ref = "dexkit" }

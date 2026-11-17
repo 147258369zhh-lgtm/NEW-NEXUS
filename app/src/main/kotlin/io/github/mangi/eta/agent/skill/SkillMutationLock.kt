@@ -22,6 +22,7 @@ internal object SkillMutationLock {
     fun <T> withLock(
         skillsRoot: File,
         recoveryHandler: ((List<RecoveredSkillOperation>) -> Unit)? = null,
+        excludedRecoveryDirectories: Set<File> = emptySet(),
         block: () -> T,
     ): T {
         val canonicalRoot = skillsRoot.canonicalFile
@@ -47,7 +48,10 @@ internal object SkillMutationLock {
                     channel.lock().use {
                         held += key
                         try {
-                            val recovered = recoverPendingSkillOperations(canonicalRoot)
+                            val recovered = recoverPendingSkillOperations(
+                                canonicalRoot,
+                                excludedOperationDirectories = excludedRecoveryDirectories,
+                            )
                             if (recovered.isNotEmpty()) {
                                 val handler = recoveryHandler
                                     ?: throw SkillRecoveryRequiredException(

@@ -54,7 +54,7 @@ internal class ApiOAuth2Client(
     baseClient: OkHttpClient = AgentHttpClient.client,
     secretStore: McpSecretStore? = null,
     connectorProvider: ((String) -> ApiConnectorDefinition?)? = null,
-) {
+) : AutoCloseable {
     private val appContext = context.applicationContext
     private val secrets = secretStore ?: McpSecretStore(appContext)
     private val loadConnector = connectorProvider ?: { connectorId ->
@@ -66,8 +66,10 @@ internal class ApiOAuth2Client(
         .followSslRedirects(false)
         .callTimeout(90, TimeUnit.SECONDS)
         .build()
+    private val http = CapabilityHttpSession(client)
+    override fun close() = http.close()
 
-    fun beginAuthorization(connectorId: String): ApiOAuthAuthorizationRequest {
+    fun beginAuthorization(connectorId: String): ApiOAuthAuthorizationRequest = synchronized(ApiConnectorService.MUTATION_LOCK) {
         val connector = connector(connectorId)
         val oauth = requireNotNull(connector.oauth) { "该连接没有 OAuth 授权配置" }
         val bundle = readBundle(connectorId)
@@ -80,8 +82,8 @@ internal class ApiOAuth2Client(
             .put("connectorId", connector.id)
             .put("state", state)
             .put("verifier", verifier)
+            .put("binding", authorizationBinding(connector))
             .put("createdAt", System.currentTimeMillis())
-        secrets.setBearerToken(PENDING_KEY, pending.toString())
         val url = requireNotNull(oauth.authorizationEndpoint.toHttpUrlOrNull()) {
             "OAuth 授权地址无效"
         }.newBuilder()
@@ -97,10 +99,11 @@ internal class ApiOAuth2Client(
                 }
             }
             .build()
-        return ApiOAuthAuthorizationRequest(connector.id, url.toString())
+        secrets.setBearerToken(PENDING_KEY, pending.toString())
+        ApiOAuthAuthorizationRequest(connector.id, url.toString())
     }
 
-    fun setClientSecret(connectorId: String, secret: String) {
+    fun setClientSecret(connectorId: String, secret: String) = synchronized(ApiConnectorService.MUTATION_LOCK) {
         val connector = connector(connectorId)
         require(connector.authType == ApiConnectorAuthType.OAUTH2) {
             "只有 OAuth 连接可以保存 Client Secret"
@@ -121,11 +124,18 @@ internal class ApiOAuth2Client(
         return hasToken && hasSecret
     }
 
-    fun accessToken(connector: ApiConnectorDefinition, forceRefresh: Boolean = false): String {
+    fun accessToken(connector: ApiConnectorDefinition, forceRefresh: Boolean = false): String =
+        synchronized(REFRESH_LOCKS.computeIfAbsent(connector.id) { Any() }) { accessTokenLocked(connector, forceRefresh) }
+
+    private fun accessTokenLocked(connector: ApiConnectorDefinition, forceRefresh: Boolean): String {
         require(connector.authType == ApiConnectorAuthType.OAUTH2) { "连接未使用 OAuth" }
         val oauth = requireNotNull(connector.oauth) { "OAuth 配置缺失" }
-        val bundle = readBundle(connector.id)
-            ?: throw ApiConnectorException("OAUTH_NOT_AUTHORIZED", "该 API 连接尚未完成 OAuth 授权")
+        val (before, bundle) = synchronized(ApiConnectorService.MUTATION_LOCK) {
+            val credential = secrets.bearerToken(apiConnectorSecretKey(connector.id))
+            checkCurrentAuthorization(connector, credential)
+            credential to (readBundle(connector.id)
+                ?: throw ApiConnectorException("OAUTH_NOT_AUTHORIZED", "该 API 连接尚未完成 OAuth 授权"))
+        }
         val now = System.currentTimeMillis()
         val canUseAccess = bundle.accessToken.isNotBlank() &&
             (bundle.expiresAt == null || bundle.expiresAt > now + EXPIRY_SKEW_MILLIS)
@@ -145,7 +155,10 @@ internal class ApiOAuth2Client(
             clientSecret = bundle.clientSecret,
             previousRefreshToken = bundle.refreshToken,
         )
-        writeBundle(connector.id, refreshed)
+        synchronized(ApiConnectorService.MUTATION_LOCK) {
+            checkCurrentAuthorization(connector, before)
+            writeBundle(connector.id, refreshed)
+        }
         return refreshed.accessToken
     }
 
@@ -185,8 +198,10 @@ internal class ApiOAuth2Client(
         }.getOrNull()
     }
 
-    fun clear(connectorId: String) {
-        runCatching { secrets.clear(apiConnectorSecretKey(connectorId)) }
+    fun clear(connectorId: String) = synchronized(ApiConnectorService.MUTATION_LOCK) {
+        // The connector deletion transaction relies on this failure so it does not remove
+        // metadata while leaving tokens behind. Pending-flow cleanup remains best effort.
+        secrets.clear(apiConnectorSecretKey(connectorId))
         val pendingConnector = runCatching {
             secrets.bearerToken(PENDING_KEY)
                 ?.let(::JSONObject)
@@ -196,8 +211,9 @@ internal class ApiOAuth2Client(
     }
 
     private fun completeAuthorizationUnchecked(callback: Uri?): ApiOAuthCallbackResult {
-        if (callback == null || callback.scheme != "eta" || callback.host != "capability-oauth" ||
-            callback.path != "/callback"
+        val expected = Uri.parse(ApiOAuth2Configuration.REDIRECT_URI)
+        if (callback == null || callback.scheme != expected.scheme || callback.host != expected.host ||
+            callback.path != expected.path || callback.fragment != null
         ) {
             throw ApiConnectorException("INVALID_OAUTH_CALLBACK", "OAuth 回调地址无效")
         }
@@ -214,13 +230,16 @@ internal class ApiOAuth2Client(
         val createdAt = pending.optLong("createdAt", 0L)
         val age = System.currentTimeMillis() - createdAt
         if (createdAt <= 0L || age !in 0..MAX_AUTHORIZATION_AGE_MILLIS) {
-            secrets.clear(PENDING_KEY)
+            clearPendingIfCurrent(rawPending)
             return ApiOAuthCallbackResult.Failure(connectorId, "OAuth 授权会话已过期，请重新发起授权")
         }
         val connector = connector(connectorId)
+        if (pending.optString("binding") != authorizationBinding(connector)) {
+            throw ApiConnectorException("OAUTH_CONFIGURATION_CHANGED", "授权期间连接配置已变化，请重新授权")
+        }
         val oauth = requireNotNull(connector.oauth) { "OAuth 配置缺失" }
         callback.getQueryParameter("error")?.let { error ->
-            secrets.clear(PENDING_KEY)
+            clearPendingIfCurrent(rawPending)
             return ApiOAuthCallbackResult.Failure(
                 connectorId = connector.id,
                 message = oauthErrorMessage(error),
@@ -231,7 +250,12 @@ internal class ApiOAuth2Client(
         if (code.length > MAX_CODE_LENGTH || code.any(Char::isISOControl)) {
             throw ApiConnectorException("OAUTH_CODE_INVALID", "授权回调 code 格式无效")
         }
-        val current = readBundle(connector.id)
+        val (before, current) = synchronized(ApiConnectorService.MUTATION_LOCK) {
+            val credential = secrets.bearerToken(apiConnectorSecretKey(connector.id))
+            checkCurrentAuthorization(connector, credential)
+            check(secrets.bearerToken(PENDING_KEY) == rawPending) { "OAuth 授权会话已变化，请重新授权" }
+            credential to readBundle(connector.id)
+        }
         if (oauth.usesClientSecret && current?.clientSecret.isNullOrBlank()) {
             throw ApiConnectorException("OAUTH_CLIENT_SECRET_MISSING", "OAuth Client Secret 不可用，请重新配置")
         }
@@ -252,13 +276,21 @@ internal class ApiOAuth2Client(
                 clientSecret = current?.clientSecret,
                 previousRefreshToken = current?.refreshToken,
             ).copy(clientSecret = current?.clientSecret)
-            writeBundle(connector.id, tokens)
-            secrets.clear(PENDING_KEY)
+            synchronized(ApiConnectorService.MUTATION_LOCK) {
+                checkCurrentAuthorization(connector, before)
+                check(secrets.bearerToken(PENDING_KEY) == rawPending) { "OAuth 授权会话已变化，请重新授权" }
+                writeBundle(connector.id, tokens)
+                secrets.clear(PENDING_KEY)
+            }
             ApiOAuthCallbackResult.Success(connector.id, connector.name)
         } catch (failure: Throwable) {
-            runCatching { secrets.clear(PENDING_KEY) }
+            runCatching { clearPendingIfCurrent(rawPending) }
             throw failure
         }
+    }
+
+    private fun clearPendingIfCurrent(expected: String) = synchronized(ApiConnectorService.MUTATION_LOCK) {
+        if (secrets.bearerToken(PENDING_KEY) == expected) secrets.clear(PENDING_KEY)
     }
 
     private fun exchangeToken(
@@ -277,7 +309,7 @@ internal class ApiOAuth2Client(
             .header("User-Agent", "Nexus-Capability-Center/1")
             .post(form)
             .build()
-        return client.newCall(request).execute().use { response ->
+        return http.execute(request) { response ->
             if (response.isRedirect) {
                 throw ApiConnectorException("OAUTH_REDIRECT", "OAuth 令牌端点返回重定向，已拒绝")
             }
@@ -296,7 +328,7 @@ internal class ApiOAuth2Client(
                         ?: "OAuth 授权服务器拒绝了令牌请求（HTTP ${response.code}）",
                 )
             }
-            val accessToken = body.optString("access_token").trim()
+            val accessToken = (body.opt("access_token") as? String).orEmpty().trim()
             if (accessToken.isBlank() || accessToken.length > MAX_ACCESS_TOKEN_LENGTH ||
                 accessToken.any(Char::isISOControl)
             ) {
@@ -306,7 +338,7 @@ internal class ApiOAuth2Client(
             if (!tokenType.equals("Bearer", ignoreCase = true)) {
                 throw ApiConnectorException("OAUTH_TOKEN_TYPE_UNSUPPORTED", "目前只支持 Bearer OAuth 访问令牌")
             }
-            val refreshToken = body.optString("refresh_token").trim()
+            val refreshToken = (body.opt("refresh_token") as? String).orEmpty().trim()
                 .takeIf(String::isNotBlank)
                 ?: previousRefreshToken?.takeIf(String::isNotBlank)
             val expiresIn = numericLong(body.opt("expires_in"))
@@ -316,7 +348,7 @@ internal class ApiOAuth2Client(
                 refreshToken = refreshToken?.takeIf { it.length <= MAX_REFRESH_TOKEN_LENGTH },
                 tokenType = "Bearer",
                 expiresAt = expiresIn?.let { System.currentTimeMillis() + it * 1_000L },
-                scope = body.optString("scope").trim()
+                scope = (body.opt("scope") as? String).orEmpty().trim()
                     .take(MAX_SCOPE_RESPONSE_LENGTH)
                     .takeIf(String::isNotBlank),
                 clientSecret = clientSecret,
@@ -333,12 +365,12 @@ internal class ApiOAuth2Client(
         if (!raw.startsWith("{")) return ApiOAuthTokenBundle(accessToken = raw)
         val value = runCatching { JSONObject(raw) }.getOrNull() ?: return null
         return ApiOAuthTokenBundle(
-            accessToken = value.optString("accessToken"),
-            refreshToken = value.optString("refreshToken").takeIf(String::isNotBlank),
+            accessToken = (value.opt("accessToken") as? String).orEmpty(),
+            refreshToken = (value.opt("refreshToken") as? String)?.takeIf(String::isNotBlank),
             tokenType = value.optString("tokenType", "Bearer"),
             expiresAt = value.optLong("expiresAt", 0L).takeIf { it > 0L },
-            scope = value.optString("scope").takeIf(String::isNotBlank),
-            clientSecret = value.optString("clientSecret").takeIf(String::isNotBlank),
+            scope = (value.opt("scope") as? String)?.takeIf(String::isNotBlank),
+            clientSecret = (value.opt("clientSecret") as? String)?.takeIf(String::isNotBlank),
         )
     }
 
@@ -363,6 +395,21 @@ internal class ApiOAuth2Client(
         connectorOrNull(connectorId) ?: throw ApiConnectorException("CONNECTOR_NOT_FOUND", "API 连接不存在")
 
     private fun connectorOrNull(connectorId: String): ApiConnectorDefinition? = loadConnector(connectorId)
+
+    private fun checkCurrentAuthorization(expected: ApiConnectorDefinition, credential: String?) {
+        val current = connectorOrNull(expected.id)
+        if (current == null || authorizationBinding(current) != authorizationBinding(expected) ||
+            secrets.bearerToken(apiConnectorSecretKey(expected.id)) != credential) {
+            throw ApiConnectorException("OAUTH_AUTHORIZATION_CHANGED", "连接或授权已变化，未保存迟到的令牌")
+        }
+    }
+
+    private fun authorizationBinding(connector: ApiConnectorDefinition): String {
+        val value = JSONObject().put("id", connector.id).put("baseUrl", connector.baseUrl)
+            .put("auth", connector.authType).put("oauth", connector.oauth?.toString()).toString()
+        return MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    }
 
     private fun publishResult(result: ApiOAuthCallbackResult) {
         val value = JSONObject()
@@ -444,6 +491,7 @@ internal class ApiOAuth2Client(
         private const val MAX_VERIFIER_LENGTH = 128
         private val OAUTH_ERROR_CODE = Regex("[a-z0-9_.-]{1,80}")
         private val SECURE_RANDOM = SecureRandom()
+        private val REFRESH_LOCKS = java.util.concurrent.ConcurrentHashMap<String, Any>()
         private val callbackEventsInternal = MutableStateFlow<ApiOAuthCallbackResult?>(null)
         val callbackEvents = callbackEventsInternal.asStateFlow()
     }

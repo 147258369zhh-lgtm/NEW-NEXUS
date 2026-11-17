@@ -28,6 +28,10 @@ internal object BrowserSessionRegistry {
         entry(sessionKey).session
     }
 
+    fun keyOf(session: AgentBrowserSession): String? = synchronized(lock) {
+        entries.entries.firstOrNull { it.value.session === session }?.key
+    }
+
     fun acquireRun(sessionKey: String, runId: String): AutoCloseable {
         require(runId.isNotBlank())
         val owner = synchronized(lock) {

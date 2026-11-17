@@ -218,6 +218,18 @@ class LocalVoiceBargeInTest {
         assertEquals(listOf(LocalSpeechKind.TTS, LocalSpeechKind.ASR), LocalVoiceResourcePolicy.evictionOrder)
     }
 
+    @Test
+    fun cancelledPlaybackStopDoesNotOpenMicrophoneOrStrandStopping() {
+        val harness = harness(stop = { throw kotlinx.coroutines.CancellationException("Owner stopped") })
+        harness.coordinator.onSpeakingStarted()
+        harness.coordinator.requestListening()
+        idle()
+        assertEquals(1, harness.stopped)
+        assertEquals(0, harness.listening)
+        assertEquals(VoiceSessionPhase.IDLE, harness.coordinator.state.value.phase)
+        assertEquals(listOf(true, false), harness.monitoringEvents)
+    }
+
     private class Harness {
         val monitor = FakeMonitor()
         var stopped = 0

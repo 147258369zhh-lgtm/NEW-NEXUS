@@ -6,6 +6,7 @@ internal object AgentSensitiveToolPolicy {
         toolName.startsWith("mcp_") || toolName in sensitiveTools || toolName in io.github.mangi.eta.agent.context.PersonalSearchTools.names || toolName in AgentPhoneToolCatalog.names
 
     private val sensitiveTools = setOf(
+        "download_media",
         "get_setting",
         "wifi_credentials",
         "recent_notifications",
@@ -44,6 +45,8 @@ internal object AgentSensitiveToolPolicy {
         "memory_get",
         "memory_write",
         "voice_synthesize",
+        "cloud_document",
+        "cloud_media",
         "character_memory_get",
         "character_memory_write",
     )

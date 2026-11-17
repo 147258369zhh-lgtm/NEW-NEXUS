@@ -26,6 +26,7 @@ import io.github.mangi.eta.ui.app.AgentAppTheme
 import io.github.mangi.eta.ui.app.PredictiveBackController
 import io.github.mangi.eta.ui.app.installStartupSplash
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 
 class MainActivity : ComponentActivity() {
     private var launchRequests by mutableStateOf(MainActivityLaunchRequests())
@@ -39,7 +40,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         launchRequests = MainActivityLaunchRequests.restore(savedInstanceState, intent)
         lifecycleScope.launch {
-            val initialAppearance = AppearanceSettingsRepository.settings()
+            val initialAppearance = AppearanceSettingsRepository.settingsFlow().first()
             appliedPredictiveBackEnabled = initialAppearance.predictiveBackEnabled
             setContent {
                 val appearance by AppearanceSettingsRepository.settingsFlow()
@@ -145,7 +146,14 @@ class MainActivity : ComponentActivity() {
             // 应用级 AUTO 清除夜间模式覆盖，恢复跟随系统。
             AppearanceThemeMode.SYSTEM -> UiModeManager.MODE_NIGHT_AUTO
         }
-        getSystemService(UiModeManager::class.java).setApplicationNightMode(mode)
+        if (lastAppliedNightMode == mode) return
+        lastAppliedNightMode = mode
+        try {
+            getSystemService(UiModeManager::class.java).setApplicationNightMode(mode)
+        } catch (failure: RuntimeException) {
+            lastAppliedNightMode = null
+            throw failure
+        }
     }
 
     private fun updateSystemBars(isDark: Boolean) {
@@ -178,6 +186,7 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
+        private var lastAppliedNightMode: Int? = null
         const val ACTION_OPEN_TERMINAL = NexusUiContract.ACTION_OPEN_TERMINAL
         /** 运行浮层的结果卡片回到本体：App 发起的 run 带会话 ID，直接打开该会话。 */
         const val ACTION_OPEN_CONVERSATION_ID = NexusUiContract.ACTION_OPEN_CONVERSATION_ID

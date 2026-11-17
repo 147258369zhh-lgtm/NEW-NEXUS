@@ -169,6 +169,7 @@ private fun daemonMeta(task: DaemonTaskUi): String {
         "failed" -> "执行失败"
         "timed_out" -> "已超时"
         "stopped" -> "已停止"
+        "cancelled" -> "已取消"
         "interrupted" -> "已中断"
         else -> stringResource(if (task.running) R.string.terminal_daemon_running else R.string.terminal_daemon_exited)
     }

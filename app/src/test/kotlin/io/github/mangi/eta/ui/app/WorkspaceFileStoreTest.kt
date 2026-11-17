@@ -185,4 +185,29 @@ class WorkspaceFileStoreTest {
         store.delete(sourceFolder)
         store.delete(destinationFolder)
     }
+
+    @Test
+    fun selectedCopyKeepsReadsSearchAndWritesInsideItsOwnDirectory() = runBlocking {
+        val context = RuntimeEnvironment.getApplication()
+        val root = TerminalPrivateStorage.workspace(context.filesDir).apply { mkdirs() }
+        val copyPath = "projects/selected/files"
+        val otherPath = "projects/other/files"
+        File(root, copyPath).mkdirs()
+        File(root, otherPath).mkdirs()
+        File(root, "$copyPath/report.txt").writeText("selected report")
+        File(root, "$otherPath/report.txt").writeText("other report")
+        val store = WorkspaceFileStore(context, boundaryPath = copyPath)
+
+        assertEquals(listOf("$copyPath/report.txt"), store.list(copyPath).map { it.path })
+        assertEquals(listOf("$copyPath/report.txt"), store.search(copyPath, "report", includeContents = false).hits.map { it.path })
+        assertTrue(runCatching { store.list("") }.isFailure)
+        assertTrue(runCatching { store.preview("$otherPath/report.txt") }.isFailure)
+        assertTrue(runCatching { store.copyInto("$copyPath/report.txt", otherPath) }.isFailure)
+        assertTrue(runCatching { store.moveInto("$copyPath/report.txt", otherPath) }.isFailure)
+        assertTrue(runCatching { store.delete(copyPath) }.isFailure)
+        assertTrue(runCatching { store.rename(copyPath, "renamed") }.isFailure)
+        assertTrue(runCatching { store.importFile(Uri.parse("content://example/report")) }.isFailure)
+        assertEquals("selected report", File(root, "$copyPath/report.txt").readText())
+        assertEquals("other report", File(root, "$otherPath/report.txt").readText())
+    }
 }

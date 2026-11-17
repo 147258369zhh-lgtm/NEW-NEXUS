@@ -8,6 +8,7 @@ import io.github.mangi.eta.data.model.SpeechCredentials
 import io.github.mangi.eta.data.model.SpeechSettings
 import io.github.mangi.eta.data.model.TtsProvider
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.awaitCancellation
@@ -131,6 +132,67 @@ class SpeechPlaybackTest {
             assertNull(controller.state.value.messageId)
             assertFalse(controller.state.value.loading)
         } finally { controller.stop() }
+    }
+
+    @Test fun newPlaybackDuringOldSmoothFadeKeepsReplacementLeaseStateAndForegroundClaim() {
+        val fadeEntered = java.util.concurrent.CountDownLatch(1)
+        val finishFade = java.util.concurrent.CountDownLatch(1)
+        val oldOutput = object : SpeechAudioOutput {
+            @Volatile var closed = false
+            override fun write(bytes: ByteArray) = Unit
+            override fun finish() = Unit
+            override fun drained() = false
+            override fun fadeOut(durationMs: Int) {
+                fadeEntered.countDown()
+                check(finishFade.await(3, java.util.concurrent.TimeUnit.SECONDS))
+            }
+            override fun close() { closed = true }
+        }
+        val newOutput = FakeOutput()
+        var foregroundStarts = 0
+        var foregroundStops = 0
+        val controller = SpeechPlaybackController(context, scope,
+            beforePlayback = { foregroundStarts++ },
+            afterPlayback = { foregroundStops++ },
+            streamSynthesize = null,
+            synthesize = { _, _, _, audio -> audio(byteArrayOf(1, 2)); awaitCancellation() },
+            createOutput = { if (foregroundStarts == 1) oldOutput else newOutput },
+        )
+        try {
+            controller.speak("old-fade", "旧回答", SpeechSettings(tts = TtsProvider.QWEN), SpeechCredentials(qwenTts = "test-key"))
+            val startDeadline = System.nanoTime() + 3_000_000_000
+            while (foregroundStarts < 1 && System.nanoTime() < startDeadline) {
+                shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(1)
+            }
+            assertEquals(1, foregroundStarts)
+            val smoothStop = scope.launch { controller.stopSmoothly(200) }
+            assertTrue(fadeEntered.await(3, java.util.concurrent.TimeUnit.SECONDS))
+
+            controller.speak("replacement", "新回答", SpeechSettings(tts = TtsProvider.QWEN), SpeechCredentials(qwenTts = "test-key"))
+            val replacementDeadline = System.nanoTime() + 3_000_000_000
+            while (controller.state.value.loading && System.nanoTime() < replacementDeadline) {
+                shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(1)
+            }
+            assertEquals("replacement", controller.state.value.messageId)
+            assertEquals(2, foregroundStarts)
+            assertEquals(1, foregroundStops) // replacement synchronously ends the old claim before taking its own
+
+            finishFade.countDown()
+            val stopDeadline = System.nanoTime() + 3_000_000_000
+            while (!smoothStop.isCompleted && System.nanoTime() < stopDeadline) {
+                shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(1)
+            }
+            assertTrue(smoothStop.isCompleted)
+            assertTrue(oldOutput.closed)
+            assertFalse(newOutput.closed)
+            assertEquals("replacement", controller.state.value.messageId)
+            assertEquals(1, foregroundStops) // old delayed cleanup must not release the replacement claim
+            controller.stop()
+            assertEquals(2, foregroundStops)
+        } finally {
+            finishFade.countDown()
+            controller.stop()
+        }
     }
 
     @Test fun successfulSynthesisFinishesInputBeforeWaitingForPlayback() {
@@ -315,3 +377,4 @@ class SpeechPlaybackTest {
         override fun close() { closed = true }
     }
 }
+

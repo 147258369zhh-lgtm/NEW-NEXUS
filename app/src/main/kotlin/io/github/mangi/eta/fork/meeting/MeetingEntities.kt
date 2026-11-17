@@ -38,6 +38,10 @@ internal data class MeetingRoomEntity(
     @ColumnInfo(name = "archived_at") val archivedAt: Long? = null,
     @ColumnInfo(name = "pinned_at") val pinnedAt: Long? = null,
     @ColumnInfo(name = "context_window_override") val contextWindowOverride: Int? = null,
+    @ColumnInfo(name = "compaction_model_id") val compactionModelId: String? = null,
+    @ColumnInfo(name = "compaction_provider_id") val compactionProviderId: String? = null,
+    /** Null preserves the original isolated dispatch behavior for existing rooms. */
+    @ColumnInfo(name = "workflow_snapshot_json") val workflowSnapshotJson: String? = null,
 )
 
 @Entity(

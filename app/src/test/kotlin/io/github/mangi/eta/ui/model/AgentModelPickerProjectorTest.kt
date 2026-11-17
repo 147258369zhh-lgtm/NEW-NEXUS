@@ -49,7 +49,7 @@ class AgentModelPickerProjectorTest {
     }
 
     @Test
-    fun project_hidesProvidersWithoutApiKeyButPreservesCurrentSelection() {
+    fun project_usesAnAvailableModelWhenStoredSelectionLacksCredentials() {
         val selected = model(id = "selected", displayName = "Selected")
         val result = AgentModelPickerProjector.project(
             providers = listOf(
@@ -68,8 +68,8 @@ class AgentModelPickerProjectorTest {
         )
 
         assertEquals(listOf("configured"), result.providerGroups.map { it.providerId })
-        assertEquals(selected.id, result.selectedModel?.id)
-        assertEquals("missing-key", result.selectedModel?.providerId)
+        assertEquals("available", result.selectedModel?.id)
+        assertEquals("configured", result.selectedModel?.providerId)
     }
 
     @Test
@@ -261,6 +261,19 @@ class AgentModelPickerProjectorTest {
         assertNull(providers.enabledModel("in-disabled-provider"))
         assertNull(providers.enabledModel("deleted"))
         assertNull(providers.enabledModel(null))
+    }
+
+    @Test
+    fun enabledModel_requiresUsableTransportCredentials() {
+        val providers = listOf(
+            provider(id = "missing-key", apiKey = "", models = listOf(model(id = "api-model"))),
+            provider(id = "local", apiKey = "", baseUrl = "http://127.0.0.1:8080/v1", models = listOf(model(id = "local-model"))),
+            provider(id = "oauth", apiKey = "", authMode = ProviderAuthModes.OPENAI_CHATGPT, models = listOf(model(id = "oauth-model"))),
+        )
+
+        assertNull(providers.enabledModel("api-model"))
+        assertEquals("local", providers.enabledModel("local-model")?.provider?.id)
+        assertEquals("oauth", providers.enabledModel("oauth-model")?.provider?.id)
     }
 
     @Test

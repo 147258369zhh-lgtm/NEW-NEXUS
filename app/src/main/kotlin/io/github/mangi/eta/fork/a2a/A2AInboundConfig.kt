@@ -4,6 +4,10 @@ import android.content.Context
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.Dispatchers
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.security.SecureRandom
@@ -29,6 +33,7 @@ internal data class A2AInboundSnapshot(
     val lastProbeAt: Long? = null,
     val lastListenAddress: String? = null,
     val restartCount: Int = 0,
+    val tailscaleAddress: String? = null,
 ) {
     val agentCardUrl: String?
         get() = endpointUrl?.let(A2AInboundConfigStore::agentCardUrlForEndpoint)
@@ -36,7 +41,7 @@ internal data class A2AInboundSnapshot(
     val endpointUrl: String?
         get() = advertisedEndpointUrl ?: when (transportMode) {
             A2ATransportMode.TAILSCALE ->
-                (A2AInboundConfigStore.currentTailscaleAddress() ?: lanAddress)?.let { "http://$it:$port/a2a" }
+                (tailscaleAddress ?: lanAddress)?.let { "http://$it:$port/a2a" }
             else -> lanAddress?.let { "http://$it:$port/a2a" }
         }
 
@@ -45,22 +50,30 @@ internal data class A2AInboundSnapshot(
 }
 
 /** Local settings and encrypted token for Eta's inbound A2A endpoint. */
-internal class A2AInboundConfigStore(context: Context) {
+internal class A2AInboundConfigStore(
+    context: Context,
+    private val secrets: A2ASecretStore = A2ASecretStore(context.applicationContext),
+) {
     private val appContext = context.applicationContext
-    private val preferences = appContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
-    private val secrets = A2ASecretStore(appContext)
+    @Suppress("DEPRECATION")
+    private val preferences = appContext.getSharedPreferences(
+        PREFERENCES_NAME,
+        // The settings screen and sticky endpoint run in different processes. Every caller
+        // reads a fresh on-disk snapshot before using enable/token/transport state.
+        Context.MODE_PRIVATE or Context.MODE_MULTI_PROCESS,
+    )
 
     fun observe(): Flow<A2AInboundSnapshot> = callbackFlow {
         val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
-            trySend(snapshot())
+            trySend(Unit)
         }
         preferences.registerOnSharedPreferenceChangeListener(listener)
-        trySend(snapshot())
+        trySend(Unit)
         awaitClose { preferences.unregisterOnSharedPreferenceChangeListener(listener) }
-    }
+    }.conflate().map { snapshot() }.flowOn(Dispatchers.IO)
 
     fun snapshot(): A2AInboundSnapshot {
-        ensureToken()
+        val token = synchronized(TOKEN_LOCK) { loadToken() ?: rotateToken() }
         return A2AInboundSnapshot(
             enabled = preferences.getBoolean(KEY_ENABLED, false),
             port = preferences.getInt(KEY_PORT, DEFAULT_PORT)
@@ -70,7 +83,8 @@ internal class A2AInboundConfigStore(context: Context) {
                 ?.takeIf(::isValidAdvertisedEndpoint),
             transportMode = preferences.getString(KEY_TRANSPORT_MODE, A2ATransportMode.DIRECT)
                 ?.takeIf { it in A2ATransportMode.values } ?: A2ATransportMode.DIRECT,
-            token = loadToken().orEmpty(),
+            token = token,
+            tailscaleAddress = currentTailscaleAddress(),
             lastError = preferences.getString(KEY_LAST_ERROR, null),
             lastProbeHealthy = preferences.all[KEY_LAST_PROBE_HEALTHY] as? Boolean,
             lastProbeAt = (preferences.all[KEY_LAST_PROBE_AT] as? Long)?.takeIf { it > 0L },
@@ -81,42 +95,42 @@ internal class A2AInboundConfigStore(context: Context) {
 
     fun setEnabled(enabled: Boolean) {
         ensureToken()
-        preferences.edit()
-            .putBoolean(KEY_ENABLED, enabled)
-            .putInt(KEY_PORT, DEFAULT_PORT)
-            .remove(KEY_LAST_ERROR)
-            .apply()
+        commit {
+            putBoolean(KEY_ENABLED, enabled)
+                .putInt(KEY_PORT, DEFAULT_PORT)
+                .remove(KEY_LAST_ERROR)
+        }
     }
 
     fun setLastError(message: String?) {
-        preferences.edit().apply {
+        commit {
             if (message.isNullOrBlank()) remove(KEY_LAST_ERROR) else putString(KEY_LAST_ERROR, message.take(500))
-        }.apply()
+        }
     }
 
     fun setProbeState(healthy: Boolean, address: String?) {
-        preferences.edit()
-            .putBoolean(KEY_LAST_PROBE_HEALTHY, healthy)
-            .putLong(KEY_LAST_PROBE_AT, System.currentTimeMillis())
-            .apply {
-                if (address.isNullOrBlank()) remove(KEY_LAST_LISTEN_ADDRESS)
-                else putString(KEY_LAST_LISTEN_ADDRESS, address)
-            }
-            .apply()
+        commit {
+            putBoolean(KEY_LAST_PROBE_HEALTHY, healthy)
+                .putLong(KEY_LAST_PROBE_AT, System.currentTimeMillis())
+                .apply {
+                    if (address.isNullOrBlank()) remove(KEY_LAST_LISTEN_ADDRESS)
+                    else putString(KEY_LAST_LISTEN_ADDRESS, address)
+                }
+        }
     }
 
     fun recordRestart() {
-        preferences.edit()
-            .putInt(KEY_RESTART_COUNT, preferences.getInt(KEY_RESTART_COUNT, 0) + 1)
-            .apply()
+        commit {
+            putInt(KEY_RESTART_COUNT, preferences.getInt(KEY_RESTART_COUNT, 0) + 1)
+        }
     }
 
-    fun rotateToken(): String {
+    fun rotateToken(): String = synchronized(TOKEN_LOCK) {
         val bytes = ByteArray(32).also(SecureRandom()::nextBytes)
         val token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
         secrets.save(TOKEN_ALIAS, token)
-        preferences.edit().remove(KEY_LAST_ERROR).apply()
-        return token
+        commit { remove(KEY_LAST_ERROR) }
+        token
     }
 
     fun loadToken(): String? = runCatching { secrets.load(TOKEN_ALIAS) }
@@ -126,25 +140,33 @@ internal class A2AInboundConfigStore(context: Context) {
     /** Set by a verified transport adapter, never by an unauthenticated network request. */
     fun setAdvertisedEndpoint(url: String?) {
         require(url == null || isValidAdvertisedEndpoint(url)) { "Invalid advertised A2A endpoint" }
-        preferences.edit().apply {
+        commit {
             if (url == null) remove(KEY_ADVERTISED_ENDPOINT_URL) else putString(KEY_ADVERTISED_ENDPOINT_URL, url)
-        }.apply()
+        }
     }
 
     fun setTransportMode(mode: String) {
         require(mode in A2ATransportMode.values) { "Unsupported A2A transport mode" }
-        preferences.edit().putString(KEY_TRANSPORT_MODE, mode).apply()
+        commit { putString(KEY_TRANSPORT_MODE, mode) }
         if (mode == A2ATransportMode.TAILSCALE) {
             val advertised = preferences.getString(KEY_ADVERTISED_ENDPOINT_URL, null)
             if (advertised != null && isNonTailscalePrivateEndpoint(advertised)) setAdvertisedEndpoint(null)
         }
     }
 
+    /** Commit before a cross-process service start/restart observes the setting. */
+    private fun commit(edit: android.content.SharedPreferences.Editor.() -> Unit) {
+        check(preferences.edit().apply(edit).commit()) { "A2A inbound settings were not saved" }
+    }
+
     private fun ensureToken() {
-        if (loadToken() == null) rotateToken()
+        synchronized(TOKEN_LOCK) {
+            if (loadToken() == null) rotateToken()
+        }
     }
 
     companion object {
+        private val TOKEN_LOCK = Any()
         const val DEFAULT_PORT = 43121
         const val MIN_PORT = 1024
         const val MAX_PORT = 65535

@@ -1,6 +1,7 @@
 package io.github.mangi.eta.fork.meeting
 
 import io.github.mangi.eta.agent.runtime.AgentEvent
+import io.github.mangi.eta.agent.runtime.AgentArtifactReference
 import org.json.JSONObject
 
 internal enum class MeetingStreamPhase(val wireValue: String) {
@@ -16,6 +17,7 @@ internal data class MeetingStreamActivity(
     val phase: MeetingStreamPhase,
     val content: String,
     val truncated: Boolean = false,
+    val artifacts: List<AgentArtifactReference> = emptyList(),
 ) {
     val messageId: String = "meeting-stream-" + MeetingToolActivity.idFor(runId, round,
         "stream:$attempt:${kind.name}", false).removePrefix("meeting-tool-")
@@ -23,7 +25,7 @@ internal data class MeetingStreamActivity(
     fun encode(isHost: Boolean): String = JSONObject()
         .put("version", 1).put("run_id", runId).put("round", round).put("attempt", attempt)
         .put("kind", kind.name).put("phase", phase.wireValue).put("truncated", truncated)
-        .put("is_host", isHost).toString()
+        .put("is_host", isHost).put("artifacts", AgentArtifactReference.encode(artifacts)).toString()
 
     companion object {
         const val EVENT_PREFIX = "stream_activity:"
@@ -40,6 +42,7 @@ internal data class MeetingStreamActivity(
                 },
                 phase = MeetingStreamPhase.entries.first { it.wireValue == json.getString("phase") },
                 content = content, truncated = json.optBoolean("truncated"),
+                artifacts = AgentArtifactReference.decode(json.optJSONArray("artifacts")),
             )
         }.getOrNull()
     }
@@ -52,6 +55,7 @@ internal class MeetingStreamReducer(private val runId: String) {
     private class Segment {
         val blocks = sortedMapOf<Int, Block>()
         var interrupted = false
+        var artifacts: List<AgentArtifactReference> = emptyList()
     }
     private val attempts = mutableMapOf<Int, Int>()
     private val segments = linkedMapOf<Key, Segment>()
@@ -87,13 +91,21 @@ internal class MeetingStreamReducer(private val runId: String) {
                     dirty += key
                 }
             }
-            is AgentEvent.AssistantReceived -> if (event.reasoningContent.isNotBlank()) {
-                val key = Key(event.round, attempts[event.round] ?: 0, AgentEvent.AssistantBlockKind.THINKING)
-                if (segments[key] == null) {
-                    val (_, _, block) = block(event.round, AgentEvent.AssistantBlockKind.THINKING, 0)
-                    block.text.append(event.reasoningContent.take(MeetingStreamActivity.MAX_PREVIEW_CHARS))
-                    block.truncated = event.reasoningContent.length > MeetingStreamActivity.MAX_PREVIEW_CHARS
+            is AgentEvent.AssistantReceived -> {
+                if (event.reasoningContent.isNotBlank()) {
+                    val key = Key(event.round, attempts[event.round] ?: 0, AgentEvent.AssistantBlockKind.THINKING)
+                    if (segments[key] == null) {
+                        val (_, _, block) = block(event.round, AgentEvent.AssistantBlockKind.THINKING, 0)
+                        block.text.append(event.reasoningContent.take(MeetingStreamActivity.MAX_PREVIEW_CHARS))
+                        block.truncated = event.reasoningContent.length > MeetingStreamActivity.MAX_PREVIEW_CHARS
+                        block.ended = true
+                    }
+                }
+                if (event.artifacts.isNotEmpty()) {
+                    val (key, segment, block) = block(event.round, AgentEvent.AssistantBlockKind.TEXT, 0)
+                    segment.artifacts = (segment.artifacts + event.artifacts).distinctBy { it.id }.take(8)
                     block.ended = true
+                    dirty += key
                 }
             }
             is AgentEvent.ToolStarted -> completeRound(event.round)
@@ -134,7 +146,8 @@ internal class MeetingStreamReducer(private val runId: String) {
             segment.blocks.values.all { it.ended } -> MeetingStreamPhase.COMPLETED
             else -> MeetingStreamPhase.STREAMING
         }, content.take(MeetingStreamActivity.MAX_PREVIEW_CHARS),
-            content.length > MeetingStreamActivity.MAX_PREVIEW_CHARS || segment.blocks.values.any { it.truncated })
+            content.length > MeetingStreamActivity.MAX_PREVIEW_CHARS || segment.blocks.values.any { it.truncated },
+            segment.artifacts)
         if (published[key] == state) null else state.also { published[key] = it }
     }.also { dirty.clear() }
 }

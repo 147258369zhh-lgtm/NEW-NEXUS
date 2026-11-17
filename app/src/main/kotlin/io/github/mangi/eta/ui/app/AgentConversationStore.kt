@@ -92,6 +92,7 @@ internal object AgentConversationStore {
         saveMutex.withLock {
             withContext(Dispatchers.IO) {
                 var phase = "read_metadata"
+                val committedMessages = mutableListOf<io.github.mangi.eta.agent.packages.PackagePersistedMessage>()
                 try {
                     val database = EtaDatabase.get(appContext)
                     val dao = database.conversationDao()
@@ -151,6 +152,8 @@ internal object AgentConversationStore {
                             }
                             if (old == null || old.messages != state.messages || old.messageStartIndex != state.messageStartIndex) {
                                 val origins = dao.messageOriginsFrom(id, state.messageStartIndex + prefix)
+                                val persistedRows = dao.messageRowsRange(id, state.messageStartIndex + prefix,
+                                    state.messageStartIndex + state.messages.lastIndex).associate { row -> row.id to dao.restoreMessage(row) }
                                 phase = "delete_message_suffix"
                                 dao.deleteMessagesFrom(id, state.messageStartIndex + prefix)
                                 for (index in prefix until state.messages.size) {
@@ -158,6 +161,15 @@ internal object AgentConversationStore {
                                     val row = state.messages[index].toEntityOrNull(id, state.messageStartIndex + index) ?: continue
                                     phase = "write_message"
                                     dao.insertMessages(listOf(row))
+                                    val message = state.messages[index]
+                                    val changed = persistedRows[row.id] != row
+                                    if (changed && row.type in setOf(TYPE_USER, TYPE_ASSISTANT) &&
+                                        (message !is AgentMessageUi || !message.isStreaming)) {
+                                        committedMessages += io.github.mangi.eta.agent.packages.PackagePersistedMessage(
+                                            io.github.mangi.eta.data.model.ConversationSubject.chat(id), row.id,
+                                            if (row.type == TYPE_USER) "user" else "ai", row.content, state.updatedAt,
+                                            row.inputTokens?.toLong(), row.outputTokens?.toLong(), row.cachedTokens?.toLong())
+                                    }
                                 }
                                 // 后缀重写删除再插入同 ID 的消息时保留真实来源；真正删除的消息不恢复来源。
                                 origins.forEach { origin ->
@@ -191,6 +203,7 @@ internal object AgentConversationStore {
                         if (selected == null) dao.deleteState()
                         else dao.insertState(ConversationStateEntity(selectedConversationId = selected))
                     }
+                    io.github.mangi.eta.agent.packages.PackageMessageEvents.committed(appContext, committedMessages)
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (failure: Throwable) {
@@ -306,6 +319,23 @@ internal object AgentConversationStore {
 
     suspend fun loadRecentMessages(context: Context, conversationId: String): MessagePage =
         loadEarlierMessages(context, conversationId, Int.MAX_VALUE)
+
+    /** Read-only navigation window; never replaces the persisted/live transcript suffix. */
+    suspend fun questionWindow(context: Context, conversationId: String, messageId: String, page: Int = 0): List<AgentChatMessageUi> =
+        withContext(Dispatchers.IO) {
+            val database = EtaDatabase.get(context.applicationContext)
+            val rows = database.withTransaction {
+                val dao = database.conversationDao()
+                val target = dao.questionSortIndex(conversationId, messageId) ?: return@withTransaction emptyList()
+                dao.messageRowsAfter(
+                    conversationId, target, MESSAGE_LOAD_PAGE_SIZE + 1,
+                    offset = page.coerceIn(0, 100_000) * MESSAGE_LOAD_PAGE_SIZE,
+                ).map { dao.restoreMessage(it) }
+            }
+            // Keep JSON/content-part decoding out of Room's transaction queue, which is also
+            // used to persist the ongoing run. The rows and chunks already form one snapshot.
+            rows.mapNotNull { it.toMessageOrNull() }
+        }
 
     fun shouldReleaseEarlierMessages(messageCount: Int): Boolean = messageCount > MESSAGE_LOAD_PAGE_SIZE * 3
 
@@ -484,6 +514,7 @@ internal object AgentConversationStore {
                         type = TYPE_ASSISTANT,
                         content = content,
                         renderMarkdown = renderMarkdown,
+                        contentPartsJson = io.github.mangi.eta.data.repository.NexusContentParts.encode(contentParts, content, pending = isStreaming),
                         contextTokens = usage?.contextTokens,
                         inputTokens = usage?.inputTokens,
                         outputTokens = usage?.outputTokens,
@@ -524,6 +555,9 @@ internal object AgentConversationStore {
                 argumentsSummary = argumentsSummary,
                 resultSummary = resultSummary,
                 imageCount = imageCount,
+                contentPartsJson = io.github.mangi.eta.data.repository.NexusContentParts.encode(executionItemId?.let {
+                    listOf(io.github.zhh_lgtm.nexus.kernel.api.ToolTracePart("$id:execution", io.github.zhh_lgtm.nexus.kernel.api.ItemId(it)))
+                }.orEmpty()),
             )
 
             is ToolSummaryMessageUi -> ConversationMessageEntity(
@@ -552,6 +586,7 @@ internal object AgentConversationStore {
                 content = content,
                 isStreaming = false,
                 renderMarkdown = renderMarkdown ?: true,
+                contentParts = io.github.mangi.eta.data.repository.NexusContentParts.decode(contentPartsJson, id, content, renderMarkdown ?: true),
                 usage = TokenUsageUi(
                     contextTokens = contextTokens,
                     inputTokens = inputTokens,
@@ -586,6 +621,8 @@ internal object AgentConversationStore {
                 command = content.takeIf(String::isNotBlank),
                 resultSummary = resultSummary,
                 imageCount = imageCount,
+                executionItemId = io.github.mangi.eta.data.repository.NexusContentParts.decode(contentPartsJson, id, "")
+                    .filterIsInstance<io.github.zhh_lgtm.nexus.kernel.api.ToolTracePart>().firstOrNull()?.itemId?.value,
             )
 
             TYPE_TOOL_SUMMARY -> ToolSummaryMessageUi(

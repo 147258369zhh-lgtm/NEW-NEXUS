@@ -20,6 +20,7 @@ import org.json.JSONObject
 internal object LocalSpeechNativeCrashGuard {
     private const val PREFS = "eta_local_speech_native_crash_guard"
     private const val KEY_ACTIVE = "active_attempt"
+    private const val KEY_ACTIVE_PREFIX = "active_attempt_"
     private const val KEY_FAILURES = "failures"
     private const val ENGINE_ID = "mediapipe-tasks-audio@1.2.2"
     private const val MAX_FAILURES = 16
@@ -27,17 +28,19 @@ internal object LocalSpeechNativeCrashGuard {
     @Volatile private var context: Context? = null
     private val reconciled = AtomicBoolean(false)
 
-    fun initialize(appContext: Context) {
+    @Synchronized fun initialize(appContext: Context) {
         val application = appContext.applicationContext
+        if (context !== application) reconciled.set(false)
         context = application
         if (reconciled.compareAndSet(false, true)) reconcile(application)
     }
 
-    fun beginAttempt(
+    @Synchronized fun beginAttempt(
         record: LocalModelRecord,
         kind: LocalSpeechKind,
         policy: LocalRuntimeBackendPolicy,
         phase: String,
+        engineId: String = ENGINE_ID,
     ): SpeechAttemptLease {
         val appContext = requireNotNull(context) { "本地语音崩溃保护尚未初始化" }
         if (reconciled.compareAndSet(false, true)) reconcile(appContext)
@@ -48,8 +51,12 @@ internal object LocalSpeechNativeCrashGuard {
             backend = normalize(policy),
             phase = phase.take(80),
             startedAt = System.currentTimeMillis(),
+            processName = android.app.Application.getProcessName(),
+            processId = android.os.Process.myPid(),
+            runtimeId = "${BuildConfig.VERSION_NAME}/${BuildConfig.VERSION_CODE}/$engineId",
+            journalSlot = when { engineId.startsWith("sherpa-speaker") -> "SPEAKER"; engineId.startsWith("sherpa-wake") -> "WAKE"; else -> kind.name },
         )
-        prefs(appContext).edit().putString(KEY_ACTIVE, attempt.encode().toString()).commit()
+        check(prefs(appContext).edit().putString(activeKey(attempt), attempt.encode().toString()).commit()) { "LOCAL_SPEECH_JOURNAL_WRITE_FAILED" }
         return SpeechAttemptLease(attempt)
     }
 
@@ -93,25 +100,38 @@ internal object LocalSpeechNativeCrashGuard {
         } else null
     }
 
+    fun hasNativeFailure(record: LocalModelRecord, kind: LocalSpeechKind, engineId: String): Boolean = failures().any {
+        it.recordId == record.id && it.modelSha256 == record.sha256 && it.kind == kind && it.backend == "cpu" &&
+            it.runtimeId == "${BuildConfig.VERSION_NAME}/${BuildConfig.VERSION_CODE}/$engineId"
+    }
+
+    @Synchronized fun confirmRetry(record: LocalModelRecord, kind: LocalSpeechKind, engineId: String) {
+        val retained = failures().filterNot {
+            it.recordId == record.id && it.modelSha256 == record.sha256 && it.kind == kind &&
+                it.runtimeId == "${BuildConfig.VERSION_NAME}/${BuildConfig.VERSION_CODE}/$engineId"
+        }
+        val preferences = context?.let(::prefs) ?: return
+        check(preferences.edit().putString(KEY_FAILURES, JSONArray(retained.map { it.encode() }).toString()).commit()) { "LOCAL_SPEECH_JOURNAL_WRITE_FAILED" }
+    }
+
     private fun reconcile(appContext: Context) {
         val preferences = prefs(appContext)
-        val active = preferences.getString(KEY_ACTIVE, null)?.let { raw ->
-            runCatching { decode(JSONObject(raw)) }.getOrNull()
-        } ?: return
-        try {
-            if (findNativeExit(appContext, active.startedAt) != null) recordFailure(preferences, active)
-        } finally {
-            preferences.edit().remove(KEY_ACTIVE).commit()
+        for (key in listOf(KEY_ACTIVE) + preferences.all.keys.filter { it.startsWith(KEY_ACTIVE_PREFIX) }) {
+            val active = preferences.getString(key, null)?.let { runCatching { decode(JSONObject(it)) }.getOrNull() }
+            try {
+                if (active != null && findNativeExit(appContext, active) != null) recordFailure(preferences, active)
+            } finally { preferences.edit().remove(key).commit() }
         }
     }
 
-    private fun findNativeExit(appContext: Context, startedAt: Long): ApplicationExitInfo? {
+    private fun findNativeExit(appContext: Context, attempt: SpeechAttempt): ApplicationExitInfo? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
         return runCatching {
             val manager = appContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            manager.getHistoricalProcessExitReasons(appContext.packageName, 0, 24)
+            manager.getHistoricalProcessExitReasons(appContext.packageName, attempt.processId, 24)
                 .asSequence()
-                .filter { it.timestamp >= startedAt - 2_000L }
+                .filter { it.timestamp >= attempt.startedAt - 2_000L }
+                .filter { attempt.processName.isBlank() || it.processName == attempt.processName }
                 .filter { it.reason == ApplicationExitInfo.REASON_CRASH_NATIVE }
                 .maxByOrNull(ApplicationExitInfo::getTimestamp)
         }.getOrNull()
@@ -147,6 +167,22 @@ internal object LocalSpeechNativeCrashGuard {
     }
 
     private fun prefs(appContext: Context) = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private fun activeKey(attempt: SpeechAttempt) = "$KEY_ACTIVE_PREFIX${attempt.journalSlot}"
+
+    @Synchronized private fun writePhase(attempt: SpeechAttempt, phase: String) {
+        val preferences = context?.let(::prefs) ?: return
+        val key = activeKey(attempt)
+        val current = preferences.getString(key, null)?.let { runCatching { decode(JSONObject(it)) }.getOrNull() }
+        if (current?.attemptId != attempt.attemptId || current.phase == phase) return
+        check(preferences.edit().putString(key, current.copy(phase = phase).encode().toString()).commit()) { "LOCAL_SPEECH_JOURNAL_WRITE_FAILED" }
+    }
+
+    @Synchronized private fun clearAttempt(attempt: SpeechAttempt) {
+        val preferences = context?.let(::prefs) ?: return
+        val key = activeKey(attempt)
+        val current = preferences.getString(key, null)?.let { runCatching { decode(JSONObject(it)) }.getOrNull() }
+        if (current?.attemptId == attempt.attemptId) preferences.edit().remove(key).commit()
+    }
 
     private fun normalize(policy: LocalRuntimeBackendPolicy): String = when (policy) {
         LocalRuntimeBackendPolicy.NPU -> "npu"
@@ -162,15 +198,12 @@ internal object LocalSpeechNativeCrashGuard {
         private val finished = AtomicBoolean(false)
 
         fun phase(value: String) {
-            val appContext = context ?: return
-            val next = attempt.copy(phase = value.take(80))
-            prefs(appContext).edit().putString(KEY_ACTIVE, next.encode().toString()).commit()
+            if (!finished.get()) writePhase(attempt, value.take(80))
         }
 
         fun completed() {
             if (!finished.compareAndSet(false, true)) return
-            val appContext = context ?: return
-            prefs(appContext).edit().remove(KEY_ACTIVE).commit()
+            clearAttempt(attempt)
         }
 
         /** A managed exception is not a native crash and must not poison the next launch. */
@@ -186,6 +219,10 @@ internal object LocalSpeechNativeCrashGuard {
         val startedAt: Long,
         val crashedAt: Long = 0L,
         val runtimeId: String = runtimeId(),
+        val attemptId: String = java.util.UUID.randomUUID().toString(),
+        val processName: String = "",
+        val processId: Int = 0,
+        val journalSlot: String = kind.name,
     ) {
         fun encode(): JSONObject = JSONObject()
             .put("recordId", recordId)
@@ -196,6 +233,8 @@ internal object LocalSpeechNativeCrashGuard {
             .put("startedAt", startedAt)
             .put("crashedAt", crashedAt)
             .put("runtimeId", runtimeId)
+            .put("attemptId", attemptId).put("processName", processName).put("processId", processId)
+            .put("journalSlot", journalSlot)
     }
 
     private fun decode(json: JSONObject) = SpeechAttempt(
@@ -207,5 +246,8 @@ internal object LocalSpeechNativeCrashGuard {
         startedAt = json.getLong("startedAt"),
         crashedAt = json.optLong("crashedAt"),
         runtimeId = json.getString("runtimeId"),
+        attemptId = json.optString("attemptId", "legacy"),
+        processName = json.optString("processName"), processId = json.optInt("processId", 0),
+        journalSlot = json.optString("journalSlot", json.getString("kind")).also { require(it in setOf("ASR", "TTS", "SPEAKER", "WAKE")) },
     )
 }

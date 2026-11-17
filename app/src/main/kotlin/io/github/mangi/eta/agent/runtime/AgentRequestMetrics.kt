@@ -35,6 +35,27 @@ internal data class AgentRequestUsage(
             )
         }
     }
+
+    /** Sparse and cumulative provider receipts enrich the open attempt without erasing prior facts. */
+    fun merge(later: AgentRequestUsage): AgentRequestUsage {
+        val mergedInput = later.inputTokens ?: inputTokens
+        val mergedOutput = later.outputTokens ?: outputTokens
+        val mergedCached = later.cachedTokens ?: cachedTokens
+        return AgentRequestUsage(
+            inputTokens = mergedInput,
+            outputTokens = mergedOutput,
+            reasoningTokens = later.reasoningTokens ?: reasoningTokens,
+            cachedTokens = mergedCached,
+            contextTokens = later.contextTokens ?: contextTokens,
+            // Billing counters have already been normalized for the provider protocol.
+            // Anthropic input excludes its separate cache counters; Gemini output may
+            // exclude reasoning. Re-deriving these from raw receipts corrupts billing.
+            uncachedInputTokens = later.uncachedInputTokens ?: uncachedInputTokens,
+            cacheReadTokens = later.cacheReadTokens ?: cacheReadTokens,
+            cacheWriteTokens = later.cacheWriteTokens ?: cacheWriteTokens,
+            billableOutputTokens = later.billableOutputTokens ?: billableOutputTokens,
+        )
+    }
 }
 
 internal data class AgentMetricRequest(
@@ -129,8 +150,8 @@ internal class AgentRequestLedger(
             }
             is AgentEvent.UsageReceived -> update(event.round) { open ->
                 open.request = open.request.copy(
-                    usage = AgentRequestUsage.from(event.usage),
-                    localRuntime = event.usage.localRuntime,
+                    usage = open.request.usage.merge(AgentRequestUsage.from(event.usage)),
+                    localRuntime = event.usage.localRuntime ?: open.request.localRuntime,
                 )
             }
             is AgentEvent.RunFailed -> finishLatest(AgentMetricStatus.FAILED, "run_failed")

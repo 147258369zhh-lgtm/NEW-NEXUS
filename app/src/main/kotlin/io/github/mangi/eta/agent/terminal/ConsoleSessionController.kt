@@ -60,6 +60,7 @@ internal class ConsoleSessionController(
         onOutput: (sessionId: String, chunk: ByteArray) -> Unit,
         onExit: (sessionId: String) -> Unit,
         identity: String? = null,
+        onSessionCreated: (sessionId: String) -> Unit = {},
     ): OpenResult {
         synchronized(sessionLock) {
             pruneDeadSessionsLocked()
@@ -96,6 +97,12 @@ internal class ConsoleSessionController(
             val sessionId = "c${++nextSessionNumber}"
             val newSession = PtySession(environment, process, identity)
             sessions[sessionId] = newSession
+            try {
+                onSessionCreated(sessionId)
+            } catch (failure: Throwable) {
+                closeSessionLocked(sessionId)
+                throw failure
+            }
             newSession.readerThread = thread(name = "console-pty-reader", isDaemon = true) {
                 val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
                 try {

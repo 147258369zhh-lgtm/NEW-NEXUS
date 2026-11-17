@@ -62,17 +62,7 @@ internal object SystemUiHooks {
                     return@intercept chain.proceed()
                 }
 
-                if (!CircleToSearchInvoker.isAvailable(
-                        context,
-                        logger,
-                        "SystemUI",
-                        "回退原 OCR 逻辑"
-                    )
-                ) {
-                    return@intercept chain.proceed()
-                }
-
-                if (CircleToSearchInvoker.trigger(logger, "SystemUI")) {
+                if (NexaAssistantGestureInvoker.trigger(context, logger, "SystemUI")) {
                     performOriginalLongPressHaptic(context, logger)
                     null
                 } else {
@@ -90,14 +80,14 @@ internal object SystemUiHooks {
 
     private fun performOriginalLongPressHaptic(context: Context, logger: ModuleLogger) {
         val vibrationHelper = resolveVibrationHelper(context) ?: run {
-            logger.warnThrottled("systemui_cts_vibration_helper_missing") {
+            logger.warnThrottled("systemui_nexa_vibration_helper_missing") {
                 "SystemUI: 无法取得原生 VibrationHelper，跳过导航条长按震动"
             }
             return
         }
 
         if (!invokeVibrateCustomized(vibrationHelper, context)) {
-            logger.warnThrottled("systemui_cts_linear_haptic_failed") {
+            logger.warnThrottled("systemui_nexa_linear_haptic_failed") {
                 "SystemUI: 调用原生导航条长按震动失败"
             }
         }

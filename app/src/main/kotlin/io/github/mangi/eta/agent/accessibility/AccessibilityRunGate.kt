@@ -22,7 +22,7 @@ internal class AccessibilityRunGate(
     private val controller: AgentRunController,
     private val gui: GuiControlCoordinator.RunControl,
     private val serviceAvailable: () -> Boolean,
-    private val requestRecovery: () -> Unit,
+    private val requestRecovery: () -> AccessibilityEnableResult,
     private val onEvent: (AgentEvent.AccessibilityWaiting) -> Unit,
     private val totalWaitMs: Long = 300_000L,
     private val nowMs: () -> Long = { System.nanoTime() / 1_000_000L },
@@ -32,6 +32,7 @@ internal class AccessibilityRunGate(
     private val lock = ReentrantLock()
     private var spentMs = 0L
     private var outage = 0
+    private var lastRecoveryFailure: AccessibilityEnableResult? = null
 
     fun prepare(toolName: String): ToolExecutionDecision {
         if (!AgentToolRequirements.requiresAccessibility(toolName)) return ToolExecutionDecision.Allow
@@ -47,7 +48,7 @@ internal class AccessibilityRunGate(
             if (controller.isCancelled) throw AgentRunCancelledException()
             if (serviceAvailable()) return ToolExecutionDecision.Allow
             val remaining = (totalWaitMs - spentMs).coerceAtLeast(0L)
-            if (remaining == 0L) return timeoutDecision()
+            if (remaining == 0L) return timeoutDecision(lastRecoveryFailure)
             outage++
             val outageStartedAt = nowMs()
             startedAt = outageStartedAt
@@ -56,7 +57,9 @@ internal class AccessibilityRunGate(
                 onEvent(event(AccessibilityWaitPhase.WAITING))
                 // 每次断线最多请求一次；后端自己执行用户设置、Root 能力和退避检查。
                 if (remaining - (nowMs() - outageStartedAt) >= minimumRecoveryBudgetMs) {
-                    try { requestRecovery() } catch (failure: RuntimeException) {
+                    try {
+                        requestRecovery().takeUnless { it.available }?.let { lastRecoveryFailure = it }
+                    } catch (failure: RuntimeException) {
                         if (failure is AgentRunCancelledException) throw failure
                         // 恢复后端异常仍允许用户手动恢复，不转为无限自动重试。
                     }
@@ -66,7 +69,7 @@ internal class AccessibilityRunGate(
                     val timeLeft = remaining - (nowMs() - outageStartedAt)
                     if (timeLeft <= 0L) {
                         onEvent(event(AccessibilityWaitPhase.TIMED_OUT))
-                        return@withAccessibilityIntervention timeoutDecision()
+                        return@withAccessibilityIntervention timeoutDecision(lastRecoveryFailure)
                     }
                     Thread.sleep(minOf(pollMs, timeLeft))
                 }
@@ -81,7 +84,7 @@ internal class AccessibilityRunGate(
             }
         } catch (_: GuiInterventionTimeoutException) {
             onEvent(event(AccessibilityWaitPhase.TIMED_OUT))
-            return timeoutDecision()
+            return timeoutDecision(lastRecoveryFailure)
         } catch (cancelled: AgentRunCancelledException) {
             if (waiting) onEvent(event(AccessibilityWaitPhase.CANCELLED))
             throw cancelled
@@ -100,8 +103,9 @@ internal class AccessibilityRunGate(
 
     private fun event(phase: AccessibilityWaitPhase) = AgentEvent.AccessibilityWaiting(outage, phase)
 
-    private fun timeoutDecision() = ToolExecutionDecision.Reject(
-        "ACCESSIBILITY_WAIT_TIMEOUT",
-        "本任务的无障碍恢复等待已用尽；本次屏幕操作未执行。请在权限健康页恢复服务后再继续，勿重复调用等待。",
+    private fun timeoutDecision(recoveryFailure: AccessibilityEnableResult? = null) = ToolExecutionDecision.Reject(
+        recoveryFailure?.code?.takeIf(String::isNotBlank) ?: "ACCESSIBILITY_WAIT_TIMEOUT",
+        recoveryFailure?.message?.takeIf(String::isNotBlank)
+            ?: "本任务的无障碍恢复等待已用尽；本次屏幕操作未执行。请在权限健康页恢复服务后再继续，勿重复调用等待。",
     )
 }

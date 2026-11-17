@@ -96,6 +96,14 @@ internal data class AgentMetricDetail(
     @Relation(parentColumn = "recordId", entityColumn = "recordId") val requests: List<AgentMetricRequestEntity> = emptyList(),
 )
 
+internal data class AgentRequestTimingSummary(
+    val recordId: String,
+    val providerId: String, val modelId: String,
+    val responseSamples: Long, val responseSumMs: Long,
+    val firstTextSamples: Long, val firstTextSumMs: Long,
+    val durationSamples: Long, val durationSumMs: Long,
+)
+
 internal data class AgentMetricOverview(
     @Embedded val run: AgentRunMetricsRecord,
     @Relation(parentColumn = "recordId", entityColumn = "recordId") val models: List<AgentMetricModelEntity>,
@@ -106,16 +114,34 @@ private const val BILLABLE_COLUMNS = "recordId, `index`, providerId, modelId, na
     "usage_rounds, usage_toolCalls, usage_succeededTools, usage_failedTools, usage_unresolvedTools, " +
     "usage_inputTokens, usage_outputTokens, usage_reasoningTokens, usage_cachedTokens, usage_contextTokens, " +
     "usage_inputReportedRounds, usage_outputReportedRounds, usage_imageBytes, usage_requestAttempts, usage_retries, " +
-    "usage_completedCompactions, usage_uncachedInputTokens, usage_cacheReadTokens, usage_cacheWriteTokens, " +
+    "usage_completedCompactions, usage_approvalRequests, usage_approvalsApproved, usage_approvalsRejected, " +
+    "usage_approvalsTimedOut, usage_approvalsCancelled, usage_approvalsFailed, " +
+    "usage_uncachedInputTokens, usage_cacheReadTokens, usage_cacheWriteTokens, " +
     "usage_billableOutputTokens, usage_billingReportedRounds, price_revision, price_currency, price_input, price_output, " +
     "price_cacheRead, price_cacheWrite, price_capturedAt, priceCaptured"
 
 @Dao
 internal interface AgentMetricsDao {
+    @Query("SELECT recordId, providerId, modelId, COUNT(responseMs) AS responseSamples, COALESCE(SUM(responseMs),0) AS responseSumMs, " +
+        "COUNT(firstTextMs) AS firstTextSamples, COALESCE(SUM(firstTextMs),0) AS firstTextSumMs, " +
+        "COUNT(totalMs) AS durationSamples, COALESCE(SUM(totalMs),0) AS durationSumMs " +
+        "FROM metric_requests GROUP BY recordId, providerId, modelId")
+    fun requestTimingSummariesFlow(): Flow<List<AgentRequestTimingSummary>>
+    @Query("SELECT recordId, providerId, modelId, COUNT(responseMs) AS responseSamples, COALESCE(SUM(responseMs),0) AS responseSumMs, " +
+        "COUNT(firstTextMs) AS firstTextSamples, COALESCE(SUM(firstTextMs),0) AS firstTextSumMs, " +
+        "COUNT(totalMs) AS durationSamples, COALESCE(SUM(totalMs),0) AS durationSumMs " +
+        "FROM metric_requests WHERE recordId IN (SELECT recordId FROM metric_runs WHERE " +
+        "(:type = 'meeting' AND roomId = :subjectId) OR (:type = 'conversation' AND conversationId = :subjectId AND roomId = '')) " +
+        "GROUP BY recordId, providerId, modelId")
+    fun subjectRequestTimingSummariesFlow(type: String, subjectId: String): Flow<List<AgentRequestTimingSummary>>
+    @Transaction @Query("SELECT * FROM metric_runs WHERE (:type = 'meeting' AND roomId = :subjectId) OR " +
+        "(:type = 'conversation' AND conversationId = :subjectId AND roomId = '') ORDER BY updatedAt DESC, recordId ASC")
+    fun subjectOverviewFlow(type: String, subjectId: String): Flow<List<AgentMetricOverview>>
     @Transaction @Query("SELECT * FROM metric_runs ORDER BY updatedAt DESC, recordId ASC") fun overviewFlow(): Flow<List<AgentMetricOverview>>
     @Query("SELECT * FROM metric_runs ORDER BY updatedAt DESC, recordId ASC") fun recordsFlow(): Flow<List<AgentRunMetricsRecord>>
     @Query("SELECT * FROM metric_runs ORDER BY updatedAt DESC, recordId ASC") fun records(): List<AgentRunMetricsRecord>
     @Query("SELECT * FROM metric_runs WHERE recordId = :id") fun record(id: String): AgentRunMetricsRecord?
+    @Query("SELECT * FROM metric_runs WHERE ownerSession = :owner") fun runsOwnedBy(owner: String): List<AgentRunMetricsRecord>
     @Query("SELECT $BILLABLE_COLUMNS FROM metric_models UNION ALL SELECT $BILLABLE_COLUMNS FROM metric_children")
     fun modelsFlow(): Flow<List<AgentMetricModelEntity>>
     @Query("SELECT * FROM metric_prices ORDER BY providerId, modelId") fun pricesFlow(): Flow<List<AgentTokenPriceEntity>>
@@ -132,6 +158,10 @@ internal interface AgentMetricsDao {
     @Query("SELECT * FROM metric_children WHERE recordId = :id") fun children(id: String): List<AgentMetricChildEntity>
     @Query("SELECT * FROM metric_requests WHERE recordId = :id ORDER BY requestOrder, requestId") fun requests(id: String): List<AgentMetricRequestEntity>
     @Query("SELECT * FROM metric_requests WHERE recordId = :id ORDER BY requestOrder, requestId") fun requestsFlow(id: String): Flow<List<AgentMetricRequestEntity>>
+    @Query("SELECT metric_requests.* FROM metric_requests INNER JOIN metric_runs ON metric_runs.recordId = metric_requests.recordId " +
+        "WHERE metric_requests.status IN ('succeeded', 'failed') AND metric_requests.startedAt >= :since " +
+        "AND metric_runs.updatedAt >= :since ORDER BY metric_requests.startedAt DESC LIMIT :limit")
+    fun terminalRequestsFlow(since: Long, limit: Int): Flow<List<AgentMetricRequestEntity>>
     @Query("DELETE FROM metric_trace WHERE recordId = :id") fun clearTrace(id: String)
     @Query("DELETE FROM metric_models WHERE recordId = :id") fun clearModels(id: String)
     @Query("SELECT * FROM metric_runs WHERE status = 'running' AND ownerSession != :owner") fun abandonedRuns(owner: String): List<AgentRunMetricsRecord>
@@ -141,7 +171,7 @@ internal interface AgentMetricsDao {
     @Query("DELETE FROM metric_runs WHERE status != 'running' AND recordId NOT IN (SELECT recordId FROM metric_runs WHERE status != 'running' ORDER BY updatedAt DESC, recordId ASC LIMIT :limit)") fun prune(limit: Int)
 }
 
-@Database(entities = [AgentRunMetricsRecord::class, AgentMetricTraceEntity::class, AgentMetricModelEntity::class, AgentMetricMetaEntity::class, AgentTokenPriceEntity::class, AgentMetricChildEntity::class, AgentMetricRequestEntity::class], version = 3, exportSchema = false)
+@Database(entities = [AgentRunMetricsRecord::class, AgentMetricTraceEntity::class, AgentMetricModelEntity::class, AgentMetricMetaEntity::class, AgentTokenPriceEntity::class, AgentMetricChildEntity::class, AgentMetricRequestEntity::class], version = 4, exportSchema = false)
 internal abstract class AgentMetricsDatabase : RoomDatabase() {
     abstract fun dao(): AgentMetricsDao
 
@@ -199,10 +229,22 @@ internal abstract class AgentMetricsDatabase : RoomDatabase() {
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_metric_requests_scopeId ON metric_requests(scopeId)")
             }
         }
+        internal val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                listOf("metric_runs", "metric_models", "metric_children").forEach { tableName ->
+                    listOf(
+                        "approvalRequests", "approvalsApproved", "approvalsRejected", "approvalsTimedOut",
+                        "approvalsCancelled", "approvalsFailed",
+                    ).forEach { column ->
+                        db.execSQL("ALTER TABLE `$tableName` ADD COLUMN `usage_$column` INTEGER NOT NULL DEFAULT 0")
+                    }
+                }
+            }
+        }
         @Volatile private var instance: AgentMetricsDatabase? = null
         fun get(context: Context): AgentMetricsDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AgentMetricsDatabase::class.java, NAME)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3).enableMultiInstanceInvalidation().build().also { instance = it }
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).enableMultiInstanceInvalidation().build().also { instance = it }
         }
         @VisibleForTesting internal fun closeForTests() = synchronized(this) { instance?.close(); instance = null }
     }

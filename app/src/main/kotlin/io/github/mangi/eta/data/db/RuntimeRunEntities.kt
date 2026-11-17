@@ -23,6 +23,8 @@ internal data class RuntimeResultEntity(
     @ColumnInfo(name = "context_snapshot_json", defaultValue = "''") val contextSnapshotJson: String = "",
     @ColumnInfo(name = "operation", defaultValue = "'chat'") val operation: String = "chat",
     @ColumnInfo(name = "rewrite_target_message_id") val rewriteTargetMessageId: String? = null,
+    /** 有界暂停摘要；断连后 drain 仍能恢复待答问题与待批调用身份。 */
+    @ColumnInfo(name = "pause_json") val pauseJson: String? = null,
     @ColumnInfo(name = "created_at") val createdAt: Long,
 )
 

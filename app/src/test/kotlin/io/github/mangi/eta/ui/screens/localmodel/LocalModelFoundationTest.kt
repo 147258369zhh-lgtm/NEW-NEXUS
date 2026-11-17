@@ -22,7 +22,8 @@ class LocalModelFoundationTest {
         LocalModelPreset.all.forEach { preset ->
             assertEquals(preset, LocalModelRepository.presetFor(preset.url))
             assertEquals(preset.id, LocalModelRepository.presetFor(" ${preset.url} ")?.id)
-            assertEquals(LocalModelFormat.fromFileName(preset.url), LocalModelFiles.formatFromUrl(preset.url))
+            val expectedFormat = if (io.github.mangi.eta.agent.voice.SpeechModelPackage.isArchive(preset.url)) LocalModelFormat.ONNX else LocalModelFormat.fromFileName(preset.url)
+            assertEquals(expectedFormat, LocalModelFiles.formatFromUrl(preset.url))
             assert(preset.expectedSizeBytes == null || preset.expectedSizeBytes > 0)
             preset.fallbackUrls.forEach { fallback ->
                 assertEquals(preset, LocalModelRepository.presetFor(fallback))
@@ -45,6 +46,11 @@ class LocalModelFoundationTest {
 
     @Test
     fun installedCatalogRowsMatchPresetsByStableArtifactIdentity() {
+        val speech = LocalModelPreset.VitsChineseOnnx
+        val imported = io.github.mangi.eta.data.repository.LocalModelRecord(id = "imported-speech", displayName = "Imported",
+            fileName = "directory", format = LocalModelFormat.ONNX, sizeBytes = 200, sha256 = "directory-hash",
+            sourceUrl = "content://local/import", archiveSha256 = speech.expectedSha256)
+        assertEquals(speech.id, LocalModelRepository.presetForRecord(imported)?.id)
         val preset = LocalModelPreset.Qwen3DynamicInt4
         val base = io.github.mangi.eta.data.repository.LocalModelRecord(
             id = LocalModelRepository.downloadIdFor(preset.fallbackUrls.first()),
@@ -109,13 +115,15 @@ class LocalModelFoundationTest {
 
     @Test
     fun downloadAddressRequiresSupportedHttpArtifactWithoutCredentialsOrFragment() {
+        assertEquals("https://example.com/model.zip", LocalModelRepository.validateDownloadUrl("https://example.com/model.zip"))
+        assertEquals("https://example.com/model.tar.bz2", LocalModelRepository.validateDownloadUrl("https://example.com/model.tar.bz2"))
         assertEquals(
             LocalModelPreset.Gemma4E2B.url,
             LocalModelRepository.validateDownloadUrl(" ${LocalModelPreset.Gemma4E2B.url} "),
         )
         listOf(
             "ftp://example.com/model.gguf",
-            "https://example.com/model.zip",
+            "https://example.com/model.pdf",
             "https://user:secret@example.com/model.gguf",
             "https://example.com/model.gguf#fragment",
         ).forEach { invalid ->

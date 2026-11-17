@@ -134,4 +134,5 @@ internal data class ConversationMessageEntity(
     @ColumnInfo(name = "result_summary") val resultSummary: String? = null,
     @ColumnInfo(name = "image_count") val imageCount: Int = 0,
     @ColumnInfo(name = "tools_json") val toolsJson: String = "[]",
+    @ColumnInfo(name = "content_parts_json", defaultValue = "'[]'") val contentPartsJson: String = "[]",
 )

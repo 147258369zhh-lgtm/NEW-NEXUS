@@ -205,9 +205,19 @@ internal fun ProviderSetting.withApiKey(apiKey: String): ProviderSetting =
         is CustomProviderSetting -> copy(apiKey = apiKey)
     }
 
+/** Usable credentials are a transport property, not a display heuristic. */
+internal fun ProviderSetting.hasUsableConnection(): Boolean {
+    if (!isEnabled) return false
+    if (ProviderAuthModes.isOAuth(authMode)) return true
+    return apiKey.isNotBlank() || ProviderEndpoint.isLocalOrPrivate(baseUrl)
+}
+
 internal data class ProviderModel(val provider: ProviderSetting, val model: Model)
 
-/** 服务商与模型都启用时才视为可用；会话绑定、选择器与发送共用这一判定。 */
+internal fun Model.isChatModel(): Boolean = outputModalities.isEmpty() ||
+    outputModalities.any { it.equals(Model.TEXT_MODALITY, ignoreCase = true) }
+
+/** 服务商具备传输凭据且与模型都启用时可用；绑定、回退与发送共用这一判定。 */
 internal fun List<ProviderSetting>.enabledModel(
     modelId: String?,
     providerId: String? = null,
@@ -215,12 +225,12 @@ internal fun List<ProviderSetting>.enabledModel(
     modelId ?: return null
     for (provider in this) {
         if (providerId != null && provider.id != providerId) continue
-        if (!provider.isEnabled) continue
-        provider.models.firstOrNull { it.id == modelId && it.isEnabled }?.let { return ProviderModel(provider, it) }
+        if (!provider.hasUsableConnection()) continue
+        provider.models.firstOrNull { it.id == modelId && it.isEnabled && it.isChatModel() }?.let { return ProviderModel(provider, it) }
     }
     return null
 }
 
 internal fun ProviderSetting.selectedOrFirstModel(modelId: String?): Model? =
-    models.firstOrNull { it.id == modelId && it.isEnabled }
-        ?: models.filter { it.isEnabled }.minByOrNull { it.sortOrder }
+    models.firstOrNull { it.id == modelId && it.isEnabled && it.isChatModel() }
+        ?: models.filter { it.isEnabled && it.isChatModel() }.minByOrNull { it.sortOrder }

@@ -74,6 +74,20 @@ class ProviderComponentsTest {
     }
 
     @Test
+    fun candidateMinimumContextWindowAllowsNoConstraintAndRejectsInvalidValues() {
+        assertNull(candidateContextWindowInputError("  "))
+        assertNull(candidateContextWindowInputError("256000"))
+        assertEquals(
+            "最低上下文窗口必须是 1 到 10,000,000 之间的整数",
+            candidateContextWindowInputError("0"),
+        )
+        assertEquals(
+            "最低上下文窗口必须是 1 到 10,000,000 之间的整数",
+            candidateContextWindowInputError("10000001"),
+        )
+    }
+
+    @Test
     fun knownSourcesMapToDistinctBrandLogos() {
         val expected = mapOf(
             ProviderSourceTypes.OPENAI to R.drawable.provider_logo_openai,

@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="local_models_speech_litert_parameters">音频参数由语音包决定。加速后端不可用时回退 CPU，实际后端显示在模型状态中。</string>
+</resources>

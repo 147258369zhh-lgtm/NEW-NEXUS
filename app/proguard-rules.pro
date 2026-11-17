@@ -110,8 +110,16 @@
 # Nimbus 内嵌 Gson 携带此 CLASS 级静态检查注解，运行时不依赖它。
 -dontwarn com.google.errorprone.annotations.CanIgnoreReturnValue
 
+# Commons Compress detects these optional codecs at runtime. Nexus model imports use
+# ZIP, gzip, bzip2 and XZ; neither optional codec is installed or advertised.
+-dontwarn com.github.luben.zstd.ZstdInputStream
+-dontwarn org.brotli.dec.BrotliInputStream
+
 # 保留源码与行号属性，便于使用 release mapping 还原线上堆栈。
 -keepattributes SourceFile,LineNumberTable
+
+# Sherpa JNI reads Kotlin configuration fields and constructors by their original names.
+-keep class com.k2fsa.sherpa.onnx.** { *; }
 
 # app_process 通过固定类名启动受控的一方应用与虚拟屏操作入口。
 -keep class io.github.mangi.eta.agent.phone.PhoneCommandMain {

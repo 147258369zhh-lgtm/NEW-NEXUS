@@ -1,0 +1,23 @@
+These JavaScript packages are from Operit:
+https://github.com/AAswordman/Operit
+Source revision: 16cffb98f52a11dc77bd0a789ffa0b01ed398ee4
+License: LGPL-3.0, included in LICENSE-LGPL-3.0.txt.
+Nexus provides its own isolated runtime and permission adapters. Importing these
+scripts does not imply that every Operit host API or UI extension is supported.
+
+message-translation-dialog.ui.js is the unmodified dist/ui/translate_dialog.ui.js
+from examples/message_translation at that revision, SHA-256
+6322bce7e4b4e761dd39fd7ebb71a1519014cc3e71c1f612be9ac34c3f6a26f1.
+
+custom-ai-provider-main.js is the unmodified dist/main.js from
+examples/custom_ai_provider at the same revision, SHA-256
+3151eecc96f324105e8a6edb1252941618633bddf813216ae8d30b73974a1b08.
+
+desktop-widget-main.js, desktop-widget-page.ui.js and desktop-widget-render.ui.js
+are the unmodified dist/main.js, dist/ui/widget_demo/index.ui.js and
+dist/ui/widget_demo/widget.ui.js from examples/desktop_widget_demo at that revision.
+They are test fixtures; the native Android widget host/renderer is a Nexus adapter.
+SHA-256, respectively:
+504c455b668b3c02d7a7393a19f9088abcac23cb669461ff4825f22259cf9894
+6da5624ca1f6197eff6105a0030d148b7481be18f551cd6bda09734a71c10fa9
+413c13b1e9b19f87ee2b2d7dbb75bee9f670f70416fbb1b2cdd2ef050911e6ac

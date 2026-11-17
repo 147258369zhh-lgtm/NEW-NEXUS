@@ -31,6 +31,7 @@ internal class VerifiedArtifactDownloader(
     suspend fun download(
         artifact: VerifiedArtifact,
         target: File,
+        onVerifying: suspend () -> Unit = {},
         onProgress: suspend (downloadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
     ): Boolean {
         target.parentFile?.mkdirs()
@@ -38,7 +39,7 @@ internal class VerifiedArtifactDownloader(
         val candidates = (artifact.preferredUrls + artifact.url + artifact.fallbackUrls).distinct()
         for ((attempt, url) in candidates.withIndex()) {
             target.delete()
-            if (downloadOnce(artifact, target, url, attempt + 1, onProgress)) return true
+            if (downloadOnce(artifact, target, url, attempt + 1, onVerifying, onProgress)) return true
         }
         target.delete()
         return false
@@ -49,6 +50,7 @@ internal class VerifiedArtifactDownloader(
         target: File,
         url: String,
         attempt: Int,
+        onVerifying: suspend () -> Unit,
         onProgress: suspend (downloadedBytes: Long, totalBytes: Long) -> Unit,
     ): Boolean {
         val request = Request.Builder().url(url).get().build()
@@ -89,6 +91,8 @@ internal class VerifiedArtifactDownloader(
                     }
                 }
                 if (tooLarge) return@responseUse false
+                onProgress(bytesRead, artifact.sizeBytes)
+                onVerifying()
                 val actualSha256 = digest.digest().toHexString()
                 val accepted = bytesRead == artifact.sizeBytes && actualSha256 == artifact.sha256
                 logger.info(

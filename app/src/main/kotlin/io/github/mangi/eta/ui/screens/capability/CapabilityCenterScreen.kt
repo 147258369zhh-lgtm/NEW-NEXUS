@@ -35,15 +35,16 @@ import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Security
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Source
 import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -78,7 +79,6 @@ import io.github.mangi.eta.agent.skill.SkillPrerequisiteStatus
 import io.github.mangi.eta.agent.skill.SkillReadinessInspector
 import io.github.mangi.eta.agent.skill.SkillRuntime
 import io.github.mangi.eta.data.model.McpServerSetting
-import io.github.mangi.eta.data.repository.McpServerRepository
 import io.github.mangi.eta.ui.components.DetailListRow
 import io.github.mangi.eta.ui.components.EtaChoiceChip
 import io.github.mangi.eta.ui.components.EtaIconTone
@@ -86,23 +86,28 @@ import io.github.mangi.eta.ui.components.EtaIconTile
 import io.github.mangi.eta.ui.components.EtaMotion
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.screens.mcp.McpServersLoadState
+import io.github.mangi.eta.ui.screens.mcp.rememberMcpServersLoadState
 import io.github.mangi.eta.ui.components.PreferenceIcon
 import io.github.mangi.eta.ui.components.etaGlassSurface
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import top.yukonga.miuix.kmp.basic.Card
+import kotlinx.coroutines.flow.first
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
-import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.basic.TabRow
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle as SmallTitle
+import io.github.mangi.eta.ui.components.NexusSettingsTabs
+import io.github.mangi.eta.ui.components.NexusSettingsGroup
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.preference.ArrowPreference
-import top.yukonga.miuix.kmp.preference.SwitchPreference
+import io.github.mangi.eta.ui.components.NexusSettingsArrowPreference as ArrowPreference
+import io.github.mangi.eta.ui.components.NexusSettingsSwitchPreference as SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
 import java.text.SimpleDateFormat
@@ -119,6 +124,7 @@ private data class LocalCapabilityData(
     val skills: List<SkillIndexEntry>,
     val apis: List<ApiConnectorDefinition>,
     val updateState: SkillUpdateState,
+    val enabledConnections: Int,
 )
 
 @Composable
@@ -134,6 +140,9 @@ internal fun CapabilityCenterScreen(
     onOpenLocalModels: () -> Unit,
     onOpenSpeechRecognition: () -> Unit,
     onOpenSpeechSynthesis: () -> Unit,
+    onDshInsert: suspend (String) -> Boolean = { false },
+    onDshCommand: (String, String) -> Boolean = { _, _ -> false },
+    dshDraft: suspend () -> String? = { null },
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -146,19 +155,27 @@ internal fun CapabilityCenterScreen(
     val updateService = remember(context.applicationContext) {
         SkillUpdateService(context.applicationContext)
     }
-    val mcpServers by McpServerRepository.serversFlow().collectAsState(initial = emptyList())
+    var mcpRefreshKey by remember { mutableIntStateOf(0) }
+    val mcpLoadState = rememberMcpServersLoadState(mcpRefreshKey)
+    val mcpServers = (mcpLoadState as? McpServersLoadState.Loaded)?.servers.orEmpty()
     var tab by remember { mutableIntStateOf(TAB_OVERVIEW) }
     var refreshGeneration by remember { mutableIntStateOf(0) }
+    var localLoadGeneration by remember { mutableIntStateOf(0) }
+    var localLoadJob by remember { mutableStateOf<Job?>(null) }
     var sources by remember { mutableStateOf<List<SkillSourceDefinition>>(emptyList()) }
     var installedSkills by remember { mutableStateOf<List<SkillIndexEntry>>(emptyList()) }
     var apiConnectors by remember { mutableStateOf<List<ApiConnectorDefinition>>(emptyList()) }
+    var otherConnectionCount by remember { mutableIntStateOf(0) }
     var market by remember { mutableStateOf<SkillMarketSnapshot?>(null) }
     var searching by remember { mutableStateOf(false) }
     var localLoading by remember { mutableStateOf(true) }
+    var localDataState by remember { mutableStateOf<CapabilityLocalDataState>(CapabilityLocalDataState.Loading) }
     var query by remember { mutableStateOf("") }
     var notice by remember { mutableStateOf<CapabilityNotice?>(null) }
     var details by remember { mutableStateOf<SkillMarketDetails?>(null) }
     var detailLoading by remember { mutableStateOf(false) }
+    var detailGeneration by remember { mutableIntStateOf(0) }
+    var detailJob by remember { mutableStateOf<Job?>(null) }
     var installing by remember { mutableStateOf(false) }
     var pendingUnverified by remember { mutableStateOf<SkillMarketItem?>(null) }
     var pendingReplacement by remember { mutableStateOf<PendingCapabilityReplacement?>(null) }
@@ -170,6 +187,9 @@ internal fun CapabilityCenterScreen(
     var automaticUpdates by remember {
         mutableStateOf(SkillUpdateSettingsStore.enabled(context.applicationContext))
     }
+    var showPackages by remember { mutableStateOf(false) }
+    var showDsh by remember { mutableStateOf(false) }
+    var showToolPlatform by remember { mutableStateOf(false) }
 
     val visibleMarketItems = market?.items.orEmpty().filter { item ->
         (filters.sourceId == null || item.sourceId == filters.sourceId) &&
@@ -183,10 +203,13 @@ internal fun CapabilityCenterScreen(
     }
 
     fun refreshLocal() {
-        scope.launch {
-            localLoading = true
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
+        val generation = ++localLoadGeneration
+        localLoadJob?.cancel()
+        localLoading = true
+        localLoadJob = scope.launch {
+            try {
+                val result = try {
+                    Result.success(withContext(Dispatchers.IO) {
                     val loadedSources = service.sources()
                     val loadedSkills = SkillRuntime.createIndexService(context.applicationContext)
                         .listSkillsForManagement(forceRefresh = true)
@@ -196,22 +219,38 @@ internal fun CapabilityCenterScreen(
                         skills = loadedSkills,
                         apis = apiService.connectors(),
                         updateState = SkillUpdateStore(context.applicationContext).read(),
+                        enabledConnections = io.github.mangi.eta.agent.capability.CapabilityConnectionSummary.otherEnabled(context.applicationContext),
+                    )
+                    })
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    Result.failure(failure)
+                }
+                if (generation != localLoadGeneration) return@launch
+                result.onSuccess { loaded ->
+                    sources = loaded.sources
+                    installedSkills = loaded.skills
+                    apiConnectors = loaded.apis
+                    otherConnectionCount = loaded.enabledConnections
+                    updateState = loaded.updateState
+                    localDataState = CapabilityLocalDataState.Loaded
+                }.onFailure { failure ->
+                    if (!hasCapabilitySnapshot(localDataState)) {
+                        localDataState = CapabilityLocalDataState.Failed
+                    }
+                    notice = CapabilityNotice(
+                        title = "能力信息读取失败",
+                        message = safeMessage(failure),
+                        isError = true,
                     )
                 }
+            } finally {
+                if (generation == localLoadGeneration) {
+                    localLoading = false
+                    localLoadJob = null
+                }
             }
-            result.onSuccess { loaded ->
-                sources = loaded.sources
-                installedSkills = loaded.skills
-                apiConnectors = loaded.apis
-                updateState = loaded.updateState
-            }.onFailure {
-                notice = CapabilityNotice(
-                    title = "能力信息读取失败",
-                    message = safeMessage(it),
-                    isError = true,
-                )
-            }
-            localLoading = false
         }
     }
 
@@ -243,19 +282,34 @@ internal fun CapabilityCenterScreen(
         }
     }
 
+    fun closeDetails() {
+        detailGeneration++
+        detailJob?.cancel()
+        detailJob = null
+        details = null
+        detailLoading = false
+    }
+
     fun openDetails(item: SkillMarketItem) {
-        if (detailLoading) return
+        val generation = ++detailGeneration
+        detailJob?.cancel()
         details = SkillMarketDetails(item = item)
         detailLoading = true
-        scope.launch {
+        detailJob = scope.launch {
             try {
-                details = service.loadDetails(item)
+                val loaded = service.loadDetails(item)
+                if (generation == detailGeneration) details = loaded
             } catch (failure: CancellationException) {
                 throw failure
             } catch (failure: Throwable) {
-                details = SkillMarketDetails(item = item, detailWarning = safeMessage(failure))
+                if (generation == detailGeneration) {
+                    details = SkillMarketDetails(item = item, detailWarning = safeMessage(failure))
+                }
             } finally {
-                detailLoading = false
+                if (generation == detailGeneration) {
+                    detailLoading = false
+                    detailJob = null
+                }
             }
         }
     }
@@ -297,7 +351,7 @@ internal fun CapabilityCenterScreen(
                 is SkillMarketInstallOutcome.Success -> {
                     pendingUnverified = null
                     pendingReplacement = null
-                    details = null
+                    closeDetails()
                     val setupHint = if (outcome.setupRequiredSkillIds.isEmpty()) {
                         "已启用，将在下一轮对话中可用"
                     } else {
@@ -361,10 +415,36 @@ internal fun CapabilityCenterScreen(
         onDispose { service.close() }
     }
 
+    if (showToolPlatform) {
+        ToolPlatformScreen(onBack = { showToolPlatform = false })
+        return
+    }
+    if (showDsh) {
+        DshHostsScreen(onBack = { showDsh = false }, insertDraft = onDshInsert, command = onDshCommand, draft = dshDraft,
+            openPage = { page -> when (page) { "skills" -> { onOpenSkills(); true }; "models" -> { onOpenLocalModels(); true }
+                "mcp" -> { onOpenMcp(); true }; else -> false } })
+        return
+    }
+    if (showPackages) {
+        PackageCenterScreen(onBack = { showPackages = false })
+        return
+    }
+    val overviewScroll = androidx.compose.foundation.lazy.rememberLazyListState()
+    val discoverScroll = androidx.compose.foundation.lazy.rememberLazyListState()
+    val connectionsScroll = androidx.compose.foundation.lazy.rememberLazyListState()
+    val sourcesScroll = androidx.compose.foundation.lazy.rememberLazyListState()
     MiuixScaffoldPage(
-        title = "能力中心",
-        onBack = onBack,
+        listState = listOf(overviewScroll, discoverScroll, connectionsScroll, sourcesScroll)[tab],
+        aboveContent = { NexusSettingsTabs(listOf(
+            stringResource(R.string.settings_tab_overview), "Skills",
+            stringResource(R.string.settings_tab_connections),
+        ), if (tab == TAB_SOURCES) TAB_DISCOVER else tab, { tab = it }) },
+        title = if (tab == TAB_SOURCES) "Skill 来源" else "能力中心",
+        onBack = { if (tab == TAB_SOURCES) tab = TAB_DISCOVER else onBack() },
         actions = {
+            if (tab == TAB_DISCOVER) IconButton(onClick = { tab = TAB_SOURCES }) {
+                Icon(Icons.Rounded.Settings, contentDescription = "管理 Skill 来源")
+            }
             IconButton(
                 enabled = !localLoading && !searching,
                 onClick = {
@@ -372,82 +452,64 @@ internal fun CapabilityCenterScreen(
                     if (tab == TAB_DISCOVER) searchMarket()
                 },
             ) {
-                Icon(Icons.Rounded.Refresh, contentDescription = "刷新能力中心")
+                Icon(Icons.Rounded.Refresh, contentDescription = stringResource(R.string.capability_center_refresh))
             }
         },
     ) {
-        item(key = "capability_tabs") {
-            TabRow(
-                tabs = listOf("概览", "发现", "连接", "来源"),
-                selectedTabIndex = tab,
-                onTabSelected = { tab = it },
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            )
-        }
 
         when (tab) {
             TAB_OVERVIEW -> {
                 item(key = "overview_metrics") {
                     SmallTitle("能力概况")
                     CapabilityMetricsCard(
-                        skillCount = installedSkills.count(SkillIndexEntry::enabled),
-                        connectionCount = mcpServers.count { it.enabled } + apiConnectors.count { it.enabled },
-                        sourceCount = sources.count(SkillSourceDefinition::enabled),
+                        skillCount = installedSkills.count(SkillIndexEntry::enabled).takeIf { hasCapabilitySnapshot(localDataState) },
+                        connectionCount = if (hasCapabilitySnapshot(localDataState)) {
+                            (mcpLoadState as? McpServersLoadState.Loaded)
+                                ?.servers?.count { it.enabled }?.plus(apiConnectors.count { it.enabled })?.plus(otherConnectionCount)
+                        } else null,
+                        sourceCount = sources.count(SkillSourceDefinition::enabled).takeIf { hasCapabilitySnapshot(localDataState) },
                     )
                 }
                 item(key = "overview_entries") {
                     SmallTitle("能力管理")
-                    Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp).etaGlassSurface()) {
+                    Card(Modifier.padding(horizontal = 16.dp, vertical = 2.dp).etaGlassSurface()) {
+                        DetailListRow(title = "模型工具平台", subtitle = "内置工具与 Linux 能力清单",
+                            icon = Icons.Rounded.Extension, tone = EtaIconTone.TOOL,
+                            onClick = { showToolPlatform = true })
                         DetailListRow(
                             title = "已安装 Skills",
-                            subtitle = "${installedSkills.size} 个已安装",
+                            subtitle = if (hasCapabilitySnapshot(localDataState)) {
+                                "${installedSkills.size} 个已安装"
+                            } else {
+                                stringResource(if (localLoading) R.string.capability_local_data_loading else R.string.capability_local_data_failed)
+                            },
                             icon = Icons.Rounded.AutoAwesome,
                             tone = EtaIconTone.MEMORY,
-                            value = installedSkills.count { it.enabled }.toString() + " 已启用",
+                            value = if (hasCapabilitySnapshot(localDataState)) installedSkills.count { it.enabled }.toString() + " 已启用" else "—",
                             onClick = onOpenSkills,
                         )
                         DetailListRow(
                             title = "MCP 与外部工具",
-                            subtitle = "${mcpServers.count { it.activeTools.isNotEmpty() }} 个连接可用",
+                            subtitle = when (mcpLoadState) {
+                                McpServersLoadState.Loading -> stringResource(R.string.mcp_servers_loading)
+                                McpServersLoadState.Failed -> stringResource(R.string.mcp_servers_load_failed)
+                                is McpServersLoadState.Loaded -> "${mcpServers.count { it.activeTools.isNotEmpty() }} 个连接已启用工具"
+                            },
                             icon = Icons.Rounded.Hub,
                             tone = EtaIconTone.TOOL,
                             onClick = onOpenMcp,
                         )
                         DetailListRow(
-                            title = "提示词与工具边界",
-                            subtitle = "按模型、会话、会议室与子 Agent 设置注入范围",
-                            icon = Icons.Rounded.Description,
-                            tone = EtaIconTone.AUTOMATION,
-                            onClick = onOpenPromptInjection,
-                        )
-                        DetailListRow(
                             title = "REST API 连接",
-                            subtitle = "${apiConnectors.count { it.activeActions.isNotEmpty() }} 个连接可用",
+                            subtitle = if (hasCapabilitySnapshot(localDataState)) {
+                                "${apiConnectors.count { it.activeActions.isNotEmpty() }} 个连接已启用操作"
+                            } else {
+                                stringResource(if (localLoading) R.string.capability_local_data_loading else R.string.capability_local_data_failed)
+                            },
                             icon = Icons.Rounded.Link,
                             tone = EtaIconTone.DATA,
-                            value = apiConnectors.size.toString() + " 个已导入",
+                            value = if (hasCapabilitySnapshot(localDataState)) apiConnectors.size.toString() + " 个已导入" else "—",
                             onClick = onOpenApiConnectors,
-                        )
-                        DetailListRow(
-                            title = "本地模型与视觉",
-                            subtitle = "文本、语音、视觉与向量能力",
-                            icon = Icons.Rounded.Memory,
-                            tone = EtaIconTone.MODEL,
-                            onClick = onOpenLocalModels,
-                        )
-                        DetailListRow(
-                            title = "语音识别",
-                            subtitle = "本地与在线 ASR",
-                            icon = Icons.Rounded.Mic,
-                            tone = EtaIconTone.TOOL,
-                            onClick = onOpenSpeechRecognition,
-                        )
-                        DetailListRow(
-                            title = "语音合成",
-                            subtitle = "阅读播报与流式 TTS",
-                            icon = Icons.Rounded.RecordVoiceOver,
-                            tone = EtaIconTone.TOOL,
-                            onClick = onOpenSpeechSynthesis,
                         )
                         DetailListRow(
                             title = "工具边界与审批",
@@ -460,7 +522,7 @@ internal fun CapabilityCenterScreen(
                 }
                 item(key = "overview_skill_updates") {
                     SmallTitle("Skill 更新")
-                    Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+                    Card(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                         SwitchPreference(
                             title = "自动检查更新",
                             summary = "联网时每天检查已安装 Skill 的来源，只在发现更新时通知",
@@ -494,17 +556,21 @@ internal fun CapabilityCenterScreen(
                 }
                 item(key = "overview_recent") {
                     SmallTitle("近期安装")
-                    Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+                    Card(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                         val recent = installedSkills
                             .filter { it.provenance != null }
                             .sortedByDescending { it.provenance?.installedAt ?: 0L }
                             .take(4)
                         if (recent.isEmpty()) {
-                            CapabilityEmptyRow(
-                                icon = Icons.Rounded.Inventory2,
-                                title = "还没有市场安装记录",
-                                subtitle = "发现页可从 GitHub 或 HTTPS Skill 目录安装",
-                            )
+                            if (hasCapabilitySnapshot(localDataState)) {
+                                CapabilityEmptyRow(
+                                    icon = Icons.Rounded.Inventory2,
+                                    title = "还没有市场安装记录",
+                                    subtitle = "发现页可从 GitHub 或 HTTPS Skill 目录安装",
+                                )
+                            } else {
+                                LocalCapabilityDataStatus(localLoading, onRetry = { refreshLocal() })
+                            }
                         } else {
                             recent.forEach { skill ->
                                 DetailListRow(
@@ -524,8 +590,16 @@ internal fun CapabilityCenterScreen(
             }
 
             TAB_DISCOVER -> {
+                item(key = "installed_skill_entry") {
+                    Card(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+                        DetailListRow(title = "我的 Skills", subtitle = "已安装 · 启用状态 · 更新与兼容性",
+                            icon = Icons.Rounded.AutoAwesome, tone = EtaIconTone.MEMORY,
+                            value = if (hasCapabilitySnapshot(localDataState)) installedSkills.size.toString() else "—",
+                            onClick = onOpenSkills)
+                    }
+                }
                 item(key = "market_search") {
-                    Card(Modifier.padding(horizontal = 12.dp, vertical = 10.dp).etaGlassSurface()) {
+                    Card(Modifier.padding(horizontal = 16.dp, vertical = 10.dp).etaGlassSurface()) {
                         Column(
                             Modifier.padding(16.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -583,7 +657,7 @@ internal fun CapabilityCenterScreen(
                     }
                     if (visibleMarketItems.isEmpty()) {
                         item(key = "market_empty") {
-                            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+                            Card(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                                 CapabilityEmptyRow(
                                     icon = Icons.Rounded.Search,
                                     title = if (snapshot.items.isEmpty()) {
@@ -627,13 +701,21 @@ internal fun CapabilityCenterScreen(
             TAB_CONNECTIONS -> {
                 item(key = "connections_intro") {
                     SmallTitle("外部连接")
-                    Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+                    Card(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
+                        DetailListRow(title = "插件与沙盒包", icon = Icons.Rounded.Inventory2, tone = EtaIconTone.TOOL,
+                            onClick = { showPackages = true })
+                        DetailListRow(title = "DSH 主机", icon = Icons.Rounded.Hub, tone = EtaIconTone.TOOL,
+                            onClick = { showDsh = true })
                         DetailListRow(
                             title = "MCP 服务",
                             subtitle = "工具、资源与提示词",
                             icon = Icons.Rounded.Hub,
                             tone = EtaIconTone.TOOL,
-                            value = mcpServers.size.toString() + " 个已配置",
+                            value = if (!hasCapabilitySnapshot(localDataState)) "—" else when (mcpLoadState) {
+                                McpServersLoadState.Loading -> stringResource(R.string.mcp_servers_loading)
+                                McpServersLoadState.Failed -> "—"
+                                is McpServersLoadState.Loaded -> mcpServers.size.toString() + " 个已配置"
+                            },
                             onClick = onOpenMcp,
                         )
                         DetailListRow(
@@ -641,7 +723,7 @@ internal fun CapabilityCenterScreen(
                             subtitle = "OpenAPI 与逐操作授权",
                             icon = Icons.Rounded.Link,
                             tone = EtaIconTone.DATA,
-                            value = apiConnectors.size.toString() + " 个已配置",
+                            value = if (hasCapabilitySnapshot(localDataState)) apiConnectors.size.toString() + " 个已配置" else "—",
                             onClick = onOpenApiConnectors,
                         )
                         DetailListRow(
@@ -663,27 +745,50 @@ internal fun CapabilityCenterScreen(
                     }
                 }
                 item(key = "connections_health") {
-                    SmallTitle("连接健康")
-                    Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
-                        if (mcpServers.isEmpty() && apiConnectors.isEmpty()) {
-                            CapabilityEmptyRow(
-                                icon = Icons.Rounded.Link,
-                                title = "尚未连接外部工具",
-                                subtitle = "先添加 MCP 服务，再按需启用具体工具",
+                    SmallTitle("连接配置与最近检查")
+                    NexusSettingsGroup {
+                        if (!hasCapabilitySnapshot(localDataState)) {
+                            LocalCapabilityDataStatus(localLoading, onRetry = { refreshLocal() })
+                        } else when (mcpLoadState) {
+                            McpServersLoadState.Loading -> Text(
+                                stringResource(R.string.mcp_servers_loading),
+                                modifier = Modifier.padding(16.dp),
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                             )
-                        } else {
-                            mcpServers.forEach { server ->
-                                McpCapabilityRow(server)
+                            McpServersLoadState.Failed -> Column(Modifier.padding(16.dp)) {
+                                Text(stringResource(R.string.mcp_servers_load_failed))
+                                TextButton(
+                                    text = stringResource(R.string.action_retry),
+                                    onClick = { mcpRefreshKey++ },
+                                )
                             }
-                            apiConnectors.forEach { connector ->
-                                ApiCapabilityRow(connector)
+                            is McpServersLoadState.Loaded -> {
+                                if (mcpServers.isEmpty() && apiConnectors.isEmpty()) {
+                                    CapabilityEmptyRow(
+                                        icon = Icons.Rounded.Link,
+                                        title = "尚未连接外部工具",
+                                        subtitle = "先添加 MCP 服务，再按需启用具体工具",
+                                    )
+                                }
                             }
+                        }
+                    }
+                }
+                if (!hasCapabilitySnapshot(localDataState) || mcpLoadState is McpServersLoadState.Loaded) {
+                    mcpServers.forEach { server ->
+                        item(key = "connection-mcp:${server.id}") {
+                            NexusSettingsGroup { McpCapabilityRow(server) }
+                        }
+                    }
+                    if (hasCapabilitySnapshot(localDataState)) apiConnectors.forEach { connector ->
+                        item(key = "connection-api:${connector.id}") {
+                            NexusSettingsGroup { ApiCapabilityRow(connector) }
                         }
                     }
                 }
                 item(key = "connections_security") {
                     SmallTitle("安全边界")
-                    Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+                    Card(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                         DetailListRow(
                             title = "连接凭据按设备加密保存",
                             subtitle = "令牌不会进入对话",
@@ -698,7 +803,7 @@ internal fun CapabilityCenterScreen(
             TAB_SOURCES -> {
                 item(key = "sources_header") {
                     Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -716,14 +821,19 @@ internal fun CapabilityCenterScreen(
                     }
                 }
                 item(key = "sources_list") {
-                    SmallTitle("来源列表 " + sources.size)
-                    Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
-                        if (sources.isEmpty()) {
+                    SmallTitle(
+                        if (hasCapabilitySnapshot(localDataState)) "来源列表 ${sources.size}"
+                        else stringResource(if (localLoading) R.string.capability_local_data_loading else R.string.capability_local_data_failed),
+                    )
+                    Card(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
+                        if (sources.isEmpty() && hasCapabilitySnapshot(localDataState)) {
                             CapabilityEmptyRow(
                                 icon = Icons.Rounded.Source,
                                 title = "没有 Skill 来源",
-                                subtitle = "添加 GitHub 仓库或 Nexus Skill 目录",
+                                subtitle = "添加 GitHub 仓库或 NEXA Skill 目录",
                             )
+                        } else if (sources.isEmpty()) {
+                            LocalCapabilityDataStatus(localLoading, onRetry = { refreshLocal() })
                         } else {
                             sources.forEach { source ->
                                 SourceRow(
@@ -763,7 +873,7 @@ internal fun CapabilityCenterScreen(
                     }
                 }
                 item(key = "sources_reset") {
-                    Card(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                    Card(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
                         ArrowPreference(
                             title = "恢复内置来源",
                             summary = "保留自定义来源，重新启用 OpenAI 精选 Skill 来源",
@@ -812,8 +922,7 @@ internal fun CapabilityCenterScreen(
             installing = installing,
             onDismiss = {
                 if (!installing) {
-                    details = null
-                    detailLoading = false
+                    closeDetails()
                 }
             },
             onInstall = { install(current.item) },
@@ -824,7 +933,7 @@ internal fun CapabilityCenterScreen(
         WindowDialog(
             show = true,
             title = "安装未校验的 Skill？",
-            summary = "该来源没有提供 SHA-256。Nexus 仍会检查路径、大小和元数据，但无法证明下载内容与发布者一致。",
+            summary = "该来源没有提供 SHA-256。NEXA 仍会检查路径、大小和元数据，但无法证明下载内容与发布者一致。",
             onDismissRequest = { pendingUnverified = null },
         ) {
             MiuixDialogActions(
@@ -1059,11 +1168,11 @@ private fun FilterSectionLabel(text: String) {
 
 @Composable
 private fun CapabilityMetricsCard(
-    skillCount: Int,
-    connectionCount: Int,
-    sourceCount: Int,
+    skillCount: Int?,
+    connectionCount: Int?,
+    sourceCount: Int?,
 ) {
-    Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.primary)) {
+    Card(Modifier.padding(horizontal = 16.dp, vertical = 2.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.primary)) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 18.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
@@ -1077,7 +1186,7 @@ private fun CapabilityMetricsCard(
 
 @Composable
 private fun CapabilityMetric(
-    value: Int,
+    value: Int?,
     label: String,
     icon: ImageVector,
     modifier: Modifier = Modifier,
@@ -1094,7 +1203,7 @@ private fun CapabilityMetric(
             label = "capability-metric-value",
         ) { current ->
             Text(
-                text = current.toString(),
+                text = current?.toString() ?: "—",
                 style = MiuixTheme.textStyles.title3,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
@@ -1112,7 +1221,7 @@ private fun CapabilityMetric(
 
 @Composable
 private fun SourceHealthCard(snapshot: SkillMarketSnapshot) {
-    Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.secondary)) {
+    Card(Modifier.padding(horizontal = 16.dp, vertical = 2.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.secondary)) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             snapshot.statuses.forEachIndexed { index, status ->
                 if (index > 0) {
@@ -1169,7 +1278,7 @@ private fun MarketItemCard(
     updateAvailable: Boolean,
     onClick: () -> Unit,
 ) {
-    Card(Modifier.padding(horizontal = 12.dp, vertical = 4.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.primary)) {
+    Card(Modifier.padding(horizontal = 16.dp, vertical = 4.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.primary)) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1222,6 +1331,11 @@ private fun MarketItemCard(
                         }
                         append("  ·  ")
                         append(if (item.integrityVerified) "完整性已固定" else "安装前需确认")
+                        if (item.archiveMirrors.isNotEmpty()) {
+                            append("  ·  ")
+                            append(item.archiveMirrors.size)
+                            append(" 个镜像")
+                        }
                     },
                     style = MiuixTheme.textStyles.footnote1.copy(fontSize = 12.sp, lineHeight = 17.sp),
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
@@ -1256,10 +1370,14 @@ private fun MarketDetailDialog(
 ) {
     val item = details.item
     val context = LocalContext.current.applicationContext
-    val prerequisiteSummary = remember(details.dependencies) {
-        if (details.dependencies.isEmpty()) {
+    val prerequisiteSummary by produceState<String?>(
+        initialValue = null,
+        key1 = item.key,
+        key2 = details.dependencies,
+    ) {
+        value = if (details.dependencies.isEmpty()) {
             null
-        } else {
+        } else withContext(Dispatchers.IO) {
             runCatching {
                 val reports = SkillReadinessInspector.inspect(
                     details.dependencies,
@@ -1309,7 +1427,7 @@ private fun MarketDetailDialog(
                 }
                 if (details.dependencies.isNotEmpty()) {
                     DetailFactRow("依赖", details.dependencies.joinToString(" · "))
-                    prerequisiteSummary?.let { DetailFactRow("依赖状态", it) }
+                    DetailFactRow("依赖状态", prerequisiteSummary ?: "正在检查")
                 }
                 if (details.permissions.isNotEmpty()) {
                     DetailFactRow("所需权限", details.permissions.joinToString(" · "))
@@ -1428,7 +1546,9 @@ private fun McpCapabilityRow(server: McpServerSetting) {
     val stale = server.toolsExpireAt?.let { it < System.currentTimeMillis() } == true
     val status = when {
         !server.enabled -> "已停用"
+        server.lastError != null -> "最近检查失败 · 请打开 MCP 查看"
         stale -> "工具目录待刷新"
+        server.lastCheckedAt == null -> "尚未检查连接"
         server.activeTools.isNotEmpty() -> server.activeTools.size.toString() + " 个工具已启用"
         else -> "尚未启用工具"
     }
@@ -1475,7 +1595,12 @@ private fun SourceRow(
         SwitchPreference(
             title = source.name,
             summary = buildString {
-                append(if (source.type == SkillSourceType.GITHUB_REPOSITORY) "GitHub" else "HTTPS 目录")
+                append(when (source.type) {
+                    SkillSourceType.GITHUB_REPOSITORY -> "GitHub"
+                    SkillSourceType.GITLAB_REPOSITORY -> "GitLab"
+                    SkillSourceType.GITEE_REPOSITORY -> "Gitee"
+                    else -> "HTTPS 目录"
+                })
                 append(" · ")
                 append(source.location)
                 if (status != null) {
@@ -1493,7 +1618,7 @@ private fun SourceRow(
             onCheckedChange = onToggle,
             startAction = {
                 PreferenceIcon(
-                    if (source.type == SkillSourceType.GITHUB_REPOSITORY) {
+                    if (source.type in setOf(SkillSourceType.GITHUB_REPOSITORY, SkillSourceType.GITLAB_REPOSITORY, SkillSourceType.GITEE_REPOSITORY)) {
                         Icons.Rounded.Public
                     } else {
                         Icons.Rounded.Source
@@ -1505,7 +1630,10 @@ private fun SourceRow(
                     IconButton(onClick = onDelete) {
                         Icon(
                             Icons.Rounded.DeleteOutline,
-                            contentDescription = "删除 " + source.name,
+                            contentDescription = capabilitySourceDeleteDescription(
+                                deleteLabel = stringResource(R.string.action_delete),
+                                sourceName = source.name,
+                            ),
                             tint = MiuixTheme.colorScheme.error,
                         )
                     }
@@ -1514,6 +1642,9 @@ private fun SourceRow(
         )
     }
 }
+
+internal fun capabilitySourceDeleteDescription(deleteLabel: String, sourceName: String): String =
+    "$deleteLabel $sourceName"
 
 @Composable
 private fun AddSourceDialog(
@@ -1525,11 +1656,7 @@ private fun AddSourceDialog(
     var location by remember { mutableStateOf("") }
     var ref by remember { mutableStateOf("") }
     var path by remember { mutableStateOf("") }
-    val type = if (typeIndex == 0) {
-        SkillSourceType.GITHUB_REPOSITORY
-    } else {
-        SkillSourceType.HTTP_CATALOG
-    }
+    val type = when (typeIndex) { 0 -> SkillSourceType.GITHUB_REPOSITORY; 1 -> SkillSourceType.GITLAB_REPOSITORY; 2 -> SkillSourceType.GITEE_REPOSITORY; else -> SkillSourceType.HTTP_CATALOG }
     WindowDialog(
         show = true,
         title = "添加 Skill 来源",
@@ -1537,9 +1664,9 @@ private fun AddSourceDialog(
         onDismissRequest = onDismiss,
     ) {
         Column(Modifier.fillMaxWidth().heightIn(max = 560.dp)) {
-            TabRow(
-                tabs = listOf("GitHub", "HTTPS 目录"),
-                selectedTabIndex = typeIndex,
+            NexusSettingsTabs(
+                tabs = listOf("GitHub", "GitLab", "Gitee", "HTTPS 目录"),
+                selectedTab = typeIndex,
                 onTabSelected = { typeIndex = it },
                 modifier = Modifier.padding(bottom = 14.dp),
             )
@@ -1559,11 +1686,11 @@ private fun AddSourceDialog(
                 TextField(
                     value = location,
                     onValueChange = { location = it.take(2_048) },
-                    label = if (typeIndex == 0) "owner/repository 或 GitHub URL" else "HTTPS 目录 JSON 地址",
+                    label = when (typeIndex) { 0 -> "owner/repository 或 GitHub URL"; 1 -> "group/project 或 GitLab URL"; 2 -> "owner/project 或 Gitee URL"; else -> "HTTPS 目录 JSON 地址" },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                if (typeIndex == 0) {
+                if (typeIndex in 0..2) {
                     TextField(
                         value = ref,
                         onValueChange = { ref = it.take(200) },
@@ -1582,6 +1709,10 @@ private fun AddSourceDialog(
                 CapabilityInlineWarning(
                     if (typeIndex == 0) {
                         "仅支持公共 github.com 仓库。搜索时解析并固定 commit，安装不会跟随分支变化。"
+                    } else if (typeIndex == 1) {
+                        "仅支持公共 gitlab.com 仓库。搜索时解析并固定 commit，安装不会跟随分支变化。"
+                    } else if (typeIndex == 2) {
+                        "仅支持公共 gitee.com 仓库。搜索时解析并固定 commit，安装不会跟随分支变化。"
                     } else {
                         "目录必须使用 HTTPS，且需声明 schema=eta-skill-catalog/v1；建议为每个包提供 SHA-256。"
                     },
@@ -1640,7 +1771,7 @@ private fun CapabilityInlineWarning(text: String) {
 
 @Composable
 private fun CapabilityNote(text: String) {
-    Card(Modifier.padding(horizontal = 12.dp, vertical = 3.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.secondary)) {
+    Card(Modifier.padding(horizontal = 16.dp, vertical = 3.dp).etaGlassSurface(accent = MiuixTheme.colorScheme.secondary)) {
         Text(
             text = text,
             style = MiuixTheme.textStyles.footnote1.copy(lineHeight = 20.sp),
@@ -1659,7 +1790,22 @@ private fun LoadingCapabilityRow() {
     ) {
         InfiniteProgressIndicator(size = 22.dp)
         Spacer(Modifier.width(10.dp))
-        Text("正在读取能力信息", style = MiuixTheme.textStyles.body2)
+        Text(stringResource(R.string.capability_local_data_loading), style = MiuixTheme.textStyles.body2)
+    }
+}
+
+@Composable
+private fun LocalCapabilityDataStatus(localLoading: Boolean, onRetry: () -> Unit) {
+    if (localLoading) {
+        LoadingCapabilityRow()
+    } else {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(stringResource(R.string.capability_local_data_failed), color = MiuixTheme.colorScheme.error)
+            TextButton(text = stringResource(R.string.action_retry), onClick = onRetry)
+        }
     }
 }
 

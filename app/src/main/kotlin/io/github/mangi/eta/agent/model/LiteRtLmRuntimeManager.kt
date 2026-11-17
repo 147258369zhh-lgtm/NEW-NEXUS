@@ -47,6 +47,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -586,6 +588,7 @@ internal object LiteRtLmRuntimeManager {
         var lastFailure: Throwable? = null
         val loadStartedAt = SystemClock.elapsedRealtime()
         for (backend in requestedBackend) {
+            currentCoroutineContext().ensureActive()
             var candidate: Engine? = null
             val backendKey = when (backend) {
                 is Backend.NPU -> "npu"
@@ -620,6 +623,7 @@ internal object LiteRtLmRuntimeManager {
                 )
                 LocalModelNativeCrashGuard.phase(attempt, "engine-initialize")
                 candidate.initialize()
+                currentCoroutineContext().ensureActive()
                 val backendName = when (backend) {
                     is Backend.NPU -> "NPU · Hexagon V${QualcommNpuRuntimeManager.arch ?: "?"} · LiteRT-LM"
                     is Backend.GPU -> "GPU"

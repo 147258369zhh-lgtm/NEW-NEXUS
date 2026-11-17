@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="speech_asr_deepseek">DeepSeek · 完整录音转写</string>
+    <string name="speech_tts_deepseek">DeepSeek · 语音合成</string>
+    <string name="speech_deepseek_api_key">语音专用 API Key</string>
+    <string name="speech_deepseek_base_url">服务地址（HTTPS）</string>
+    <string name="speech_deepseek_asr_note">录音完成后上传识别，不提供实时转写。支持 16 位 PCM WAV，单次最大 8 MiB、120 秒；应用录音仍按当前时长限制结束。上传内容将由 DeepSeek 处理并可能产生费用。</string>
+    <string name="speech_deepseek_connection_note">识别与播报分别保存专用密钥，不借用聊天或云端工具凭据。保存只检查本地配置，不会发送收费验证请求。</string>
+    <string name="speech_deepseek_voice_note">仅支持 stella、tide，返回 24 kHz WAV 音频。单次最多 10,000 计费字符，汉字按两个字符计；试听和实际播报可能产生费用。</string>
+    <string name="speech_voice_deepseek_stella">Stella</string>
+    <string name="speech_voice_deepseek_tide">Tide</string>
+    <string name="speech_deepseek_voice_invalid">请选择 stella 或 tide</string>
+    <string name="speech_deepseek_retry_credentials">重试读取密钥</string>
+    <string name="speech_deepseek_credentials_preserved">密钥未能读取，已保留原有密文；请重试读取后再编辑密钥。</string>
+</resources>

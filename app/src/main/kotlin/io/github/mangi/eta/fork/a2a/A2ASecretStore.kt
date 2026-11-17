@@ -11,19 +11,25 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /** Stores bearer tokens as AES-GCM ciphertext backed by an Android Keystore key. */
-internal class A2ASecretStore(context: Context) {
+internal class A2ASecretStore(context: Context, private val keyProvider: ((Boolean) -> SecretKey)? = null) {
     private val appContext = context.applicationContext
-    private val preferences = appContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+    @Suppress("DEPRECATION")
+    private val preferences = appContext.getSharedPreferences(
+        PREFERENCES_NAME,
+        // Rotation happens in the UI process; the endpoint process verifies every request
+        // against a reloaded ciphertext snapshot from this multi-process preference file.
+        Context.MODE_PRIVATE or Context.MODE_MULTI_PROCESS,
+    )
 
     fun save(alias: String, secret: String): String {
         requireValidAlias(alias)
         val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.ENCRYPT_MODE, key())
+        cipher.init(Cipher.ENCRYPT_MODE, key(true))
         val encrypted = cipher.doFinal(secret.toByteArray(Charsets.UTF_8))
         val payload = cipher.iv + encrypted
-        preferences.edit()
+        check(preferences.edit()
             .putString(alias, Base64.encodeToString(payload, Base64.NO_WRAP))
-            .apply()
+            .commit()) { "连接凭据未保存" }
         return alias
     }
 
@@ -37,7 +43,7 @@ internal class A2ASecretStore(context: Context) {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(
             Cipher.DECRYPT_MODE,
-            key(),
+            key(false),
             GCMParameterSpec(GCM_TAG_BITS, payload, 0, GCM_IV_BYTES),
         )
         return cipher.doFinal(payload, GCM_IV_BYTES, payload.size - GCM_IV_BYTES)
@@ -47,12 +53,19 @@ internal class A2ASecretStore(context: Context) {
     fun delete(alias: String?) {
         if (alias == null) return
         requireValidAlias(alias)
-        preferences.edit().remove(alias).apply()
+        check(preferences.edit().remove(alias).commit()) { "连接凭据未删除" }
+    }
+    fun encryptedSnapshot(alias: String): String? { requireValidAlias(alias); return preferences.getString(alias, null) }
+    fun restoreEncryptedSnapshot(alias: String, value: String?) {
+        requireValidAlias(alias)
+        check(preferences.edit().putString(alias, value).commit()) { "连接凭据恢复失败" }
     }
 
-    private fun key(): SecretKey {
+    private fun key(create: Boolean): SecretKey = synchronized(KEY_LOCK) {
+        keyProvider?.let { return it(create) }
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
         (keyStore.getKey(KEY_NAME, null) as? SecretKey)?.let { return it }
+        check(create) { "连接凭据密钥不可用，请重新授权" }
         return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE).run {
             init(
                 KeyGenParameterSpec.Builder(
@@ -69,6 +82,7 @@ internal class A2ASecretStore(context: Context) {
     }
 
     companion object {
+        private val KEY_LOCK = Any()
         private const val PREFERENCES_NAME = "eta_a2a_secrets"
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
         private const val KEY_NAME = "eta_a2a_bearer_tokens_v1"

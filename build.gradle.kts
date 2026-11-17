@@ -48,7 +48,7 @@ abstract class CheckNexusArchitecture : org.gradle.api.DefaultTask() {
             }
             .toList()
         check(violations.isEmpty()) {
-            "kernel-api contains forbidden dependencies:\n${violations.joinToString("\n")}"
+            "Nexus API modules contain forbidden dependencies:\n${violations.joinToString("\n")}"
         }
 
         val appRoot = appSourceRoot.get().asFile
@@ -56,8 +56,9 @@ abstract class CheckNexusArchitecture : org.gradle.api.DefaultTask() {
             .filter { it.isFile && it.extension == "kt" }
             .flatMap { file ->
                 val relative = file.relativeTo(appRoot).invariantSeparatorsPath
-                val sourceSection = relative.substringAfter("io/github/mangi/eta/", "").substringBefore('/')
-                val runtimeLayer = sourceSection == "agent" && relative.contains("/agent/runtime/")
+                // appSourceRoot already points at io/github/mangi/eta, not src/main/kotlin.
+                val sourceSection = relative.substringBefore('/')
+                val runtimeLayer = relative.startsWith("agent/runtime/")
                 if (sourceSection !in setOf("data", "fork") && !runtimeLayer) emptySequence()
                 else file.readLines().asSequence().mapIndexedNotNull { index, line ->
                     val imported = line.trim().removePrefix("import ").takeIf { line.trim().startsWith("import ") }
@@ -84,4 +85,11 @@ tasks.register<CheckNexusArchitecture>("checkNexusArchitecture") {
         fileTree(layout.projectDirectory.dir("application-api/src/main/kotlin")) { include("**/*.kt") },
     )
     appSourceRoot.set(layout.projectDirectory.dir("app/src/main/kotlin/io/github/mangi/eta"))
+}
+
+tasks.register("checkNexusBaseline") {
+    group = "verification"
+    description = "Runs Nexus architecture, API contracts, application tests and Kotlin compilation."
+    dependsOn("checkNexusArchitecture", ":kernel-api:testDebugUnitTest", ":application-api:testDebugUnitTest",
+        ":app:testDebugUnitTest", ":app:compileDebugKotlin")
 }

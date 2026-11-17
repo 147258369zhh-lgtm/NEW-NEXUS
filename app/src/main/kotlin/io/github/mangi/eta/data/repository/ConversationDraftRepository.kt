@@ -43,7 +43,7 @@ internal class ConversationDraftRepository(
 
     private val lock = Any()
     private val epochs = mutableMapOf<ConversationSubject, Long>()
-    private data class ActiveEditor(val lease: Lease, val read: () -> ConversationDraft?)
+    private data class ActiveEditor(val lease: Lease, val read: () -> ConversationDraft?, val replace: ((ConversationDraft) -> Unit)?)
     private val activeEditors = linkedMapOf<Any, ActiveEditor>()
     private val retiredEditors = Collections.newSetFromMap(WeakHashMap<Lease, Boolean>())
     // A cached null is a deliberate clear, not an unloaded draft. Keep only a small recent set.
@@ -97,7 +97,7 @@ internal class ConversationDraftRepository(
 
     /** Reader is invoked only by main-thread input/share actions, never by the IO worker. */
     @androidx.annotation.MainThread
-    fun registerActive(lease: Lease, acceptHandoff: Boolean = true, read: () -> ConversationDraft?): Closeable {
+    fun registerActive(lease: Lease, acceptHandoff: Boolean = true, replace: ((ConversationDraft) -> Unit)? = null, read: () -> ConversationDraft?): Closeable {
         val token = Any()
         val previous = synchronized(lock) {
             activeEditors.values.lastOrNull { it.lease.subject == lease.subject && valid(it.lease) }
@@ -110,7 +110,7 @@ internal class ConversationDraftRepository(
             // Capture live input before invalidating the old page's late onDispose. The receiving
             // editor restores this snapshot even when the previous 300 ms debounce never ran.
             if (handoff != null) enqueueWrite(lease.subject.key, handoff.normalized().takeUnless { it.text.isEmpty() })
-            activeEditors[token] = ActiveEditor(lease, read)
+            activeEditors[token] = ActiveEditor(lease, read, replace)
         }
         return Closeable { synchronized(lock) { activeEditors.remove(token) } }
     }
@@ -119,6 +119,26 @@ internal class ConversationDraftRepository(
     fun activeDraft(subject: ConversationSubject): ConversationDraft? {
         val editor = synchronized(lock) { activeEditors.values.lastOrNull { it.lease.subject == subject && valid(it.lease) } }
         return editor?.read?.invoke()
+    }
+
+    /** The mounted editor is changed synchronously; no delayed model snapshot can overwrite typing. */
+    @androidx.annotation.MainThread
+    suspend fun insertExternal(subject: ConversationSubject, text: String, stillCurrent: () -> Boolean = { true }): Boolean {
+        require(text.isNotEmpty() && text.codePointCount(0, text.length) <= 2000)
+        val lease = open(subject)
+        val stored = load(lease)
+        if (!stillCurrent()) return false
+        val active = synchronized(lock) { activeEditors.values.lastOrNull { it.lease.subject == subject && valid(it.lease) } }
+        if (active != null && (active.replace == null || active.read() == null)) return false
+        val current = (active?.read?.invoke() ?: stored ?: ConversationDraft("")).normalized()
+        val start = minOf(current.selectionStart, current.selectionEnd)
+        val end = maxOf(current.selectionStart, current.selectionEnd)
+        val content = current.text.substring(0, start) + text + current.text.substring(end)
+        if (content.length > 64_000) return false
+        val changed = ConversationDraft(content, start + text.length)
+        active?.replace?.invoke(changed)
+        save(lease, changed).await()
+        return true
     }
 
     suspend fun load(lease: Lease): ConversationDraft? {

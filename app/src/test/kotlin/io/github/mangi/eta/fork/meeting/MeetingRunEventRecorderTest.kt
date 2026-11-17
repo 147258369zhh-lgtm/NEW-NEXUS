@@ -2,6 +2,7 @@ package io.github.mangi.eta.fork.meeting
 
 import io.github.mangi.eta.agent.accessibility.AccessibilityWaitPhase
 import io.github.mangi.eta.agent.runtime.AgentEvent
+import io.github.mangi.eta.agent.runtime.RunApprovalPhase
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -11,6 +12,21 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MeetingRunEventRecorderTest {
+    @Test fun approvalTransitionsAreRecordedEvenWithoutStreams() = runBlocking {
+        val phases = mutableListOf<RunApprovalPhase>()
+        val recorder = MeetingRunEventRecorder("run", {}, {}, recordStreams = false, persistApproval = { phases += it.phase })
+        recorder.accept(AgentEvent.ApprovalChanged("approval", "tool", RunApprovalPhase.REQUESTED))
+        recorder.accept(AgentEvent.ApprovalChanged("approval", "tool", RunApprovalPhase.APPROVED))
+        assertTrue(recorder.finish())
+        assertEquals(listOf(RunApprovalPhase.REQUESTED, RunApprovalPhase.APPROVED), phases)
+    }
+    @Test fun unfinishedApprovalIsClosedWhenItsRunEnds() = runBlocking {
+        val phases = mutableListOf<RunApprovalPhase>()
+        val recorder = MeetingRunEventRecorder("run", {}, {}, recordStreams = false, persistApproval = { phases += it.phase })
+        recorder.accept(AgentEvent.ApprovalChanged("approval", "tool", RunApprovalPhase.REQUESTED))
+        assertTrue(recorder.finish())
+        assertEquals(listOf(RunApprovalPhase.REQUESTED, RunApprovalPhase.CANCELLED), phases)
+    }
     private val start = AgentEvent.ToolStarted(1, "call", "run_command", "run", "echo safe")
     private val finish = AgentEvent.ToolFinished(1, "call", "run_command", "done", 1, 100, success = true)
 

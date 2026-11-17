@@ -63,7 +63,7 @@ import kotlinx.serialization.encodeToString
 internal object EtaFullBackupArchive {
     const val SUFFIX = ".eta-backup"
     const val FORMAT = "eta-full-backup"
-    const val SCHEMA_VERSION = 3
+    const val SCHEMA_VERSION = 8
 
     private const val JSON_ENTRY = "eta-backup.json"
     private const val MANIFEST_ENTRY = "manifest.json"
@@ -73,11 +73,24 @@ internal object EtaFullBackupArchive {
     private const val MAX_ARCHIVE_BYTES = 8L * 1024L * 1024L * 1024L
     private const val MAX_MANIFEST_BYTES = 16L * 1024L * 1024L
     private val roots = listOf("databases", "shared_prefs", "files", "no_backup")
+    private val configurationFileScopes = listOf("files/datastore", "files/memory", "files/workflow-state", "files/independent-notepad", "files/eta_app_control",
+        "files/workspace-artifacts.json", "files/capability-center", "files/capability-packages", "files/skills", "files/local_models/index-v1.json", "files/linux-environment",
+        "files/roleplay", "files/conversation_attachment_drafts", "files/conversation_attachment_images")
+    private val legacyConfigurationFileScopesV4 = configurationFileScopes.filterNot { it == "files/linux-environment" || it == "files/independent-notepad" }
+    private val legacyConfigurationFileScopesV5 = configurationFileScopes.filterNot { it == "files/independent-notepad" }
     private val excludedPaths = setOf(
         CONTROL_DIR,
         "files/eta-restore-staging",
         "files/eta-restore-rollback",
+        "files/capability-packages/events.db",
+        "files/capability-packages/events.db-wal",
+        "files/capability-packages/events.db-shm",
+        "files/capability-packages/events.db-journal",
+        "files/capability-packages/widget-bindings.json",
+        "files/capability-packages/widget-bindings.json.bak",
+        "files/capability-packages/widget-bindings.json.new",
         "no_backup/eta-portable-secrets.json",
+        "no_backup/mcp-continuations",
         "shared_prefs/eta_auto_backup_secret.xml",
         "no_backup/androidx.work.workdb",
         "no_backup/androidx.work.workdb-wal",
@@ -94,6 +107,8 @@ internal object EtaFullBackupArchive {
 
     private val json = EtaBackupJsonStreams.json
 
+    suspend fun requiresEncryption(context: Context): Boolean = containsCredentials(context, capturePortableSecrets(context))
+
     /** Export a full archive. A non-empty password encrypts the entire ZIP container. */
     suspend fun export(
         context: Context,
@@ -102,6 +117,7 @@ internal object EtaFullBackupArchive {
         onPhase: (String) -> Unit = {},
         onProgress: (EtaBackupProgress) -> Unit = {},
         includeAppFiles: Boolean = true,
+        includeNotepad: Boolean = true,
         compression: EtaBackupCompression = EtaBackupCompression.COMPACT,
     ): EtaBackupSummary = withContext(Dispatchers.IO) {
         val appContext = context.applicationContext
@@ -122,6 +138,10 @@ internal object EtaFullBackupArchive {
             onPhase(phase)
             progress(true)
             checkpointDatabases(appContext)
+            val portableSecrets = capturePortableSecrets(appContext)
+            if (secret == null && containsCredentials(appContext, portableSecrets)) {
+                throw EtaBackupException("完整备份包含 API 密钥或登录凭据，请设置备份密码")
+            }
             val recordCounts = collectRecordCounts(appContext)
             val jsonFile = File(appContext.cacheDir, "eta-backup-${UUID.randomUUID()}.json")
             val secretsFile = File(appContext.cacheDir, "eta-secrets-${UUID.randomUUID()}.json")
@@ -158,8 +178,10 @@ internal object EtaFullBackupArchive {
                     phase = "private_data"
                     onPhase(phase)
                     progress(true)
-                    val exportRoots = if (includeAppFiles) roots else roots - "files"
-                    EtaBackupFileTree.walk(appContext.dataDir, exportRoots, excludedPaths, MAX_ENTRIES - 3) { file, attributes ->
+                    val selectedFileScopes = configurationFileScopes.filter { includeNotepad || it != "files/independent-notepad" }
+                    val exportRoots = if (includeAppFiles) roots else roots - "files" + selectedFileScopes
+                    val exclusions = if (includeNotepad) excludedPaths else excludedPaths + "files/independent-notepad"
+                    EtaBackupFileTree.walk(appContext.dataDir, exportRoots, exclusions, MAX_ENTRIES - 3) { file, attributes ->
                         currentCoroutineContext().ensureActive()
                         val relative = file.relativeTo(appContext.dataDir).invariantSeparatorsPath
                         val path = normalizeEntry(DATA_PREFIX + relative)
@@ -190,7 +212,7 @@ internal object EtaFullBackupArchive {
                     phase = "portable_secrets"
                     onPhase(phase)
                     progress(true)
-                    capturePortableSecrets(appContext).let { secrets ->
+                    portableSecrets.let { secrets ->
                         secretsFile.outputStream().buffered().use { output ->
                             output.write(json.encodeToString(secrets).toByteArray(Charsets.UTF_8))
                         }
@@ -216,8 +238,12 @@ internal object EtaFullBackupArchive {
                         encrypted = secret != null,
                         links = links,
                         directories = directories,
+                        configurationOnly = !includeAppFiles,
+                        selectedFileScopes = selectedFileScopes,
+                        preserveNotepad = includeAppFiles && !includeNotepad,
                     )
                     validateFileMetadata(manifest)
+                    NexusBackupMigration.validate(manifest)
                     val manifestBytes = json.encodeToString(manifest).toByteArray(Charsets.UTF_8)
                     if (manifestBytes.size > MAX_MANIFEST_BYTES) throw EtaBackupException("备份清单超过大小限制")
                     if (manifest.totalBytes > MAX_ARCHIVE_BYTES - manifestBytes.size) throw EtaBackupException("备份内容超过 8 GiB 限制")
@@ -235,6 +261,9 @@ internal object EtaFullBackupArchive {
                     privateBytes = privateBytes,
                     encrypted = secret != null,
                     fullArchive = true,
+                    sourceApplicationId = io.github.zhh_lgtm.nexus.kernel.api.NexusProduct.APPLICATION_ID,
+                    sourceVersionName = io.github.mangi.eta.BuildConfig.VERSION_NAME,
+                    migrationSchemaVersion = io.github.zhh_lgtm.nexus.kernel.api.NexusProduct.DATA_SCHEMA_VERSION,
                 )
             } finally {
                 jsonFile.delete()
@@ -256,22 +285,49 @@ internal object EtaFullBackupArchive {
         }
         val secrets = json.decodeFromString<EtaPortableSecrets>(file.readText(Charsets.UTF_8))
         val providerStorage = EncryptedProviderCredentialStorage(appContext)
-        secrets.providerCredentials.forEach(providerStorage::write)
         val mcpStorage = McpSecretStore(appContext)
-        secrets.mcpBearerTokens.forEach(mcpStorage::setBearerToken)
-        ApiConnectorCredentialTransfer.restore(
-            context = appContext,
-            credentials = secrets.apiConnectorCredentials,
-            storage = mcpStorage,
-        )
+        val packageEnvironment = io.github.mangi.eta.agent.packages.PackageEnvironmentStore(appContext)
+        val connectorConfig = io.github.mangi.eta.agent.connector.ConnectorConfigStore(appContext)
+        val connectorIds = connectorConfig.load().map { it.id }.toSet()
         val a2aStorage = A2ASecretStore(appContext)
-        secrets.a2aBearerTokens.forEach { (alias, token) ->
-            if (token.isNotBlank()) a2aStorage.save(alias, token)
+        val failures = PortableSecretsRestore.run(listOf(
+            "providers" to { secrets.providerCredentials.forEach(providerStorage::write) },
+            "mcp" to { secrets.mcpBearerTokens.forEach(mcpStorage::setBearerToken) },
+            "api_connectors" to {
+                ApiConnectorCredentialTransfer.restore(
+                    context = appContext,
+                    credentials = secrets.apiConnectorCredentials,
+                    storage = mcpStorage,
+                )
+            },
+            "package_environments" to { secrets.packageEnvironments.forEach(packageEnvironment::restore) },
+            "connectors" to {
+                secrets.connectorCredentials.filterKeys { it in connectorIds }
+                    .forEach { (id, credential) -> connectorConfig.updateToken(id, credential) }
+            },
+            "a2a" to {
+                secrets.a2aBearerTokens.forEach { (alias, token) ->
+                    if (token.isNotBlank()) a2aStorage.save(alias, token)
+                }
+                secrets.a2aInboundToken?.takeIf(String::isNotBlank)?.let { token ->
+                    a2aStorage.save("a2a-inbound-v1", token)
+                }
+            },
+            "speech" to {
+                secrets.speechCredentials?.let { SpeechSettingsRepository.saveCredentials(appContext, it) }
+            },
+            "cloud_tools" to {
+                secrets.cloudToolsCredentials?.let { CloudToolsSettingsRepository.saveCredentials(appContext, it) }
+            },
+        ))
+        if (failures.isNotEmpty()) {
+            failures.forEach { failure ->
+                AndroidAgentLogger.warn(
+                    "Nexus portable credential section failed: section=${failure.section} type=${failure.error.safeLogType()}",
+                )
+            }
+            throw IOException("备份凭据尚未完整恢复：${failures.joinToString { it.section }}")
         }
-        secrets.a2aInboundToken?.takeIf(String::isNotBlank)?.let { token ->
-            a2aStorage.save("a2a-inbound-v1", token)
-        }
-        secrets.speechCredentials?.let { SpeechSettingsRepository.saveCredentials(appContext, it) }
         if (!file.delete()) throw IOException("迁移凭据已恢复，但临时文件清理失败")
         AndroidAgentLogger.info("Nexus portable backup credentials restored")
     }
@@ -308,10 +364,10 @@ internal object EtaFullBackupArchive {
                     val header = readPrefix(decoded, 64)
                     decoded.unread(header)
                     if (isJson(header)) EtaBackupRepository.import(appContext, decoded, onCommitted, forgetCredentials, onPhase).copy(encrypted = true)
-                    else stage(appContext, decoded, encrypted = true, onPhase = onPhase)
+                    else stage(appContext, decoded, encrypted = true, safetyPassword = secret, onPhase = onPhase)
                 }
             }
-            isZip(prefix) -> stage(appContext, probe, encrypted = false, onPhase = onPhase)
+            isZip(prefix) -> stage(appContext, probe, encrypted = false, safetyPassword = password?.takeIf(String::isNotEmpty), onPhase = onPhase)
             else -> throw EtaBackupException("无法识别备份格式")
         }
     }
@@ -351,7 +407,7 @@ internal object EtaFullBackupArchive {
     }
 
     fun hasPendingRestore(context: Context): Boolean =
-        File(context.applicationContext.dataDir, "$CONTROL_DIR/state").takeIf { it.isFile }?.readText()?.trim() == "pending"
+        readControl(File(context.applicationContext.dataDir, "$CONTROL_DIR/state"))?.trim() in setOf("pending", "applying")
 
     fun restoreResult(context: Context): String? =
         File(context.applicationContext.dataDir, "$CONTROL_DIR/result").takeIf { it.isFile }?.readText()
@@ -363,13 +419,14 @@ internal object EtaFullBackupArchive {
         val stateFile = File(control, "state")
         val staged = File(control, "staged")
         val rollback = File(control, "rollback")
-        val state = stateFile.takeIf(File::isFile)?.readText()?.trim()
+        val state = readControl(stateFile)?.trim()
         if (state == "applying") {
             return runCatching {
                 restoreRoots(appContext, rollback)
                 EtaBackupFileTree.delete(staged)
                 EtaBackupFileTree.delete(rollback)
-                stateFile.delete()
+                android.util.AtomicFile(stateFile).delete()
+                android.util.AtomicFile(File(control, "rollback-roots.json")).delete()
                 File(control, "result").writeText("上次恢复被中断，已回退到恢复前的数据")
                 false
             }.getOrElse {
@@ -380,7 +437,8 @@ internal object EtaFullBackupArchive {
         if (state == "committed") {
             EtaBackupFileTree.delete(staged)
             EtaBackupFileTree.delete(rollback)
-            stateFile.delete()
+            android.util.AtomicFile(stateFile).delete()
+            android.util.AtomicFile(File(control, "rollback-roots.json")).delete()
             File(control, "result").writeText("完整备份已恢复")
             return true
         }
@@ -389,7 +447,7 @@ internal object EtaFullBackupArchive {
         val stagedManifest = runCatching { readAndVerifyManifest(staged, expectedEncrypted = null) }
             .getOrElse { failure ->
                 EtaBackupFileTree.delete(staged)
-                stateFile.delete()
+                android.util.AtomicFile(stateFile).delete()
                 File(control, "result").writeText("备份校验未通过，现有数据已保留")
                 AndroidAgentLogger.error(
                     "Pending full restore failed validation: type=${failure.safeLogType()}",
@@ -398,41 +456,66 @@ internal object EtaFullBackupArchive {
             }
         if (stagedManifest.format != FORMAT) return false
 
-        stateFile.writeText("applying")
+        var mutationStarted = false
         return try {
+            // Read the old device's denials without opening a preference store before the swap.
+            val localApprovalBlockers = io.github.mangi.eta.agent.approval.ApprovalPreferenceBackupTransfer
+                .localBlockersBeforeFullRestore(appContext)
+            val portableApprovalEvidence = File(staged, JSON_ENTRY).inputStream().use { input ->
+                kotlinx.coroutines.runBlocking {
+                    EtaBackupJsonStreams.stage(appContext, input).use { it.header.approvalPreferences }
+                }
+            }
             EtaBackupFileTree.delete(rollback)
             check(rollback.mkdirs()) { "无法创建恢复快照目录" }
-            val selectedRoots = stagedManifest.roots.filter { it.present }.map { it.name }.ifEmpty { roots }
+            val selectedRoots = activationUnits(stagedManifest)
+            selectedRoots.forEach { EtaBackupFileTree.requireSafeParents(appContext.dataDir, File(appContext.dataDir, it).toPath()) }
+            writeControl(File(control, "rollback-roots.json"), org.json.JSONObject().put("version", 1)
+                .put("selected", org.json.JSONArray(selectedRoots))
+                .put("original", org.json.JSONArray(selectedRoots.filter { Files.exists(File(appContext.dataDir, it).toPath(), NOFOLLOW_LINKS) })).toString())
+            writeControl(stateFile, "applying")
+            mutationStarted = true
+            if (stagedManifest.preserveNotepad) copyPreservedNotepad(appContext, staged)
             selectedRoots.forEach { root ->
                 val source = File(appContext.dataDir, root)
-                if (source.exists()) movePath(source, File(rollback, root))
+                if (Files.exists(source.toPath(), NOFOLLOW_LINKS)) movePath(source, File(rollback, root))
             }
             selectedRoots.forEach { root ->
                 val source = File(staged, DATA_PREFIX + root)
-                if (source.exists()) movePath(source, File(appContext.dataDir, root))
+                if (Files.exists(source.toPath(), NOFOLLOW_LINKS)) movePath(source, File(appContext.dataDir, root))
             }
             restoreFileMetadata(appContext, stagedManifest)
+            // A private archive may contain the raw old preferences. Reclassify every positive
+            // row as historical evidence, retain revocations/expiry, and never restore a live permit.
+            val approvalStore = io.github.mangi.eta.agent.approval.ApprovalLearningStore(appContext)
+            approvalStore.restoreEvidence(portableApprovalEvidence ?: approvalStore.exportEvidence(),
+                clearRuntimeState = true, localBlockers = localApprovalBlockers)
+            io.github.mangi.eta.agent.control.SettingsGrantStore(appContext).invalidateAfterBackupRestore()
+            quarantineImportedInputOutbox(appContext)
+            EtaBackupFileTree.delete(File(appContext.noBackupFilesDir, "mcp-continuations"))
             // WorkManager jobs belong to this installation. Rebuild schedules from restored settings.
             listOf(appContext.noBackupFilesDir, File(appContext.dataDir, "databases")).forEach { parent ->
                 listOf("", "-wal", "-shm", "-journal").forEach { suffix ->
                     Files.deleteIfExists(File(parent, "androidx.work.workdb$suffix").toPath())
                 }
             }
-            stateFile.writeText("committed")
+            writeControl(stateFile, "committed")
             // A cleanup failure after commit must never roll back the restored data.
             runCatching {
                 EtaBackupFileTree.delete(staged)
                 EtaBackupFileTree.delete(rollback)
-                stateFile.delete()
+                android.util.AtomicFile(stateFile).delete()
+                android.util.AtomicFile(File(control, "rollback-roots.json")).delete()
             }
             AndroidAgentLogger.info("Nexus full backup restore applied before database initialization")
             runCatching { File(control, "result").writeText("完整备份已恢复") }
             true
         } catch (failure: Throwable) {
-            val rolledBack = runCatching { restoreRoots(appContext, rollback) }.onFailure(failure::addSuppressed).isSuccess
+            val rolledBack = !mutationStarted || runCatching { restoreRoots(appContext, rollback) }.onFailure(failure::addSuppressed).isSuccess
             if (rolledBack) {
                 EtaBackupFileTree.delete(staged)
-                stateFile.delete()
+                android.util.AtomicFile(stateFile).delete()
+                android.util.AtomicFile(File(control, "rollback-roots.json")).delete()
             }
             AndroidAgentLogger.error("Nexus full backup restore failed: type=${failure.safeLogType()}\n${failure.safeStackTrace()}")
             runCatching { File(control, "result").writeText("恢复失败，已尝试回退，请检查数据或使用恢复前快照") }
@@ -444,6 +527,7 @@ internal object EtaFullBackupArchive {
         context: Context,
         input: InputStream,
         encrypted: Boolean,
+        safetyPassword: String?,
         onPhase: (String) -> Unit,
     ): EtaBackupSummary {
         val temp = File(context.cacheDir, "eta-full-restore-${UUID.randomUUID()}").apply {
@@ -454,7 +538,7 @@ internal object EtaFullBackupArchive {
             extract(input, temp)
             onPhase("verify_manifest")
             val manifest = readAndVerifyManifest(temp, encrypted)
-            validateRestorableDatabases(temp)
+            validateRestorableDatabases(temp, manifest)
             onPhase("validate_database")
             val jsonEntry = File(temp, JSON_ENTRY)
             if (!jsonEntry.isFile) throw EtaBackupException("完整备份缺少逻辑数据")
@@ -474,8 +558,8 @@ internal object EtaFullBackupArchive {
                 export(
                     context = context,
                     output = it,
-                    password = null,
-                    includeAppFiles = "files" in selectedRoots,
+                    password = safetyPassword,
+                    includeAppFiles = manifest.fileScopes == null && "files" in selectedRoots,
                     compression = EtaBackupCompression.FAST,
                 )
             }
@@ -496,7 +580,7 @@ internal object EtaFullBackupArchive {
             movePath(stagedNew, staged)
             // A previous successful restore must not be shown as the result of this staged restore.
             File(control, "result").delete()
-            File(control, "state").writeText("pending")
+            writeControl(File(control, "state"), "pending")
             AndroidAgentLogger.info(
                 "Nexus full backup staged: sections=${manifest.sections.size} entries=${manifest.entries.size}",
             )
@@ -506,6 +590,9 @@ internal object EtaFullBackupArchive {
                 encrypted = encrypted,
                 restartRequired = true,
                 fullArchive = true,
+                sourceApplicationId = manifest.sourceApplicationId,
+                sourceVersionName = manifest.appVersion.takeIf(String::isNotBlank),
+                migrationSchemaVersion = manifest.migrationSchemaVersion,
             )
         } catch (failure: Throwable) {
             if (failure is CancellationException || failure is Error) throw failure
@@ -531,7 +618,7 @@ internal object EtaFullBackupArchive {
             onPhase("verify_manifest")
             val manifest = readAndVerifyManifest(temp, encrypted)
             onPhase("validate_database")
-            validateRestorableDatabases(temp)
+            validateRestorableDatabases(temp, manifest)
             onPhase("validate_logical_data")
             val jsonEntry = File(temp, JSON_ENTRY)
             val summary = jsonEntry.inputStream().use { input ->
@@ -542,13 +629,16 @@ internal object EtaFullBackupArchive {
                 privateBytes = manifest.entries.sumOf { it.size },
                 encrypted = encrypted,
                 fullArchive = true,
+                sourceApplicationId = manifest.sourceApplicationId,
+                sourceVersionName = manifest.appVersion.takeIf(String::isNotBlank),
+                migrationSchemaVersion = manifest.migrationSchemaVersion,
             ).also { onPhase("inspect_complete") }
         } finally {
             EtaBackupFileTree.delete(temp)
         }
     }
 
-    private fun validateRestorableDatabases(directory: File) {
+    private fun validateRestorableDatabases(directory: File, manifest: EtaFullBackupManifest) {
         EtaMigrationPlan.entries.distinctBy { it.databaseName }.forEach { entry ->
             val file = File(directory, "data/databases/${entry.databaseName}")
             if (!file.isFile) return@forEach
@@ -558,6 +648,9 @@ internal object EtaFullBackupArchive {
                     File(file.parentFile, file.name + suffix).takeIf { it.isFile }?.copyTo(File(validation, file.name + suffix), overwrite = true)
                 }
                 SQLiteDatabase.openDatabase(File(validation, file.name).path, null, SQLiteDatabase.OPEN_READWRITE or SQLiteDatabase.NO_LOCALIZED_COLLATORS).use { database ->
+                    if (manifest.schemaVersion >= 4 && manifest.databaseVersions[entry.databaseName] != database.version) {
+                        throw EtaBackupException("${entry.name} 数据库版本与清单不一致")
+                    }
                     if (database.version > entry.currentVersion || database.version < 1) {
                         throw EtaBackupException("${entry.name} 数据库版本不兼容，请使用同版或更新版 Nexus 恢复")
                     }
@@ -573,6 +666,15 @@ internal object EtaFullBackupArchive {
     }
 
     private suspend fun checkpointDatabases(context: Context) {
+        NexusExecutionStore.get(context).checkpointForBackup()
+        val inputOutbox = context.getDatabasePath("nexa_run_input_outbox.db")
+        if (inputOutbox.isFile) {
+            SQLiteDatabase.openDatabase(inputOutbox.path, null, SQLiteDatabase.OPEN_READWRITE or SQLiteDatabase.NO_LOCALIZED_COLLATORS).use { database ->
+                database.rawQuery("PRAGMA wal_checkpoint(FULL)", null).use { cursor ->
+                    if (!cursor.moveToFirst() || cursor.getInt(0) != 0) throw EtaBackupException("追问恢复仍有活动写入，请稍后备份")
+                }
+            }
+        }
         ConversationDraftRepository.get(context).flush()
         ConversationAttachmentDrafts.get(context).flush()
         AgentRunMetricsStore.flush()
@@ -600,6 +702,7 @@ internal object EtaFullBackupArchive {
 
     private fun collectRecordCounts(context: Context): Map<String, Int> {
         val counts = SECTION_NAMES.associateWithTo(linkedMapOf()) { 0 }
+        counts["runtime"] = NexusExecutionStore.get(context).recordCount()
         countTables(EtaDatabase.get(context)) { table ->
             when {
                 table.startsWith("runtime_") -> "runtime"
@@ -623,6 +726,13 @@ internal object EtaFullBackupArchive {
             }
         }
         val notificationPath = context.getDatabasePath("eta_notification_history.db")
+        val outboxPath = context.getDatabasePath("nexa_run_input_outbox.db")
+        if (outboxPath.isFile) SQLiteDatabase.openDatabase(outboxPath.path, null,
+            SQLiteDatabase.OPEN_READONLY or SQLiteDatabase.NO_LOCALIZED_COLLATORS).use { database ->
+            database.rawQuery("SELECT COUNT(*) FROM input_outbox", null).use { cursor ->
+                if (cursor.moveToFirst()) counts["runtime"] = counts.getValue("runtime") + cursor.getInt(0)
+            }
+        }
         if (notificationPath.isFile) {
             counts["notifications"] = runCatching<Int> {
                 SQLiteDatabase.openDatabase(
@@ -694,6 +804,11 @@ internal object EtaFullBackupArchive {
         }
 
         val apiCredentials = ApiConnectorCredentialTransfer.capture(context, mcpStorage)
+        val packageEnvironments = linkedMapOf<String, String>()
+        val environmentStore = io.github.mangi.eta.agent.packages.PackageEnvironmentStore(context)
+        io.github.mangi.eta.agent.packages.CapabilityPackageStore(context).list().forEach { record ->
+            environmentStore.portable(record.id)?.let { packageEnvironments[record.id] = it }
+        }
         val unreadableApiTokens = apiCredentials.unreadable
 
         val a2aBearerTokens = linkedMapOf<String, String>()
@@ -733,10 +848,21 @@ internal object EtaFullBackupArchive {
             providerCredentials = providerCredentials,
             mcpBearerTokens = mcpBearerTokens,
             apiConnectorCredentials = apiCredentials.credentials,
+            packageEnvironments = packageEnvironments,
+            connectorCredentials = io.github.mangi.eta.agent.connector.ConnectorConfigStore(context).exportCredentials(),
             a2aBearerTokens = a2aBearerTokens,
             a2aInboundToken = A2AInboundConfigStore(context).loadToken(),
             speechCredentials = speechCredentials,
+            cloudToolsCredentials = CloudToolsSettingsRepository.credentials(context),
         )
+    }
+
+    private suspend fun containsCredentials(context: Context, secrets: EtaPortableSecrets): Boolean {
+        if (EtaDatabase.get(context).providerDao().providers().any { it.provider.apiKey.isNotBlank() }) return true
+        val raw = context.getSharedPreferences("eta_agent_preferences", Context.MODE_PRIVATE)
+            .getString(io.github.mangi.eta.config.Prefs.Keys.AGENT_RUNTIME_CONFIG_JSON, "").orEmpty()
+        if (raw.isNotBlank() && runCatching { org.json.JSONObject(raw).optString("apiKey").isNotBlank() }.getOrDefault(true)) return true
+        return secrets.hasCredentials()
     }
 
     private suspend fun writeFileEntry(
@@ -783,8 +909,12 @@ internal object EtaFullBackupArchive {
         encrypted: Boolean,
         links: List<EtaBackupLinkManifest>,
         directories: List<EtaBackupDirectoryManifest>,
+        configurationOnly: Boolean,
+        selectedFileScopes: List<String>,
+        preserveNotepad: Boolean,
     ): EtaFullBackupManifest {
         val sectionNames = SECTION_NAMES
+        val categorized = entries.map { it.copy(category = NexusBackupMigration.category(it.path, it.section, encrypted).name) }
         val sections = sectionNames.map { name ->
             val sectionEntries = entries.filter { it.section == name }
             val digest = MessageDigest.getInstance("SHA-256")
@@ -813,15 +943,22 @@ internal object EtaFullBackupArchive {
             format = FORMAT,
             schemaVersion = SCHEMA_VERSION,
             exportedAt = System.currentTimeMillis(),
-            appVersion = runCatching {
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
-            }.getOrElse { "" },
+            appVersion = io.github.mangi.eta.BuildConfig.VERSION_NAME,
             encrypted = encrypted,
             roots = roots.map { name ->
-                EtaBackupRootManifest(name, DATA_PREFIX + name in archivedPaths)
+                EtaBackupRootManifest(name, archivedPaths.any { it == DATA_PREFIX + name || it.startsWith("$DATA_PREFIX$name/") })
             },
+            fileScopes = selectedFileScopes.takeIf { configurationOnly },
+            preserveNotepad = preserveNotepad,
             sections = sections,
-            entries = entries,
+            entries = categorized,
+            sourceApplicationId = io.github.zhh_lgtm.nexus.kernel.api.NexusProduct.APPLICATION_ID,
+            migrationSchemaVersion = io.github.zhh_lgtm.nexus.kernel.api.NexusProduct.DATA_SCHEMA_VERSION,
+            databaseVersions = EtaMigrationPlan.entries.distinctBy { it.databaseName }.mapNotNull { entry ->
+                val database = context.getDatabasePath(entry.databaseName)
+                if (!database.isFile) null else SQLiteDatabase.openDatabase(database.path, null,
+                    SQLiteDatabase.OPEN_READONLY or SQLiteDatabase.NO_LOCALIZED_COLLATORS).use { entry.databaseName to it.version }
+            }.toMap(),
             links = links,
             directories = directories,
             totalEntries = entries.size,
@@ -846,11 +983,11 @@ internal object EtaFullBackupArchive {
                 if (entry.isDirectory) {
                     val path = normalizeEntry(entry.name.trimEnd('/'))
                     if (!seen.add(path)) throw EtaBackupException("备份包含重复条目")
-                    if (path.startsWith(DATA_PREFIX) &&
-                        path.removePrefix(DATA_PREFIX).substringBefore('/') in roots
-                    ) {
-                        File(target, path).mkdirs()
+                    val directory = File(target, path)
+                    check(directory.canonicalFile.toPath().startsWith(target.canonicalFile.toPath())) {
+                        "备份条目路径无效"
                     }
+                    check(directory.mkdirs() || directory.isDirectory) { "无法创建备份目录" }
                     zip.closeEntry()
                     continue
                 }
@@ -899,7 +1036,27 @@ internal object EtaFullBackupArchive {
         if (manifest.format != FORMAT || manifest.schemaVersion !in 1..SCHEMA_VERSION) {
             throw EtaBackupException("不支持的完整备份版本")
         }
+        if (manifest.preserveNotepad) {
+            val paths = manifest.entries.map { it.path } + manifest.directories.map { it.path } + manifest.links.map { it.path }
+            if (manifest.schemaVersion < 8 || manifest.fileScopes != null || paths.any {
+                    it == "data/files/independent-notepad" || it.startsWith("data/files/independent-notepad/")
+                }) throw EtaBackupException("记事本恢复范围无效")
+        }
+        manifest.fileScopes?.let { scopes ->
+            val acceptedScopes = when {
+                manifest.schemaVersion >= 6 -> configurationFileScopes
+                manifest.schemaVersion == 5 -> legacyConfigurationFileScopesV5
+                else -> legacyConfigurationFileScopesV4
+            }
+            val validScopes = scopes == acceptedScopes || manifest.schemaVersion >= 7 && scopes == legacyConfigurationFileScopesV5
+            if (!validScopes || manifest.schemaVersion < 4) throw EtaBackupException("配置文件恢复范围无效")
+            val filePaths = manifest.entries.map { it.path } + manifest.directories.map { it.path } + manifest.links.map { it.path }
+            if (filePaths.any { path -> path.startsWith("data/files/") && scopes.none { path == DATA_PREFIX + it || path.startsWith("$DATA_PREFIX$it/") } }) {
+                throw EtaBackupException("配置备份包含恢复范围之外的文件")
+            }
+        }
         validateFileMetadata(manifest)
+        NexusBackupMigration.validate(manifest)
         if (expectedEncrypted != null && manifest.encrypted != expectedEncrypted) {
             throw EtaBackupException("备份加密状态与清单不一致")
         }
@@ -939,13 +1096,28 @@ internal object EtaFullBackupArchive {
             if (path != JSON_ENTRY && !path.startsWith(DATA_PREFIX)) {
                 throw EtaBackupException("备份清单包含不支持的文件")
             }
+            if (path.startsWith("data/files/capability-packages/") && path.removePrefix(DATA_PREFIX) in excludedPaths) {
+                throw EtaBackupException("备份不能恢复本机组件编号或待执行的插件通知")
+            }
             val target = File(directory, path)
             if (!Files.isRegularFile(target.toPath(), NOFOLLOW_LINKS)) throw EtaBackupException("备份文件缺少 ${entry.path}")
             if (target.length() != entry.size) throw EtaBackupException("备份文件大小校验失败")
             if (sha256(target) != entry.sha256) throw EtaBackupException("备份文件哈希校验失败")
+            if (manifest.schemaVersion >= 4 && !manifest.encrypted && path == PORTABLE_SECRETS_ENTRY &&
+                json.decodeFromString<EtaPortableSecrets>(target.readText(Charsets.UTF_8)).hasCredentials()) {
+                throw EtaBackupException("迁移凭据必须保存在加密备份中")
+            }
         }
         val listed = manifest.entries.mapTo(mutableSetOf()) { normalizeEntry(it.path) }
+        val expectedDirectories = if (manifest.schemaVersion >= 3) expectedArchiveDirectories(manifest) else emptySet()
         Files.walkFileTree(directory.toPath(), object : java.nio.file.SimpleFileVisitor<java.nio.file.Path>() {
+            override fun preVisitDirectory(dir: java.nio.file.Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
+                if (manifest.schemaVersion >= 3 && dir != directory.toPath()) {
+                    val relative = directory.toPath().relativize(dir).toString().replace(File.separatorChar, '/')
+                    if (relative !in expectedDirectories) throw EtaBackupException("备份包含清单外目录")
+                }
+                return java.nio.file.FileVisitResult.CONTINUE
+            }
             override fun visitFile(file: java.nio.file.Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
                 val relative = directory.toPath().relativize(file).toString().replace(File.separatorChar, '/')
                 if (!attrs.isRegularFile || (relative != MANIFEST_ENTRY && relative !in listed)) {
@@ -963,6 +1135,21 @@ internal object EtaFullBackupArchive {
         }
         validateSections(directory, manifest)
         return manifest
+    }
+
+    private fun expectedArchiveDirectories(manifest: EtaFullBackupManifest): Set<String> {
+        val expected = linkedSetOf("data")
+        fun addParents(path: String) {
+            var parent = path.substringBeforeLast('/', "")
+            while (parent.isNotEmpty()) {
+                expected += parent
+                parent = parent.substringBeforeLast('/', "")
+            }
+        }
+        manifest.directories.forEach { expected += normalizeEntry(it.path) }
+        manifest.entries.filter { it.path.startsWith(DATA_PREFIX) }.forEach { addParents(it.path) }
+        manifest.links.forEach { addParents(it.path) }
+        return expected
     }
 
     private fun validateSections(directory: File, manifest: EtaFullBackupManifest) {
@@ -1051,15 +1238,62 @@ internal object EtaFullBackupArchive {
     }
 
     private fun restoreRoots(context: Context, rollback: File) {
-        roots.forEach { root ->
+        val journal = readControl(File(rollback.parentFile, "rollback-roots.json"))?.let { org.json.JSONObject(it) }
+        val selected = journal?.getJSONArray("selected")?.let { values -> (0 until values.length()).map(values::getString) } ?: roots
+        val original = journal?.getJSONArray("original")?.let { values -> (0 until values.length()).map(values::getString).toSet() }
+        require(journal == null || journal.getInt("version") == 1 && selected.distinct().size == selected.size &&
+            selected.all { it in roots || it in configurationFileScopes } && original!!.all { it in selected } &&
+            selected.none { parent -> selected.any { it.startsWith("$parent/") } }) { "RESTORE_JOURNAL_INVALID" }
+        selected.forEach { EtaBackupFileTree.requireSafeParents(context.dataDir, File(context.dataDir, it).toPath()) }
+        selected.forEach { root ->
             val target = File(context.dataDir, root)
             val previous = File(rollback, root)
             // A crash may happen before a root has been moved. Leave that original root intact.
-            if (previous.exists()) {
+            if (Files.exists(previous.toPath(), NOFOLLOW_LINKS)) {
                 EtaBackupFileTree.delete(target)
                 movePath(previous, target)
+            } else if (original != null && root !in original) {
+                EtaBackupFileTree.delete(target)
             }
         }
+    }
+
+    private fun activationUnits(manifest: EtaFullBackupManifest): List<String> {
+        val selected = manifest.roots.filter { it.present }.map { it.name }
+        return manifest.fileScopes?.let { (selected - "files") + it }
+            ?: if (manifest.preserveNotepad) (selected + "files").distinct() else selected.ifEmpty { roots }
+    }
+
+    private fun copyPreservedNotepad(context: Context, staged: File) {
+        val files = File(context.dataDir, "files").toPath()
+        if (Files.isSymbolicLink(files)) throw EtaBackupException("无法从链接目录保留记事本")
+        val source = files.resolve("independent-notepad")
+        if (!Files.exists(source, NOFOLLOW_LINKS)) return
+        val destination = File(staged, "data/files/independent-notepad").toPath()
+        Files.createDirectories(destination.parent)
+        Files.walkFileTree(source, object : java.nio.file.SimpleFileVisitor<java.nio.file.Path>() {
+            override fun preVisitDirectory(dir: java.nio.file.Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
+                Files.copy(dir, destination.resolve(source.relativize(dir)), StandardCopyOption.COPY_ATTRIBUTES, NOFOLLOW_LINKS)
+                return java.nio.file.FileVisitResult.CONTINUE
+            }
+            override fun visitFile(file: java.nio.file.Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
+                Files.copy(file, destination.resolve(source.relativize(file)), StandardCopyOption.COPY_ATTRIBUTES, NOFOLLOW_LINKS)
+                return java.nio.file.FileVisitResult.CONTINUE
+            }
+        })
+    }
+
+    private fun readControl(file: File): String? {
+        val atomic = android.util.AtomicFile(file)
+        if (!file.isFile && !File(file.path + ".bak").isFile) return null
+        return String(atomic.readFully(), Charsets.UTF_8)
+    }
+
+    private fun writeControl(file: File, text: String) {
+        val atomic = android.util.AtomicFile(file)
+        val output = atomic.startWrite()
+        try { output.write(text.toByteArray(Charsets.UTF_8)); atomic.finishWrite(output) }
+        catch (failure: Throwable) { atomic.failWrite(output); throw failure }
     }
 
     private fun movePath(source: File, target: File) {
@@ -1078,6 +1312,7 @@ internal object EtaFullBackupArchive {
     }
 
     private fun sectionFor(relative: String): String = when {
+        relative.startsWith("databases/nexa_run_input_outbox.db") -> "runtime"
         relative.startsWith("databases/eta_meeting.db") -> "meeting"
         relative.startsWith("databases/eta_fork.db") -> "conversation_extensions"
         relative.startsWith("databases/eta_learning.db") -> "learning"
@@ -1092,9 +1327,20 @@ internal object EtaFullBackupArchive {
         relative.startsWith("files/datastore/") || relative.startsWith("shared_prefs/") -> "settings"
         relative.startsWith("files/meeting") -> "meeting_artifacts"
         relative.startsWith("files/learning/") -> "learning"
-        relative.startsWith("files/capability-center/") ||
+        relative.startsWith("files/capability-center/") || relative.startsWith("files/capability-packages/") ||
             relative.contains("skill", ignoreCase = true) || relative.contains("mcp", ignoreCase = true) -> "mcp_skills"
         else -> "workspace"
+    }
+
+    private fun quarantineImportedInputOutbox(context: Context) {
+        val file = context.getDatabasePath("nexa_run_input_outbox.db")
+        if (!file.isFile) return
+        SQLiteDatabase.openDatabase(file.path, null, SQLiteDatabase.OPEN_READWRITE or SQLiteDatabase.NO_LOCALIZED_COLLATORS).use { database ->
+            database.execSQL("UPDATE input_outbox SET state='imported_review_required' WHERE state IN ('claimed','running')")
+            database.rawQuery("PRAGMA wal_checkpoint(FULL)", null).use { cursor ->
+                if (!cursor.moveToFirst() || cursor.getInt(0) != 0) throw EtaBackupException("导入的追问续答状态未安全保存")
+            }
+        }
     }
 
     private fun normalizeEntry(raw: String): String {
@@ -1184,6 +1430,11 @@ internal data class EtaFullBackupManifest(
     val modelCount: Int,
     val conversationCount: Int,
     val messageCount: Int,
+    val sourceApplicationId: String? = null,
+    val migrationSchemaVersion: Int? = null,
+    val databaseVersions: Map<String, Int> = emptyMap(),
+    val fileScopes: List<String>? = null,
+    val preserveNotepad: Boolean = false,
 )
 
 @Serializable
@@ -1208,6 +1459,7 @@ internal data class EtaBackupEntryManifest(
     val sha256: String,
     val recordCount: Int = 0,
     val mode: Int? = null,
+    val category: String? = null,
 )
 
 /** Decrypted credentials are held only in memory, the temporary export file, or the backup ZIP. */
@@ -1219,7 +1471,22 @@ internal data class EtaPortableSecrets(
     val a2aBearerTokens: Map<String, String> = emptyMap(),
     val a2aInboundToken: String? = null,
     val speechCredentials: SpeechCredentials? = null,
-)
+    val cloudToolsCredentials: io.github.mangi.eta.data.model.CloudToolsCredentials? = null,
+    val packageEnvironments: Map<String, String> = emptyMap(),
+    val connectorCredentials: Map<String, String> = emptyMap(),
+) {
+    fun hasCredentials(): Boolean = providerCredentials.values.any { it.accessToken.isNotBlank() || it.refreshToken.isNotBlank() || it.idToken.isNotBlank() } ||
+        mcpBearerTokens.isNotEmpty() || apiConnectorCredentials.isNotEmpty() || packageEnvironments.isNotEmpty() || connectorCredentials.isNotEmpty() || a2aBearerTokens.isNotEmpty() || !a2aInboundToken.isNullOrBlank() ||
+        cloudToolsCredentials?.let { cloud -> listOf(cloud.onlineImageApiKey, cloud.deepSeekApiKey, cloud.bailianApiKey,
+            cloud.baiduApiKey, cloud.baiduSecretKey, cloud.tencentSecretId, cloud.tencentSecretKey).any(String::isNotBlank) } == true ||
+        speechCredentials?.let { listOf(it.qwenAsr, it.qwenTts, it.doubaoAsr, it.doubaoTts,
+            it.geminiTts, it.minimaxTts, it.azureAsr, it.azureTts,
+            it.baiduAsrApiKey, it.baiduAsrSecretKey, it.baiduTtsApiKey, it.baiduTtsSecretKey,
+            it.iflytekAsrApiKey, it.iflytekAsrApiSecret, it.iflytekTtsApiKey, it.iflytekTtsApiSecret,
+            it.tencentAsrSecretId, it.tencentAsrSecretKey, it.tencentTtsSecretId, it.tencentTtsSecretKey,
+            it.xiaomiAsr, it.xiaomiTts, it.deepSeekAsr, it.deepSeekTts,
+            it.ossAccessKeyId, it.ossAccessKeySecret).any(String::isNotBlank) } == true
+}
 
 /** Streaming AES-256-GCM container. Each frame is independently authenticated. */
 internal class EtaBackupEncryptedOutputStream(
@@ -1399,6 +1666,7 @@ internal class EtaBackupEncryptedInputStream(
         }
         if (encryptedSize == END_MARKER) {
             if (!finalFrameSeen) throw EtaBackupException("加密备份缺少结束帧")
+            if (source.read() != -1) throw EtaBackupException("加密备份结束标记后存在额外数据")
             ended = true
             return
         }

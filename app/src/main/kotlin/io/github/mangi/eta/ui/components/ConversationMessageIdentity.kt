@@ -40,6 +40,8 @@ internal data class ConversationMessageIdentity(
     val previewLines: Int? = null,
     /** Keep parallel participants' adjacent work processes separate. */
     val workGroup: String? = null,
+    val avatarSeed: String = name,
+    val avatarPalette: AgentIdentityPalette = AgentIdentityPalette.Default,
 )
 
 @Composable
@@ -56,6 +58,17 @@ internal fun ConversationAuthorHeader(identity: ConversationMessageIdentity) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp, if (user) Alignment.End else Alignment.Start),
             ) {
                 if (!user) {
+                    if (identity.role == ConversationAuthorRole.Agent || identity.role == ConversationAuthorRole.Host) {
+                        AgentIdentityAvatar(
+                            displayName = identity.name,
+                            seed = identity.avatarSeed,
+                            size = 24.dp,
+                            icon = null,
+                            singleInitial = true,
+                            modifier = Modifier.size(24.dp),
+                            palette = identity.avatarPalette,
+                        )
+                    } else {
                     Box(
                         modifier = Modifier.size(24.dp).background(MiuixTheme.colorScheme.surfaceContainerHigh, CircleShape),
                         contentAlignment = Alignment.Center,
@@ -65,6 +78,7 @@ internal fun ConversationAuthorHeader(identity: ConversationMessageIdentity) {
                             style = MiuixTheme.textStyles.footnote1,
                             color = MiuixTheme.colorScheme.primary,
                         )
+                    }
                     }
                 }
                 Text(

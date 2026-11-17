@@ -17,7 +17,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MeetingEventEntity::class,
         MeetingParticipantContextEntity::class,
     ],
-    version = 5,
+    version = 7,
     exportSchema = false,
 )
 internal abstract class MeetingDatabase : RoomDatabase() {
@@ -34,7 +34,7 @@ internal abstract class MeetingDatabase : RoomDatabase() {
                     MeetingDatabase::class.java,
                     "eta_meeting.db",
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                     .build()
                     .also { instance = it }
             }
@@ -83,6 +83,19 @@ internal abstract class MeetingDatabase : RoomDatabase() {
         internal val MIGRATION_4_5 = object : Migration(4, 5) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE meeting_rooms ADD COLUMN context_window_override INTEGER")
+            }
+        }
+
+        internal val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE meeting_rooms ADD COLUMN compaction_model_id TEXT")
+                db.execSQL("ALTER TABLE meeting_rooms ADD COLUMN compaction_provider_id TEXT")
+            }
+        }
+
+        internal val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE meeting_rooms ADD COLUMN workflow_snapshot_json TEXT")
             }
         }
     }

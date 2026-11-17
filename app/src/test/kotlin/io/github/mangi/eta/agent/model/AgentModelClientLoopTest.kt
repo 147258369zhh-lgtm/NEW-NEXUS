@@ -16,8 +16,125 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import io.github.zhh_lgtm.nexus.kernel.api.RunBudget
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class AgentModelClientLoopTest {
+    @Test
+    fun rejectsImagesBeforeCallingATextOnlyProvider() {
+        val provider = ScriptedProvider(emptyList())
+        val failure = assertThrows(AgentModelFailure::class.java) {
+            AgentModelClient.complete(
+                config = modelConfig().copy(supportsImageInput = false),
+                prompt = "看看这张图",
+                toolExecutor = AgentModelClient.ToolExecutor { error("unexpected tool") },
+                images = listOf(
+                    AgentModelClient.ModelImage(
+                        reference = "data:image/png;base64,dGVzdA==",
+                        mimeType = "image/png",
+                        bytes = 4,
+                    ),
+                ),
+                provider = provider,
+            )
+        }
+
+        assertEquals("MODEL_IMAGE_INPUT_UNSUPPORTED", failure.code)
+        assertTrue(provider.requests.isEmpty())
+    }
+
+    @Test fun retriesConsumeTheSameRoundBudget() {
+        val provider = ScriptedProvider((1..5).map { { _, _ ->
+            throw AgentModelFailure("HTTP_503", true, "fixture service unavailable")
+        } })
+        val loop = AgentLoop(
+            config = modelConfig(),
+            messages = JSONArray().put(AgentConversationCodec.userTextMessage("start")),
+            tools = JSONArray(),
+            provider = provider,
+            toolExecutor = AgentModelClient.ToolExecutor { error("unexpected tool") },
+            runController = AgentRunController(),
+            traceFormatter = AgentTraceFormatter(), onEvent = {},
+            modelRetry = AgentModelRetry(waitBeforeRetry = { _, _ -> }),
+            budgetGuard = AgentRunBudgetGuard(RunBudget(hardRounds = 2)),
+        )
+        val failure = assertThrows(AgentModelFailure::class.java, loop::run)
+        assertEquals("RUN_BUDGET_EXCEEDED_ROUNDS", failure.code)
+        assertEquals(2, provider.requests.size)
+    }
+
+    @Test
+    fun repeatingModelStopsAtHardRoundBudgetAndKeepsSettledTools() {
+        val provider = ScriptedProvider((1..8).map { index -> { _, _ ->
+            assistant(finishReason = "tool_calls", toolCalls = listOf(toolCall("repeat-$index", "get_current_context", "{}")))
+        } })
+        val executed = mutableListOf<String>()
+        val failure = assertThrows(AgentModelExecutionException::class.java) {
+            AgentModelClient.complete(
+                modelConfig(), "开始", AgentModelClient.ToolExecutor {
+                    executed += it.id
+                    AgentModelClient.ToolResult("""{"ok":true,"verified":"${it.id}"}""")
+                },
+                provider = provider,
+                runBudget = RunBudget(hardRounds = 2),
+            )
+        }
+        assertEquals("RUN_BUDGET_EXCEEDED_ROUNDS", (failure.cause as AgentModelFailure).code)
+        assertEquals(listOf("repeat-1", "repeat-2"), executed)
+        assertEquals(2, provider.requests.size)
+        assertEquals(2, failure.transcript.count { it.role == "tool" && it.content.contains("verified") })
+    }
+
+    @Test
+    fun exhaustedMidBatchRetainsTheSuccessfulToolResultWithoutReplaying() {
+        val provider = ScriptedProvider(assistant(finishReason = "tool_calls", toolCalls = listOf(
+            toolCall("first", "get_current_context", "{}"), toolCall("second", "get_current_context", "{}"),
+        )))
+        val executed = mutableListOf<String>()
+        val saved = mutableListOf<List<AgentModelClient.ConversationMessage>>()
+        val failure = assertThrows(AgentModelExecutionException::class.java) {
+            AgentModelClient.complete(
+                modelConfig(), "开始", AgentModelClient.ToolExecutor {
+                    executed += it.id
+                    AgentModelClient.ToolResult("""{"ok":true,"verified":"first"}""")
+                },
+                provider = provider,
+                runBudget = RunBudget(hardToolCalls = 1),
+                onTranscript = { saved += it },
+            )
+        }
+        assertEquals("RUN_BUDGET_EXCEEDED_TOOL_CALLS", (failure.cause as AgentModelFailure).code)
+        assertEquals(listOf("first"), executed)
+        assertTrue(saved.any { list -> list.any { it.toolCallId == "first" && it.content.contains("verified") } })
+        assertTrue(failure.transcript.single { it.toolCallId == "first" }.content.contains("verified"))
+        assertTrue(failure.transcript.single { it.toolCallId == "second" }.content.contains("TOOL_INTERRUPTED"))
+    }
+
+    @Test(timeout = 5_000)
+    fun deadlineStopsAProviderThatNeverEmitsAnEventAndRetainsFailureReason() {
+        val released = CountDownLatch(1)
+        val controller = AgentRunController()
+        val provider = ScriptedProvider(listOf({ _, runController ->
+            val binding = runController.register { released.countDown() }
+            try {
+                assertTrue("Deadline did not stop the active request", released.await(3, TimeUnit.SECONDS))
+                runController.throwIfCancelled()
+                assistant(content = "unexpected", finishReason = "stop")
+            } finally { binding.close() }
+        }))
+        val failure = assertThrows(AgentModelExecutionException::class.java) {
+            AgentModelClient.complete(
+                modelConfig(), "开始", AgentModelClient.ToolExecutor { error("unexpected tool") },
+                provider = provider, runController = controller,
+                runBudget = RunBudget(hardDurationMs = 500),
+            )
+        }
+        assertEquals("RUN_BUDGET_EXCEEDED_DURATION", (failure.cause as AgentModelFailure).code)
+        assertFalse(controller.isUserCancelled)
+        assertEquals(1, provider.requests.size)
+    }
+
     @Test
     fun rootProbeStatesKeepThePrefixStableUntilGrantActuallyChanges() {
         var root = RootAccessState(isChecking = true)
@@ -797,7 +914,44 @@ class AgentModelClientLoopTest {
     }
 
     @Test
-    fun loopContinuesPastFormerLocalLimitsUntilProviderFinishes() {
+    fun modelFailureClosesOpenCallsBeforeReturningTranscriptWithoutExecutingTools() {
+        val provider = ScriptedProvider(
+            assistant(
+                finishReason = "tool_calls",
+                toolCalls = listOf(
+                    toolCall("open-read", "read_file", "{}"),
+                    toolCall("open-write", "write_file", "{}"),
+                ),
+            ),
+        )
+        var executions = 0
+        val controller = AgentRunController()
+
+        val failure = assertThrows(AgentModelExecutionException::class.java) {
+            AgentModelClient.complete(
+                config = modelConfig(),
+                prompt = "开始",
+                toolExecutor = AgentModelClient.ToolExecutor {
+                    executions += 1
+                    AgentModelClient.ToolResult("unexpected")
+                },
+                provider = provider,
+                runController = controller,
+                onEvent = { event ->
+                    if (event is AgentEvent.AssistantReceived && event.toolNames.isNotEmpty()) controller.cancel()
+                },
+            )
+        }
+
+        assertEquals(0, executions)
+        assertEquals("TOOL_INTERRUPTED_REPLAY_SAFE", failure.transcript.interruptedCode("open-read"))
+        assertEquals("TOOL_INTERRUPTED_USER_CONFIRMATION", failure.transcript.interruptedCode("open-write"))
+        assertFalse(JSONObject(failure.transcript.single { it.toolCallId == "open-read" }.content).getBoolean("ok"))
+        assertFalse(JSONObject(failure.transcript.single { it.toolCallId == "open-write" }.content).getBoolean("ok"))
+    }
+
+    @Test
+    fun explicitLargeBudgetAllowsLongTasksToFinishWithinTheirGrantedLimit() {
         val toolRounds = 257
         val responses = List<(ProviderRequest, AgentRunController) -> JSONObject>(toolRounds) { index ->
             { _, _ ->
@@ -825,6 +979,7 @@ class AgentModelClientLoopTest {
             runController = AgentRunController(),
             traceFormatter = AgentTraceFormatter(),
             onEvent = {},
+            budgetGuard = AgentRunBudgetGuard(RunBudget(hardRounds = toolRounds + 1, hardToolCalls = toolRounds)),
         ).run()
 
         assertEquals("完成", result.content)
@@ -977,3 +1132,6 @@ class AgentModelClientLoopTest {
     private fun JSONArray.getJSONObjectFromEnd(offset: Int): JSONObject =
         getJSONObject(length() - offset)
 }
+
+private fun List<AgentModelClient.ConversationMessage>.interruptedCode(id: String): String =
+    JSONObject(single { it.toolCallId == id }.content).getString("code")

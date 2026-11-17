@@ -147,14 +147,14 @@ internal fun ConversationBranchesScreen(
                         Text(stringResource(R.string.branch_exporting), style = MiuixTheme.textStyles.footnote1)
                         TextButton(stringResource(R.string.action_cancel), onClick = { exportJob?.cancel() })
                     } else TextButton(stringResource(R.string.branch_export), enabled = !loading && !failed && !choosingDestination,
-                        onClick = { choosingDestination = true; exportAll = allFamilies; exportLauncher.launch("Nexus-conversation-branches.json") })
+                        onClick = { choosingDestination = true; exportAll = allFamilies; exportLauncher.launch("NEXA-conversation-branches.json") })
                     if (exportError) Text(stringResource(R.string.branch_export_failed), color = MiuixTheme.colorScheme.error)
                     if (exportCancelled) Text(stringResource(R.string.branch_export_cancelled), style = MiuixTheme.textStyles.footnote1)
                     exportedCount?.let { count -> Text(stringResource(R.string.branch_export_done, count), style = MiuixTheme.textStyles.footnote1) }
                 }
             }
         }
-        if (!loading && rows.isEmpty()) item(key = "empty") {
+        if (shouldShowConversationBranchEmptyState(loading, failed, rows.isEmpty())) item(key = "empty") {
             Text(stringResource(if (search.isBlank()) R.string.branch_empty else R.string.branch_search_empty), Modifier.padding(24.dp), style = MiuixTheme.textStyles.body2)
         }
         items(rows, key = { it.node.conversationId }) { row ->
@@ -255,3 +255,6 @@ internal fun ConversationBranchesScreen(
         }
     }
 }
+
+internal fun shouldShowConversationBranchEmptyState(loading: Boolean, failed: Boolean, rowsEmpty: Boolean): Boolean =
+    !loading && !failed && rowsEmpty

@@ -17,13 +17,15 @@ internal object AgentSubagentToolCatalog {
     fun appendSchemas(
         tools: JSONArray,
         profiles: List<SubagentProfile> = SubagentProfileCatalog.listAll(),
+        maxParallelAgents: Int = io.github.mangi.eta.data.model.SubagentSettings.DEFAULT_MAX_PARALLEL_AGENTS,
     ) {
-        tools.put(schema(profiles))
+        tools.put(schema(profiles, maxParallelAgents))
         tools.put(profileToolSchema())
     }
 
     fun schema(
         profiles: List<SubagentProfile> = SubagentProfileCatalog.listAll(),
+        maxParallelAgents: Int = io.github.mangi.eta.data.model.SubagentSettings.DEFAULT_MAX_PARALLEL_AGENTS,
     ): JSONObject {
         val profileLines = profiles.joinToString("\n") { profile ->
             val tag = if (profile.builtin) "" else " [custom]"
@@ -31,10 +33,13 @@ internal object AgentSubagentToolCatalog {
         }
         val description = buildString {
             append("Launch a subagent in an isolated context to handle an autonomous subtask and return a concise summary. ")
-            append("You can freely spawn as many specialized ephemeral subagents as needed for the conversation without saving them to disk, ")
-            append("or use one of the preset types below. When multiple independent subtasks can run in parallel, issue multiple `subagent` tool calls in the same turn — the runtime executes them concurrently.\n\n")
+            append("You can create specialized ephemeral subagents without saving them to disk. ")
+            append("At most ${maxParallelAgents.coerceIn(1, 8)} child agents run concurrently for one parent run, ")
+            append("while the whole Nexus process admits at most ${SubagentConcurrencyGate.DEFAULT_GLOBAL_LIMIT} local child agents at once; ")
+            append("issue independent calls together and excess calls queue in order.\n\n")
             append("Writing the prompt:\n")
             append("- A fresh subagent starts with zero conversation history. State the goal clearly and include any known file paths, time ranges, package names, or constraints.\n")
+            append("- Include required materials, owned files/output paths, dependencies, acceptance checks, budgets and stop conditions. Assign at most one writer to the same file; request results, evidence, actual validation, blockers and unfinished work in the handoff.\n")
             append("- Prefer resuming an existing subagent (pass its `resume` id) when continuing earlier work so it retains its prior context.\n")
             append("- For ad-hoc specialized roles (e.g. `bill-analyzer`, `log-auditor`, `schedule-checker`), pass the role name in `subagent_type` and optionally specify `role` or `tools` — it runs immediately as an ephemeral subagent.\n")
             append("- The subagent's output is only returned to you; summarize relevant findings for the user in your own reply.\n\n")
@@ -65,7 +70,7 @@ internal object AgentSubagentToolCatalog {
                     .put("maxLength", 48)
                     .put(
                         "description",
-                        "Preset type (\"explore\", \"coder\", \"plan\", or a saved custom profile) OR any ad-hoc kebab-case role name (e.g. \"bill-analyzer\", \"apk-inspector\") to spawn an ephemeral specialized subagent on the fly. Defaults to \"explore\" when omitted. Do not set when `resume` is provided.",
+                        "Preset type from the catalog above, a saved custom profile, or any ad-hoc kebab-case role name to spawn an ephemeral specialist. Defaults to \"explore\". meeting-host remains a non-recursive child here; only the meeting orchestrator dispatches meeting members. Do not set when `resume` is provided.",
                     ),
             )
             .put(

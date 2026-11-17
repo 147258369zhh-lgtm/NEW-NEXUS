@@ -41,6 +41,7 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -95,12 +96,18 @@ internal fun AgentOverlayCapsule(
     onStop: () -> Unit,
     onSupplementModeChange: (Boolean) -> Unit,
     onSupplement: (String) -> Unit,
+    voice: io.github.mangi.eta.agent.voice.RunVoiceSupplementState = io.github.mangi.eta.agent.voice.RunVoiceSupplementState(),
+    onVoiceStart: () -> Unit = {},
+    onVoiceFinish: () -> Unit = {},
+    onVoiceCancel: () -> Unit = {},
     virtualDisplay: VirtualDisplaySnapshot = VirtualDisplaySnapshot.Inactive,
     onTakeOverVirtualDisplay: () -> Unit = {},
     onResumeVirtualDisplay: () -> Unit = {},
     onFullscreenVirtualDisplay: () -> Unit = {},
     onTapVirtualCanvas: (Float, Float, Boolean) -> Unit = { _, _, _ -> },
     onSwipeVirtualCanvas: (Float, Float, Float, Float, Int) -> Unit = { _, _, _, _, _ -> },
+    virtualDisplaySessions: List<VirtualDisplaySnapshot> = emptyList(),
+    onSelectVirtualDisplay: (String) -> Unit = {},
 ) {
     var visible by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { visible = true }
@@ -142,7 +149,11 @@ internal fun AgentOverlayCapsule(
         label = "capsule_clearance",
     )
     val accent by animateColorAsState(overlayPhaseAccent(state.phase), tween(240), label = "capsule_accent")
-    val statusText = state.status.localizedText()
+    val statusText = if (voice.active) when (voice.phase) {
+        io.github.mangi.eta.agent.voice.EtaSpeechPhase.STARTING -> "正在连接语音"
+        io.github.mangi.eta.agent.voice.EtaSpeechPhase.RECOGNIZING -> "正在识别补充"
+        else -> "正在聆听补充"
+    } else state.status.localizedText()
     val expandDescription = stringResource(R.string.overlay_capsule_toggle, statusText)
     // 展开进度只驱动绘制层的透明度与位移，不参与测量；控制区用 AnimatedVisibility 只在两端各测一次。
     val expansion by animateFloatAsState(
@@ -262,6 +273,7 @@ internal fun AgentOverlayCapsule(
                         if (virtualDisplay.active && !supplementMode) {
                             VirtualDisplayStageSection(
                                 snapshot = virtualDisplay,
+                                sessions = virtualDisplaySessions,
                                 accent = accent,
                                 isPaused = state.phase == AgentOverlayPhase.PAUSED,
                                 onTakeOver = onTakeOverVirtualDisplay,
@@ -269,10 +281,22 @@ internal fun AgentOverlayCapsule(
                                 onFullscreen = onFullscreenVirtualDisplay,
                                 onTapCanvas = onTapVirtualCanvas,
                                 onSwipeCanvas = onSwipeVirtualCanvas,
+                                onSelectSession = onSelectVirtualDisplay,
                             )
                             Spacer(Modifier.height(10.dp))
                         }
-                        if (supplementMode) {
+                        if (voice.preview.isNotBlank() || voice.message != null) {
+                            Text(voice.message ?: voice.preview, style = MiuixTheme.textStyles.footnote1,
+                                maxLines = 2, overflow = TextOverflow.Ellipsis,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary, modifier = Modifier.padding(bottom = 8.dp))
+                        }
+                        if (voice.active) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally)) {
+                                top.yukonga.miuix.kmp.basic.TextButton("取消", onClick = onVoiceCancel)
+                                top.yukonga.miuix.kmp.basic.TextButton("发送", onClick = onVoiceFinish,
+                                    enabled = voice.phase == io.github.mangi.eta.agent.voice.EtaSpeechPhase.LISTENING)
+                            }
+                        } else if (supplementMode) {
                             OverlaySupplementInput(
                                 value = supplementText,
                                 onValueChange = { supplementText = it },
@@ -293,6 +317,9 @@ internal fun AgentOverlayCapsule(
                                     tint = MiuixTheme.colorScheme.onSurface,
                                     onClick = { setSupplementMode(true) },
                                 )
+                                if (state.phase in setOf(AgentOverlayPhase.RUNNING, AgentOverlayPhase.PAUSED)) {
+                                    CapsuleAction(Icons.Rounded.Mic, "语音补充", MiuixTheme.colorScheme.primary, onVoiceStart)
+                                }
                                 if (state.phase == AgentOverlayPhase.RUNNING) {
                                     CapsuleAction(
                                         icon = Icons.Rounded.Pause,

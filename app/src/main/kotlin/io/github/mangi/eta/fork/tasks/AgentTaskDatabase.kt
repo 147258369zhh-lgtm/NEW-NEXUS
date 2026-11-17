@@ -16,7 +16,7 @@ import androidx.room.RoomDatabase
         AgentTaskAttentionEntity::class,
         AutomationTriggerEntity::class,
     ],
-    version = 2,
+    version = 5,
     exportSchema = false,
 )
 internal abstract class AgentTaskDatabase : RoomDatabase() {
@@ -34,7 +34,7 @@ internal abstract class AgentTaskDatabase : RoomDatabase() {
                     AgentTaskDatabase::class.java,
                     "eta_task.db",
                 )
-                    .addMigrations(MIGRATION_1_2).build()
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build()
                     .also { instance = it }
             }
 
@@ -51,6 +51,38 @@ internal abstract class AgentTaskDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE agent_task_schedules ADD COLUMN month_day INTEGER")
                 db.execSQL("CREATE TABLE automation_triggers (id TEXT NOT NULL PRIMARY KEY, definitionId TEXT NOT NULL, type TEXT NOT NULL, source TEXT NOT NULL, extension TEXT NOT NULL, cooldownSeconds INTEGER NOT NULL, enabled INTEGER NOT NULL, cursor TEXT NOT NULL, lastFiredAt INTEGER NOT NULL, detail TEXT NOT NULL, FOREIGN KEY(definitionId) REFERENCES agent_task_definitions(id) ON DELETE CASCADE)")
                 db.execSQL("CREATE INDEX index_automation_triggers_definitionId ON automation_triggers(definitionId)")
+            }
+        }
+
+        /** Binds a durable run to the remote A2A task it started so a restart resumes that task. */
+        val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE agent_task_runs ADD COLUMN a2a_agent_id TEXT")
+                db.execSQL("ALTER TABLE agent_task_runs ADD COLUMN a2a_task_id TEXT")
+                db.execSQL("ALTER TABLE agent_task_runs ADD COLUMN a2a_context_id TEXT")
+                db.execSQL("ALTER TABLE agent_task_runs ADD COLUMN a2a_message_id TEXT")
+                db.execSQL("ALTER TABLE agent_task_runs ADD COLUMN a2a_message_seq INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("CREATE INDEX index_agent_task_runs_a2a_agent_id_a2a_task_id ON agent_task_runs(a2a_agent_id, a2a_task_id)")
+            }
+        }
+
+        /** Persist bounded A2A wait and the one-time user reconciliation decision. */
+        val MIGRATION_3_4 = object : androidx.room.migration.Migration(3, 4) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE agent_task_runs ADD COLUMN a2a_deadline_at INTEGER")
+                db.execSQL("ALTER TABLE agent_task_runs ADD COLUMN a2a_review_decision TEXT")
+                db.execSQL("UPDATE agent_task_runs SET a2a_deadline_at = updated_at + 86400000 WHERE state = 'WAITING_REMOTE'")
+                db.execSQL("UPDATE agent_task_runs SET a2a_deadline_at = updated_at + 86400000 WHERE error_code = 'A2A_DISPATCH_UNKNOWN'")
+                db.execSQL("UPDATE agent_task_runs SET state = 'A2A_REVIEW' WHERE error_code = 'A2A_DISPATCH_UNKNOWN' AND state = 'FAILED'")
+            }
+        }
+
+        /** Adds a bounded workflow cursor so settled steps survive process death. */
+        val MIGRATION_4_5 = object : androidx.room.migration.Migration(4, 5) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE agent_task_runs ADD COLUMN workflow_checkpoint_json TEXT NOT NULL DEFAULT '{}'",
+                )
             }
         }
     }

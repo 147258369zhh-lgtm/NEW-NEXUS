@@ -32,6 +32,8 @@ internal object ProviderParameterDiagnostics {
         val message = raw.lowercase()
         return when {
             listOf("tool", "function", "schema").any(message::contains) -> "工具定义不受支持"
+            listOf("image", "image_url", "detail", "modality").any(message::contains) -> "图片输入格式不受支持"
+            listOf("response_format", "response format", "structured output").any(message::contains) -> "结构化输出参数无效"
             listOf("message", "content", "role", "tool_call_id").any(message::contains) -> "消息历史格式无效"
             listOf("stream", "include_usage").any(message::contains) -> "流式参数不受支持"
             listOf("reasoning", "thinking", "effort").any(message::contains) -> "思考参数不受支持"

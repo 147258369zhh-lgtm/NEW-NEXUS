@@ -9,6 +9,7 @@ import org.json.JSONObject
 internal interface AgentProviderClient {
     val id: String
     val capabilities: ProviderCapabilities
+    fun estimateInputTokens(request: ProviderRequest, runController: AgentRunController): Int? = null
 
     fun complete(
         request: ProviderRequest,
@@ -35,7 +36,7 @@ internal enum class EndpointKind {
 }
 
 internal enum class ProviderRequestPurpose {
-    CHAT, COMPACTION, REPLY_REWRITE, TRANSCRIPT_REFINE, FALLBACK, MEMORY_EXTRACTION;
+    CHAT, COMPACTION, REPLY_REWRITE, TRANSCRIPT_REFINE, FALLBACK, MEMORY_EXTRACTION, APPROVAL_REVIEW;
 
     val allowsTools: Boolean get() = this == CHAT
     val acceptsSteering: Boolean get() = this == CHAT || this == FALLBACK
@@ -47,6 +48,8 @@ internal data class ProviderRequest(
     val tools: JSONArray,
     val sessionId: String = java.util.UUID.randomUUID().toString(),
     val purpose: ProviderRequestPurpose = ProviderRequestPurpose.CHAT,
+    val budgetOutputTokenCeiling: Int? = null,
+    val contextOutputTokenCeiling: Int? = null,
 ) {
     val effectiveConfig: AgentModelClient.ModelConfig get() {
         val connected = ProviderConnectionProfile.forAuthMode(config.authMode)?.let { profile ->

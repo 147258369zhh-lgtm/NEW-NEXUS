@@ -37,6 +37,11 @@ data class ArtifactRecord(
     val createdAt: Long,
     val verifiedAt: Long? = null,
     val projectId: String? = null,
+    val subjectType: String? = null,
+    val subjectId: String? = null,
+    val location: String = "workspace",
+    val mediaType: String? = null,
+    val sizeBytes: Long? = null,
 )
 
 enum class ArtifactStatus {

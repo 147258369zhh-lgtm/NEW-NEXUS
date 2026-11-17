@@ -59,8 +59,10 @@ internal sealed interface DebianInstallResult {
 internal class DebianEnvironmentInstaller(
     private val context: Context,
     httpClient: OkHttpClient = VerifiedArtifactDownloader.defaultHttpClient(),
+    private val backend: LinuxExecutionBackend = LinuxEnvironmentSettingsRepository.backend(context, LinuxDistribution.DEBIAN),
 ) {
     private val artifactDownloader = VerifiedArtifactDownloader(httpClient)
+    private val customSources get() = LinuxSourceSettings.entries(context).filter { it.distribution == LinuxDistribution.DEBIAN }
 
     fun status(): DebianEnvironmentStatus {
         val rootfs = rootfsDir()
@@ -95,6 +97,28 @@ internal class DebianEnvironmentInstaller(
         }
     }
 
+    suspend fun upgradeBase(onProgress: suspend (DebianInstallProgress) -> Unit = {}): DebianInstallResult {
+        installMutex.lock()
+        return try { withContext(Dispatchers.IO) {
+            val rootfs = rootfsDir()
+            if(!LinuxEnvironmentPaths.rootfsReady(rootfs.absolutePath)) return@withContext DebianInstallResult.BaseNotInstalled
+            onProgress(DebianInstallProgress(DebianInstallStage.CHECKING))
+            preflightFailure()?.let { return@withContext it }
+            onProgress(DebianInstallProgress(DebianInstallStage.INSTALLING_TOOLS))
+            val command = """
+            mkdir -p /usr/local/bin
+            printf '%s\n' ${aptMirrorScriptLines(customAptMirrors())} > /usr/local/bin/eta-apt
+            chmod 0755 /usr/local/bin/eta-apt
+            /usr/local/bin/eta-apt upgrade
+            """.trimIndent()
+            val result = InstallerShellRunner.run(command, COMMON_TOOLS_TIMEOUT_SECONDS, TerminalEnvironment.DEBIAN, rootfs.absolutePath)
+            if(result.exitCode != 0) return@withContext DebianInstallResult.Failed(DebianInstallStage.INSTALLING_TOOLS, "SYSTEM_UPGRADE_FAILED", "系统升级失败；保留现有数据与软件包，请检查软件源和包管理状态")
+            val version = readInstalledVersion(rootfs) ?: return@withContext DebianInstallResult.Failed(DebianInstallStage.CHECKING, "VERSION_UNVERIFIED", "无法读取升级后的实际系统版本")
+            onProgress(DebianInstallProgress(DebianInstallStage.COMPLETE))
+            DebianInstallResult.BaseInstalled(version)
+        } } finally { installMutex.unlock() }
+    }
+
     private suspend fun installBaseLocked(
         onProgress: suspend (DebianInstallProgress) -> Unit,
     ): DebianInstallResult = withContext(Dispatchers.IO) {
@@ -105,7 +129,7 @@ internal class DebianEnvironmentInstaller(
         LinuxEnvironmentSettingsRepository.selectBackend(
             LinuxDistribution.DEBIAN, LinuxEnvironmentPaths.backendOf(rootfs.absolutePath),
         )
-        val artifact = artifactForAbis(Build.SUPPORTED_ABIS.toList())
+        val artifact = artifactForAbis(Build.SUPPORTED_ABIS.toList(), LinuxSourceSettings.sourceUrls(context, LinuxDistribution.DEBIAN, LinuxSourceSettings.ROOTFS))
             ?: return@withContext DebianInstallResult.UnsupportedAbi(
                 Build.SUPPORTED_ABIS.firstOrNull().orEmpty().ifBlank { "unknown" },
             )
@@ -239,7 +263,7 @@ internal class DebianEnvironmentInstaller(
               ${shellQuote("deb ${APT_MIRRORS.first().archiveBaseUrl} trixie main")} \
               ${shellQuote("deb ${APT_MIRRORS.first().archiveBaseUrl} trixie-updates main")} \
               ${shellQuote("deb ${APT_MIRRORS.first().securityBaseUrl} trixie-security main")} > "${'$'}eta_temporary/etc/apt/sources.list"
-            printf '%s\n' ${aptMirrorScriptLines()} > "${'$'}eta_temporary/usr/local/bin/eta-apt" || exit 67
+            printf '%s\n' ${aptMirrorScriptLines(customAptMirrors())} > "${'$'}eta_temporary/usr/local/bin/eta-apt" || exit 67
             "${'$'}eta_busybox" chmod 0755 "${'$'}eta_temporary/usr/local/bin/eta-apt"
             printf ${shellQuote(markerBody)} > "${'$'}eta_temporary/${LinuxEnvironmentPaths.READY_MARKER}"
             "${'$'}eta_busybox" chmod 0644 "${'$'}eta_temporary/${LinuxEnvironmentPaths.READY_MARKER}"
@@ -259,7 +283,7 @@ internal class DebianEnvironmentInstaller(
         val command = """
             export DEBIAN_FRONTEND=noninteractive
             mkdir -p /usr/local/bin
-            printf '%s\n' ${aptMirrorScriptLines()} > /usr/local/bin/eta-apt || exit 70
+            printf '%s\n' ${aptMirrorScriptLines(customAptMirrors())} > /usr/local/bin/eta-apt || exit 70
             chmod 0755 /usr/local/bin/eta-apt || exit 70
             /usr/local/bin/eta-apt install $packages || exit ${'$'}?
             if command -v fdfind >/dev/null 2>&1; then ln -sf /usr/bin/fdfind /usr/local/bin/fd; fi
@@ -283,7 +307,10 @@ internal class DebianEnvironmentInstaller(
         return result
     }
 
-    private fun rootfsDir(): File = LinuxEnvironmentPaths.rootfsDir(context, LinuxDistribution.DEBIAN)
+    private fun rootfsDir(): File = LinuxEnvironmentPaths.rootfsDir(context, LinuxDistribution.DEBIAN, backend)
+    private fun customAptMirrors(): List<DebianAptMirror> = LinuxSourceSettings.ordered(context, LinuxDistribution.DEBIAN, LinuxSourceSettings.APT).map {
+        DebianAptMirror(it.id, it.archiveUrl, it.securityUrl ?: it.archiveUrl)
+    }
 
     private fun commonToolsReady(rootfs: File): Boolean {
         val marker = File(rootfs, COMMON_TOOLS_MARKER)
@@ -294,10 +321,7 @@ internal class DebianEnvironmentInstaller(
     }
 
     private fun readInstalledVersion(rootfs: File): String? = runCatching {
-        File(rootfs, LinuxEnvironmentPaths.READY_MARKER).readLines()
-            .firstOrNull { it.startsWith("version=") }
-            ?.substringAfter('=')?.trim()
-            ?.takeIf { it.matches(Regex("[0-9]+")) }
+        File(rootfs, "etc/debian_version").readText().trim().takeIf { it.matches(Regex("[0-9]+(?:\\.[0-9]+){0,2}")) }
     }.getOrNull()
 
     companion object {
@@ -337,13 +361,14 @@ internal class DebianEnvironmentInstaller(
         )
 
         /** 逐个尝试镜像并把成功者写回 sources.list，后续 apt 操作复用它。 */
-        internal fun aptMirrorScript(): String = "#!/bin/sh\n${aptMirrorScriptBody()}"
+        internal fun aptMirrorScript(customMirrors: List<DebianAptMirror> = emptyList()): String = "#!/bin/sh\n${aptMirrorScriptBody(customMirrors)}"
 
-        private fun aptMirrorScriptLines(): String =
-            aptMirrorScript().trimEnd().lineSequence().joinToString(" ", transform = ::shellQuote)
+        private fun aptMirrorScriptLines(customMirrors: List<DebianAptMirror>): String =
+            aptMirrorScript(customMirrors).trimEnd().lineSequence().joinToString(" ", transform = ::shellQuote)
 
-        private fun aptMirrorScriptBody(): String {
-            val mirrorCases = APT_MIRRORS.joinToString("\n") { mirror ->
+        private fun aptMirrorScriptBody(customMirrors: List<DebianAptMirror>): String {
+            val mirrors = (customMirrors + APT_MIRRORS).distinctBy { it.id }
+            val mirrorCases = mirrors.joinToString("\n") { mirror ->
                 "${mirror.id}) eta_apt_archive=${shellQuote(mirror.archiveBaseUrl)}; " +
                     "eta_apt_security=${shellQuote(mirror.securityBaseUrl)} ;;"
             }
@@ -378,13 +403,18 @@ internal class DebianEnvironmentInstaller(
                 case "${'$'}{1:-}" in
                   install) eta_action=install; shift; [ "${'$'}#" -gt 0 ] || exit 64 ;;
                   update) eta_action=update ;;
+                  upgrade) eta_action=upgrade ;;
                   *) echo 'usage: eta-apt install PACKAGE... | update' >&2; exit 64 ;;
                 esac
-                for eta_apt_mirror in ${APT_MIRRORS.joinToString(" ") { it.id }}; do
+                for eta_apt_mirror in ${mirrors.joinToString(" ") { it.id }}; do
                   eta_apt_write_sources "${'$'}eta_apt_mirror" || exit 65
                   eta_apt --error-on=any update || continue
                   [ "${'$'}eta_action" != update ] || exit 0
                   eta_apt_repair || exit $APT_REPAIR_FAILED_EXIT_CODE
+                  if [ "${'$'}eta_action" = upgrade ]; then
+                    eta_apt dist-upgrade --no-remove -y && eta_apt_healthy && exit 0
+                    exit $APT_REPAIR_FAILED_EXIT_CODE
+                  fi
                   if eta_apt install -y --no-install-recommends "${'$'}@"; then
                     eta_apt_healthy || exit $APT_REPAIR_FAILED_EXIT_CODE
                     exit 0
@@ -395,20 +425,20 @@ internal class DebianEnvironmentInstaller(
             """.trimIndent()
         }
 
-        internal fun artifactForAbis(abis: List<String>): VerifiedArtifact? =
+        internal fun artifactForAbis(abis: List<String>, customRootfsUrls: List<String> = emptyList()): VerifiedArtifact? =
             abis.firstNotNullOfOrNull { abi ->
                 when (abi) {
                     "arm64-v8a" -> debianArtifact(
                         id = "debian-trixie-aarch64-pd-v4.29.0",
                         fileName = "debian-trixie-aarch64-pd-v4.29.0.tar.xz",
                         sha256 = "3834a11cbc6496935760bdc20cca7e2c25724d0cd8f5e4926da8fd5ca1857918",
-                        sizeBytes = 35_409_704L,
+                        sizeBytes = 35_409_704L, customUrls = customRootfsUrls,
                     )
                     "x86_64" -> debianArtifact(
                         id = "debian-trixie-x86_64-pd-v4.29.0",
                         fileName = "debian-trixie-x86_64-pd-v4.29.0.tar.xz",
                         sha256 = "4b8f33b80a10d734ff935e5934588572f860c0c38a68bf91db59af0580370716",
-                        sizeBytes = 36_728_936L,
+                        sizeBytes = 36_728_936L, customUrls = customRootfsUrls,
                     )
                     else -> null
                 }
@@ -419,6 +449,7 @@ internal class DebianEnvironmentInstaller(
             fileName: String,
             sha256: String,
             sizeBytes: Long,
+            customUrls: List<String> = emptyList(),
         ): VerifiedArtifact {
             val officialUrl = "https://github.com/termux/proot-distro/releases/download/v4.29.0/$fileName"
             return VerifiedArtifact(
@@ -428,7 +459,7 @@ internal class DebianEnvironmentInstaller(
                 url = officialUrl,
                 sha256 = sha256,
                 sizeBytes = sizeBytes,
-                preferredUrls = GITHUB_PROXY_PREFIXES.map { prefix -> prefix + officialUrl },
+                preferredUrls = customUrls.map { LinuxSourceSettings.expand(it, DEBIAN_VERSION, fileName, if(fileName.contains("aarch64")) "aarch64" else "x86_64", officialUrl) } + GITHUB_PROXY_PREFIXES.map { prefix -> prefix + officialUrl },
             )
         }
 

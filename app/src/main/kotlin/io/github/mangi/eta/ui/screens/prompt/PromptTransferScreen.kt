@@ -60,17 +60,24 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 
+internal class PromptTransferPanelState {
+    val status = mutableStateOf<String?>(null)
+    val statusError = mutableStateOf(false)
+    val pendingImport = mutableStateOf<PromptImportPreview?>(null)
+}
+
 @Composable
 internal fun PromptTransferPanel(
     store: PromptInjectionUiStore,
+    state: PromptTransferPanelState,
+    scope: kotlinx.coroutines.CoroutineScope,
     onOpenExportPicker: () -> Unit,
 ) {
     val context = LocalContext.current
     val resources = LocalResources.current
-    val scope = rememberCoroutineScope()
-    var status by remember { mutableStateOf<String?>(null) }
-    var statusError by remember { mutableStateOf(false) }
-    var pendingImport by remember { mutableStateOf<PromptImportPreview?>(null) }
+    var status by state.status
+    var statusError by state.statusError
+    var pendingImport by state.pendingImport
     val fallbackName = stringResource(R.string.prompt_injection_untitled_template)
     val importFailed = stringResource(R.string.prompt_injection_import_failed)
     val exportFailed = stringResource(R.string.prompt_injection_export_failed)

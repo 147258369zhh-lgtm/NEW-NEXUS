@@ -5,6 +5,11 @@ from __future__ import annotations
 
 import csv
 import re
+import argparse
+import hashlib
+import json
+from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -14,9 +19,9 @@ SOURCE_ROOTS = (
     ROOT / "kernel-api" / "src" / "main" / "kotlin" / "io" / "github" / "zhh_lgtm" / "nexus",
     ROOT / "application-api" / "src" / "main" / "kotlin" / "io" / "github" / "zhh_lgtm" / "nexus",
 )
-OUTPUT = ROOT / "docs" / "nexus" / "07_BASELINE_IMPORTS.csv"
+OUTPUT = ROOT / "build" / "reports" / "nexus-dependencies" / "imports.csv"
 
-PROJECT_IMPORT = re.compile(r"^\s*import\s+io\.github\.(?:mangi\.eta|zhh_lgtm\.nexus(?:\.kernel)?)\.([A-Za-z0-9_]+)")
+PROJECT_IMPORT = re.compile(r"^\s*import\s+(io\.github\.(?:mangi\.eta|zhh_lgtm\.nexus)\.[A-Za-z0-9_.*]+)")
 PACKAGE = re.compile(r"^\s*package\s+([A-Za-z0-9_.]+)")
 
 LAYER = {
@@ -62,12 +67,22 @@ def project_section(package_name: str) -> str:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output', type=Path, default=OUTPUT)
+    parser.add_argument('--baseline', default='unversioned-working-copy')
+    args = parser.parse_args()
+    output_path = args.output.resolve()
+    source_digest = hashlib.sha256()
+    scanned = 0
     rows: list[dict[str, object]] = []
     for source_root in SOURCE_ROOTS:
         if not source_root.exists():
             continue
         for file in sorted(source_root.rglob("*.kt")):
-            lines = file.read_text(encoding="utf-8").splitlines()
+            raw = file.read_bytes().replace(b'\r\n', b'\n')
+            source_digest.update(file.relative_to(ROOT).as_posix().encode('utf-8') + b'\0' + raw + b'\0')
+            scanned += 1
+            lines = raw.decode('utf-8').splitlines()
             package_name = next((match.group(1) for line in lines if (match := PACKAGE.match(line))), "")
             source_section = project_section(package_name)
             source_layer = {
@@ -78,8 +93,9 @@ def main() -> None:
                 match = PROJECT_IMPORT.match(line)
                 if not match:
                     continue
-                target_section = match.group(1)
-                target_layer = LAYER.get(target_section, "unknown")
+                target_section = project_section(match.group(1))
+                target_layer = {'kernel-api': 'kernel-contract', 'application-api': 'application-contract'}.get(
+                    target_section, LAYER.get(target_section, "unknown"))
                 rows.append(
                     {
                         "source_file": file.relative_to(ROOT).as_posix(),
@@ -94,8 +110,8 @@ def main() -> None:
                     }
                 )
 
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    with OUTPUT.open("w", encoding="utf-8", newline="") as output:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8", newline="") as output:
         writer = csv.DictWriter(output, fieldnames=list(rows[0]) if rows else [
             "source_file", "line", "source_package", "source_section", "source_layer",
             "target_section", "target_layer", "classification", "imported_project_package",
@@ -103,7 +119,20 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(rows)
 
-    print(f"Wrote {len(rows)} imports to {OUTPUT.relative_to(ROOT)}")
+    metadata = {
+        'generated_at_utc': datetime.now(timezone.utc).isoformat(),
+        'baseline_label': args.baseline,
+        'scanned_kotlin_files': scanned,
+        'source_tree_sha256': source_digest.hexdigest(),
+        'script_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        'csv_sha256': hashlib.sha256(output_path.read_bytes()).hexdigest(),
+        'import_records': len(rows),
+        'classification': dict(Counter(row['classification'] for row in rows)),
+        'scope': 'import statements only; fully qualified expressions and reflection are not covered',
+    }
+    output_path.with_suffix('.metadata.json').write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding='utf-8')
+    print(json.dumps(metadata, ensure_ascii=False, indent=2))
+    print(f"Wrote {len(rows)} imports to {output_path}")
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ package io.github.mangi.eta.ui.model
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.data.repository.AgentMemoryScope
 import io.github.zhh_lgtm.nexus.application.api.WorkflowMode
+import io.github.mangi.eta.data.model.AgentPermissionMode
 
 sealed interface AgentHomeAction {
     data object LoadEarlierMessages : AgentHomeAction
@@ -12,6 +13,7 @@ sealed interface AgentHomeAction {
     data object ConfigureContextBudget : AgentHomeAction
     data class ReasoningEffortChanged(val effort: ReasoningEffort) : AgentHomeAction
     data class WorkflowModeChanged(val mode: WorkflowMode) : AgentHomeAction
+    data class SelectedSkillIdsChanged(val skillIds: List<String>) : AgentHomeAction
     data class ModelSelected(val modelId: String) : AgentHomeAction
     data class InputSyncApplied(val conversationId: String?, val version: Int, val text: String) : AgentHomeAction
     data class SubmitMessage(val text: String) : AgentHomeAction
@@ -31,6 +33,7 @@ sealed interface AgentHomeAction {
     data class DeleteMessage(val id: String) : AgentHomeAction
     data class RegenerateMessage(val id: String) : AgentHomeAction
     data class ForkMessage(val id: String) : AgentHomeAction
+    data class CreateTaskFromMessage(val id: String) : AgentHomeAction
     data class SelectReplyCandidate(val id: String, val index: Int) : AgentHomeAction
     data object OpenTools : AgentHomeAction
     data object OpenSkills : AgentHomeAction
@@ -46,6 +49,7 @@ sealed interface PermissionHealthAction {
     data class SetRootAccessibilityRecovery(val enabled: Boolean) : PermissionHealthAction
     data object RetryRootAccessibilityRecovery : PermissionHealthAction
     data object NavigateBack : PermissionHealthAction
+    data class SetAgentPermissionMode(val mode: AgentPermissionMode) : PermissionHealthAction
 }
 
 sealed interface AgentToolsAction {
@@ -67,6 +71,9 @@ sealed interface AgentSkillsAction {
     data class DeleteSkill(val skillId: String) : AgentSkillsAction
     data class ReinstallBuiltin(val skillId: String) : AgentSkillsAction
     data class RestoreSkillVersion(val skillId: String, val backupId: String) : AgentSkillsAction
+    data class OpenEditor(val skillId: String) : AgentSkillsAction
+    data class SaveEditor(val skillId: String, val name: String, val body: String, val revision: String) : AgentSkillsAction
+    data object CloseEditor : AgentSkillsAction
 }
 
 sealed interface AgentSystemEnhanceAction {

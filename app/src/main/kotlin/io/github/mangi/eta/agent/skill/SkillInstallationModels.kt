@@ -6,12 +6,15 @@ data class SkillArchiveCandidate(
     val name: String,
     val description: String,
     val relativePath: String,
+    /** SKILL.md 中声明的其他 Skill 依赖；用于市场安装前准入，普通能力依赖不在此列。 */
+    val skillDependencies: List<SkillDependencySpec> = emptyList(),
 )
 
 data class InstalledSkill(
     val id: String,
     val name: String,
     val description: String,
+    val archiveSha256: String? = null,
 )
 
 data class SkillInstallConflict(
@@ -39,6 +42,8 @@ enum class SkillInstallErrorCode {
     CANCELLED,
     IO_ERROR,
     COMMIT_FAILED,
+    CHECKSUM_MISMATCH,
+    DEPENDENCY_SETUP_REQUIRED,
 }
 
 data class SkillInstallError(
@@ -49,6 +54,7 @@ data class SkillInstallError(
 sealed interface SkillArchiveInspectionResult {
     data class Success(
         val candidates: List<SkillArchiveCandidate>,
+        val archiveSha256: String? = null,
     ) : SkillArchiveInspectionResult
 
     data class Failure(

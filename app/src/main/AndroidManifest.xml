@@ -27,6 +27,9 @@
     <uses-permission android:name="android.permission.WRITE_CALENDAR" />
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
@@ -57,6 +60,7 @@
         </intent>
     </queries>
 
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <application
         android:name=".EtaApp"
         android:allowBackup="false"
@@ -73,6 +77,12 @@
              Mark them non-required so CPU-only devices and Android builds without OpenCL still install. -->
         <uses-native-library android:name="libvndksupport.so" android:required="false" />
         <uses-native-library android:name="libOpenCL.so" android:required="false" />
+
+        <service
+            android:name=".agent.packages.PackageSandboxService"
+            android:exported="false"
+            android:isolatedProcess="true"
+            android:process=":package_sandbox" />
 
         <provider
             android:name="androidx.startup.InitializationProvider"
@@ -120,6 +130,24 @@
             </intent-filter>
         </activity>
 
+        <receiver
+            android:name=".agent.packages.PackageDesktopWidgetReceiver"
+            android:exported="false"
+            android:label="@string/package_widget_name">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/package_widget_info" />
+        </receiver>
+        <activity
+            android:name=".ui.widget.PackageWidgetActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.Eta">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <activity
             android:name=".agent.capability.CapabilityOAuthCallbackActivity"
             android:excludeFromRecents="true"
@@ -143,6 +171,18 @@
             android:exported="false"
             android:theme="@style/Theme.Eta"
             android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".ui.screens.browser.BrowserQrCaptureActivity"
+            android:exported="false"
+            android:screenOrientation="fullSensor"
+            android:theme="@style/Theme.Eta" />
+
+        <activity
+            android:name=".ui.screens.artwork.NexaWebArtworkActivity"
+            android:exported="false"
+            android:process=":artwork"
+            android:theme="@style/Theme.Eta" />
 
         <activity
             android:name=".agent.voice.EtaVoiceAssistActivity"
@@ -200,6 +240,9 @@
             android:name=".agent.voice.ReadAloudPlaybackService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
+
+        <service android:name=".agent.voice.BackgroundWakeWordService" android:exported="false"
+            android:foregroundServiceType="microphone" />
 
         <service
             android:name=".agent.runtime.AgentRuntimeService"

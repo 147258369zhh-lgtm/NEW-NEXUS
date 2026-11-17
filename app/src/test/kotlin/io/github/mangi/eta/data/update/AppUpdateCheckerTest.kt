@@ -2,9 +2,16 @@ package io.github.mangi.eta.data.update
 
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class AppUpdateCheckerTest {
+
+    @Test fun updateSourceAcceptsOnlyHttpsWithoutCredentials() {
+        assertTrue(AppUpdateSourceStore.normalize("https://updates.example.com/release.json").startsWith("https://"))
+        assertThrows(IllegalArgumentException::class.java) { AppUpdateSourceStore.normalize("http://updates.example.com/release.json") }
+        assertThrows(IllegalArgumentException::class.java) { AppUpdateSourceStore.normalize("https://u:p@updates.example.com/release.json") }
+    }
 
     @Test
     fun newerPatchVersionIsNewer() {

@@ -26,6 +26,10 @@ internal object AgentTaskBackgroundExecutor {
                     dao = AgentTaskDatabase.get(appContext).agentTaskDao(),
                     runner = DefaultAgentTaskRunner(appContext),
                     runtimeCanceller = AgentTaskRuntimeCanceller(client::cancelRun),
+                    remoteCanceller = AgentTaskRemoteCanceller { agentId, remoteTaskId ->
+                        cancelRemoteA2ATask(appContext, agentId, remoteTaskId)
+                    },
+                    resultStore = AgentTaskResultStore(appContext),
                 )
                 coordinator.resumeWaiting(runId, continuationInput.trim())
                 AgentTaskWorkScheduler.refreshNextDeadline(appContext)

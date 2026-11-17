@@ -31,7 +31,7 @@ internal object AutoBackupDocuments {
         // Nanosecond ordering keeps same-second saves deterministic for retention pruning.
         val stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSSSSSSSS"))
         val suffix = if (password != null) EtaBackupFormat.FULL.suffix else settings.options.format.suffix
-        val name = "Nexus-auto-$stamp-${UUID.randomUUID().toString().take(8)}$suffix"
+        val name = "NEXA-auto-$stamp-${UUID.randomUUID().toString().take(8)}$suffix"
         val document = DocumentsContract.createDocument(context.contentResolver, parent, "application/octet-stream", "$name.part")
             ?: error("无法在所选目录创建备份，请重新授权目录")
         var published = false
@@ -69,12 +69,13 @@ internal object AutoBackupDocuments {
                 if (OWNED_NAME.matches(name)) owned += it.getString(0) to name
             }
         }
-        owned.sortedByDescending { it.second }.drop(keep.coerceAtLeast(1)).forEach { (id, _) ->
+        // Sort by the timestamp rather than product prefix, including existing Nexus backups.
+        owned.sortedByDescending { it.second.substringAfter("-auto-") }.drop(keep.coerceAtLeast(1)).forEach { (id, _) ->
             check(DocumentsContract.deleteDocument(context.contentResolver, DocumentsContract.buildDocumentUriUsingTree(tree, id))) { "旧备份清理失败" }
         }
     }
 
     private val OWNED_NAME = Regex(
-        "Nexus-auto-[0-9]{8}-[0-9]{6}(?:-[0-9]{9})?-[a-f0-9]{8}\\.(eta-backup|json)",
+        "(?:NEXA|Nexus)-auto-[0-9]{8}-[0-9]{6}(?:-[0-9]{9})?-[a-f0-9]{8}\\.(eta-backup|json)",
     )
 }

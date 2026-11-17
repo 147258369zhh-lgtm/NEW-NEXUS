@@ -313,6 +313,25 @@ class AgentWebToolsTest {
         }
     }
 
+    @Test fun customGetSearchWithCountPlaceholderStillSendsQuery() {
+        var observedQuery: String? = null
+        var observedCount: String? = null
+        val client = OkHttpClient.Builder().addInterceptor(Interceptor { chain ->
+            val request = chain.request()
+            observedQuery = request.url.queryParameter("q")
+            observedCount = request.url.queryParameter("limit")
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .header("Content-Type", "application/json").body("{\"results\":[]}".toResponseBody()).build()
+        }).build()
+        val config = WebToolsRuntimeConfig(searchBackend = WebToolBackend.CUSTOM,
+            customSearch = CustomWebSearchConfig(method = WebHttpMethod.GET, url = "https://search.example.test/search?limit={{count}}"))
+        AgentWebTools(WebHttpTransport(client), runtimeConfig = { config }).use { tools ->
+            assertTrue(call(tools, "web_search", JSONObject().put("query", "hello world")).getBoolean("ok"))
+        }
+        assertEquals("hello world", observedQuery)
+        assertEquals("5", observedCount)
+    }
+
     @Test fun failedConfiguredSearchFallsBackToBuiltinAndMarksTheSource() {
         val html = """
             <div id="links"><div class="web-result">

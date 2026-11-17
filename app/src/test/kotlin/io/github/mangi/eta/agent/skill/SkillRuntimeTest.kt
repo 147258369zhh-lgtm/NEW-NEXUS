@@ -19,7 +19,7 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [36], shadows = [io.github.mangi.eta.agent.cloud.CloudAtomicFileRenameShadow::class])
 class SkillRuntimeTest {
     @get:Rule
     val temporaryFolder = TemporaryFolder()
@@ -28,6 +28,25 @@ class SkillRuntimeTest {
     fun setUp() {
         EtaDatabase.closeForTests()
         RuntimeEnvironment.getApplication().deleteDatabase("eta.db")
+    }
+
+    @Test
+    fun editingPreservesIdMetadataAndResourcesAndRejectsStaleRevision() {
+        val root = temporaryFolder.newFolder("edit-skills")
+        val dir = File(root, "original-id").also { it.mkdirs() }
+        val manifest = File(dir, "SKILL.md")
+        manifest.writeText("---\nname: original-id\ndescription: Existing description\nmetadata:\n  owner: test\n---\n\nOld body\n")
+        val resource = File(dir, "references/example.md").also { it.parentFile!!.mkdirs(); it.writeText("keep") }
+        val service = SkillIndexService(RuntimeEnvironment.getApplication(), root)
+        val draft = service.readForEdit("original-id")
+        service.saveEdit("original-id", "新名称", "New body", draft.revision)
+        val saved = service.listSkillsForManagement(forceRefresh = true).single { it.id == "original-id" }
+        assertEquals("新名称", saved.name)
+        assertEquals("Existing description", saved.description)
+        assertEquals("keep", resource.readText())
+        assertEquals("New body", service.readForEdit("original-id").body)
+        assertTrue(runCatching { service.saveEdit("original-id", "stale", "stale", draft.revision) }.isFailure)
+        assertEquals("新名称", service.readForEdit("original-id").name)
     }
 
     @Test

@@ -19,6 +19,7 @@ import io.github.mangi.eta.data.model.ProviderAuthModes
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.data.model.Settings
 import io.github.mangi.eta.data.model.selectedOrFirstModel
+import io.github.mangi.eta.data.model.isChatModel
 import io.github.mangi.eta.data.model.withApiKey
 import io.github.mangi.eta.data.model.withModels
 import io.github.mangi.eta.data.model.withSortOrder
@@ -30,6 +31,8 @@ import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -37,9 +40,16 @@ import kotlinx.coroutines.withContext
 internal object ProviderRepository {
     /** 配置与模型共用修改锁，避免旧连接的目录在认证方式切换后落库。 */
     internal val mutationMutex = Mutex()
+    /** Selection repair is serialized so a startup repair cannot restore a stale model. */
+    private val selectionMutex = Mutex()
 
     @Volatile
     private lateinit var applicationContext: Context
+
+    /** Last observed provider snapshot, used to render the first settings frame without a
+     *  loading-to-content Scaffold replacement. The live flow still overwrites this value. */
+    @Volatile
+    private var latestProviderSnapshot: List<ProviderSetting>? = null
 
     fun init(context: Context) {
         applicationContext = context.applicationContext
@@ -53,11 +63,11 @@ internal object ProviderRepository {
     }
 
     fun providersFlow(): Flow<List<ProviderSetting>> =
-        dao().providersFlow().map { providers ->
-            providers
-                .map { it.toDomain() }
-                .sortedBy(ProviderSetting::sortOrder)
-        }
+        dao().providersFlow().distinctUntilChanged().map { providers ->
+            providers.map { it.toDomain() }.also { latestProviderSnapshot = it }
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
+
+    internal fun cachedProviders(): List<ProviderSetting>? = latestProviderSnapshot
 
     fun settingsFlow(): Flow<Settings> =
         SettingsDataStore.settingsFlow()
@@ -108,6 +118,7 @@ internal object ProviderRepository {
         val deleted = mutationMutex.withLock {
             val provider = providerById(id) ?: return@withLock false
             if (provider.isBuiltIn) return@withLock false
+            ProviderSettingsService.cancelDiscovery(id)
             forgetCredentials(id)
             dao().deleteProvider(id)
             true
@@ -170,7 +181,7 @@ internal object ProviderRepository {
             val appliedRevision = SettingsDataStore.officialModelCatalogRevision()
             if (appliedRevision < OfficialModelCatalog.CURRENT_REVISION) {
                 if (appliedRevision < 2) {
-                    current.filter { ProviderSourceRegistry.resolve(it) == ProviderSourceTypes.OPENAI }
+                    current.filter(::isBuiltInOfficialOpenAiProvider)
                         .forEach { refreshOpenAiPresets(it, appliedRevision) }
                 }
                 current.filter {
@@ -187,9 +198,9 @@ internal object ProviderRepository {
                         refreshLegacyCatalogReasoningCapabilities(provider)
                     }
                 }
-                if (appliedRevision < 3) {
-                    current.filter { ProviderSourceRegistry.resolve(it) == ProviderSourceTypes.OPENAI }.forEach { provider ->
-                        fillOpenAiContextWindows(requireNotNull(providerById(provider.id)))
+                if (appliedRevision < 6) {
+                    current.forEach { provider ->
+                        fillKnownCatalogCapabilities(requireNotNull(providerById(provider.id)))
                     }
                 }
                 SettingsDataStore.setOfficialModelCatalogRevision(OfficialModelCatalog.CURRENT_REVISION)
@@ -213,20 +224,54 @@ internal object ProviderRepository {
         if (updated != provider.models) replaceModels(provider.id, updated)
     }
 
-    private suspend fun fillOpenAiContextWindows(provider: ProviderSetting) {
+    /**
+     * Catalog migrations are owned by the bundled official providers. A custom or OAuth
+     * provider may also resolve to the OpenAI API format, but its model IDs belong to the user
+     * (or the signed-in account) and must never be replaced by the bundled catalog.
+     */
+    private fun isBuiltInOfficialOpenAiProvider(provider: ProviderSetting): Boolean =
+        provider.isBuiltIn &&
+            BuiltinProviders.providerById(provider.id) != null &&
+            ProviderSourceRegistry.resolve(provider) == ProviderSourceTypes.OPENAI
+
+    private suspend fun fillKnownCatalogCapabilities(provider: ProviderSetting) {
         val presets = OfficialModelCatalog.modelsForProvider(provider).associateBy { it.modelId.normalizedModelId() }
         val updated = provider.models.map { model ->
-            if (model.contextWindowOverride != null || model.source == ModelSource.MANUAL) return@map model
             val preset = presets[model.modelId.normalizedModelId()] ?: return@map model
-            val window = model.contextWindow
-                ?: preset.contextWindow.takeIf { model.source == ModelSource.CATALOG }
-                ?: return@map model
-            model.copy(contextWindow = window, contextWindowOverride = window)
+            if (model.source == ModelSource.MANUAL) return@map model
+            val catalogWindow = if (model.source == ModelSource.REMOTE) {
+                model.contextWindow
+            } else {
+                preset.contextWindow ?: model.contextWindow
+            }
+            val useCatalogCapabilities = model.source == ModelSource.CATALOG && model.attachment == null &&
+                model.inputModalities.map(String::lowercase) == listOf(Model.TEXT_MODALITY)
+            val repaired = model.copy(
+                contextWindow = model.contextWindow ?: catalogWindow,
+                contextWindowOverride = model.contextWindowOverride ?: catalogWindow,
+                inputModalities = if (useCatalogCapabilities) preset.inputModalities else model.inputModalities,
+                outputModalities = if (model.source == ModelSource.CATALOG &&
+                    model.outputModalities.map(String::lowercase) == listOf(Model.TEXT_MODALITY)
+                ) preset.outputModalities else model.outputModalities,
+                attachment = model.attachment ?: preset.attachment.takeIf { model.source == ModelSource.CATALOG },
+                toolCall = model.toolCall ?: preset.toolCall.takeIf { model.source == ModelSource.CATALOG },
+                reasoning = model.reasoning ?: preset.reasoning.takeIf { model.source == ModelSource.CATALOG },
+                reasoningCapabilities = if (model.reasoning == false) {
+                    null
+                } else {
+                    model.reasoningCapabilities ?: preset.reasoningCapabilities.takeIf { model.source == ModelSource.CATALOG }
+                },
+                structuredOutput = model.structuredOutput
+                    ?: preset.structuredOutput.takeIf { model.source == ModelSource.CATALOG },
+                supportsTemperature = model.supportsTemperature
+                    ?: preset.supportsTemperature.takeIf { model.source == ModelSource.CATALOG },
+            )
+            if (repaired == model) model else repaired
         }
         if (updated != provider.models) replaceModels(provider.id, updated)
     }
 
-    suspend fun repairSelection(): Settings {
+    suspend fun repairSelection(): Settings = selectionMutex.withLock {
         val providers = allProviders()
         val settings = SettingsDataStore.settings()
         val selectedProvider = providers.firstOrNull { it.id == settings.selectedProviderId && it.isEnabled }
@@ -234,7 +279,7 @@ internal object ProviderRepository {
         val activeModel = selectedProvider
             ?.takeIf { it.id == settings.selectedProviderId }
             ?.models
-            ?.firstOrNull { it.id == settings.selectedModelId && it.isEnabled }
+            ?.firstOrNull { it.id == settings.selectedModelId && it.isEnabled && it.isChatModel() }
         val rememberedModelId = selectedProvider?.let {
             SettingsDataStore.selectedModelIdForProvider(it.id)
         }
@@ -243,8 +288,15 @@ internal object ProviderRepository {
             selectedProviderId = selectedProvider?.id,
             selectedModelId = selectedModel?.id,
         )
-        SettingsDataStore.setSelection(repaired.selectedProviderId, repaired.selectedModelId)
-        return repaired
+        val selectionChanged = repaired.selectedProviderId != settings.selectedProviderId ||
+            repaired.selectedModelId != settings.selectedModelId
+        val providerMemoryNeedsMigration = repaired.selectedProviderId != null &&
+            repaired.selectedModelId != null &&
+            rememberedModelId != repaired.selectedModelId
+        if (selectionChanged || providerMemoryNeedsMigration) {
+            SettingsDataStore.setSelection(repaired.selectedProviderId, repaired.selectedModelId)
+        }
+        repaired
     }
 
     fun newId(): String = UUID.randomUUID().toString()

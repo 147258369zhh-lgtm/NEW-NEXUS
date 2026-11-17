@@ -2,6 +2,8 @@ package io.github.mangi.eta.agent.capability
 
 import android.content.Context
 import io.github.mangi.eta.agent.skill.GitHubSkillRepositoryParser
+import io.github.mangi.eta.agent.skill.GitLabSkillRepositoryParser
+import io.github.mangi.eta.agent.skill.GiteeSkillRepositoryParser
 import java.io.File
 import java.net.URI
 import java.nio.file.Files
@@ -119,6 +121,14 @@ class SkillSourceStore(context: Context) {
                     path = repository.path,
                     trust = trust,
                 )
+            }
+            SkillSourceType.GITLAB_REPOSITORY -> {
+                val repository = GitLabSkillRepositoryParser.resolve(location, source.ref, source.path)
+                source.copy(name = name, location = repository.slug, ref = repository.ref, path = repository.path, trust = trust)
+            }
+            SkillSourceType.GITEE_REPOSITORY -> {
+                val repository = GiteeSkillRepositoryParser.resolve(location, source.ref, source.path)
+                source.copy(name = name, location = repository.slug, ref = repository.ref, path = repository.path, trust = trust)
             }
             SkillSourceType.HTTP_CATALOG -> validateCatalogLocation(source.copy(name = name, trust = trust))
             else -> throw SkillSourceValidationException("不支持的 Skill 来源类型")

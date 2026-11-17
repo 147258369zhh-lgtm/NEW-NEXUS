@@ -6,6 +6,9 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.pm.ServiceInfo
 import androidx.work.*
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import androidx.core.app.NotificationCompat
 import io.github.mangi.eta.agent.memory.MemoryAutomationCapture
 import io.github.mangi.eta.agent.runtime.AgentRuntimeClient
@@ -22,9 +25,12 @@ import java.util.concurrent.TimeUnit
 
 internal object EtaBackupOperations {
     private val mutex = Mutex()
-    suspend fun <T> exclusive(block: suspend () -> T): T {
+    @Volatile var dataOperationActive: Boolean = false
+        private set
+    suspend fun <T> exclusive(backup: Boolean = false, block: suspend () -> T): T {
         if (!mutex.tryLock()) throw EtaBackupBusyException()
-        try { return block() } finally { mutex.unlock() }
+        if (backup) dataOperationActive = true
+        try { return block() } finally { if (backup) dataOperationActive = false; mutex.unlock() }
     }
 
     suspend fun requireIdle(context: Context) {
@@ -37,12 +43,17 @@ internal object EtaBackupOperations {
     suspend fun export(context: Context, output: java.io.OutputStream, password: String?, options: EtaBackupOptions,
         progress: (EtaBackupProgress) -> Unit): EtaBackupSummary {
         val validated = options.validated()
+        if (password.isNullOrEmpty() && EtaBackupContent.MODELS in validated.contents &&
+            io.github.mangi.eta.data.db.EtaDatabase.get(context).providerDao().providers().any { it.provider.apiKey.isNotBlank() }) {
+            throw EtaBackupException("模型配置包含 API 密钥，请设置备份密码")
+        }
         if (validated.format == EtaBackupFormat.FULL) return EtaFullBackupArchive.export(
             context = context,
             output = output,
             password = password,
             onProgress = progress,
             includeAppFiles = validated.includeAppFiles,
+            includeNotepad = validated.includeNotepad,
             compression = validated.compression,
         )
         progress(EtaBackupProgress("logical_snapshot"))
@@ -57,6 +68,12 @@ internal object EtaBackupOperations {
         progress(EtaBackupProgress("export_complete", records = result.messageCount.toLong()))
         return result.copy(encrypted = encrypted != null)
     }
+
+    suspend fun requiresPassword(context: Context, options: EtaBackupOptions): Boolean = withContext(Dispatchers.IO) {
+        if (options.format == EtaBackupFormat.FULL) EtaFullBackupArchive.requiresEncryption(context)
+        else EtaBackupContent.MODELS in options.contents && io.github.mangi.eta.data.db.EtaDatabase.get(context)
+            .providerDao().providers().any { it.provider.apiKey.isNotBlank() }
+    }
 }
 
 internal class EtaBackupBusyException : IllegalStateException("备份、恢复或记忆整理正在进行，请稍后再试")
@@ -69,10 +86,31 @@ internal data class AutoBackupSettings(
     val keep: Int = 7,
     val chargingOnly: Boolean = true,
     val options: EtaBackupOptions = EtaBackupOptions(),
+    /** Avoid metered networks when the selected document provider uploads the archive. */
+    val unmeteredOnly: Boolean = true,
 )
 
 internal object AutoBackupStore {
     private fun prefs(context: Context) = context.getSharedPreferences("eta_auto_backup", Context.MODE_PRIVATE)
+    fun observeSettings(context: Context): kotlinx.coroutines.flow.Flow<AutoBackupSettings> = kotlinx.coroutines.flow.callbackFlow {
+        val preferences = prefs(context.applicationContext)
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key != "status" && key != "last_success" && key != "schedule_key") trySend(read(context))
+        }
+        preferences.registerOnSharedPreferenceChangeListener(listener)
+        trySend(read(context))
+        awaitClose { preferences.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+    fun observeStatus(context: Context): kotlinx.coroutines.flow.Flow<Pair<String, Long>> = kotlinx.coroutines.flow.callbackFlow {
+        val preferences = prefs(context.applicationContext)
+        fun publish() { trySend(status(context) to lastSuccess(context)) }
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == "status" || key == "last_success") publish()
+        }
+        preferences.registerOnSharedPreferenceChangeListener(listener)
+        publish()
+        awaitClose { preferences.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
     fun read(context: Context): AutoBackupSettings {
         val p = prefs(context)
         val format = EtaBackupFormat.entries.firstOrNull { it.name == p.getString("format", "FULL") } ?: EtaBackupFormat.FULL
@@ -85,8 +123,9 @@ internal object AutoBackupStore {
                 format = format,
                 contents = EtaBackupContent.entries.filter { it.name in contents }.toSet().ifEmpty { EtaBackupContent.entries.toSet() },
                 includeAppFiles = p.getBoolean("include_files", false),
+                includeNotepad = p.getBoolean("include_notepad", true),
                 compression = compression,
-            ))
+            ), p.getBoolean("unmetered", true))
     }
     fun save(context: Context, value: AutoBackupSettings) {
         value.options.validated()
@@ -95,7 +134,9 @@ internal object AutoBackupStore {
             .putBoolean("charging", value.chargingOnly).putString("format", value.options.format.name)
             .putStringSet("contents", value.options.contents.map { it.name }.toSet())
             .putBoolean("include_files", value.options.includeAppFiles)
-            .putString("compression", value.options.compression.name).commit())
+            .putBoolean("include_notepad", value.options.includeNotepad)
+            .putString("compression", value.options.compression.name)
+            .putBoolean("unmetered", value.unmeteredOnly).commit())
     }
     fun lastSuccess(context: Context) = prefs(context).getLong("last_success", 0)
     fun scheduleKey(context: Context) = prefs(context).getString("schedule_key", "")
@@ -111,6 +152,15 @@ internal object AutoBackupStore {
 internal object AutoBackupScheduler {
     private const val PERIODIC = "eta-auto-backup"
     private const val MANUAL = "eta-auto-backup-now"
+    fun observeActivity(context: Context): Flow<AutoBackupActivity> {
+        val manager = WorkManager.getInstance(context.applicationContext)
+        return combine(manager.getWorkInfosForUniqueWorkFlow(PERIODIC), manager.getWorkInfosForUniqueWorkFlow(MANUAL)) { periodic, immediate ->
+            AutoBackupActivity(
+                running = (periodic + immediate).any { it.state == WorkInfo.State.RUNNING },
+                immediatePending = immediate.any { !it.state.isFinished },
+            )
+        }
+    }
     fun sync(context: Context) {
         val settings = AutoBackupStore.read(context)
         val manager = WorkManager.getInstance(context)
@@ -122,11 +172,16 @@ internal object AutoBackupScheduler {
         val delay = if (AutoBackupSchedule.isOverdue(settings, lastSuccess, now)) 0L
         else java.time.Duration.between(now, next).toMillis()
         // Check daily so a manual backup cannot make the next due backup skip an entire interval.
+        val constraints = Constraints.Builder()
+            .setRequiresBatteryNotLow(true)
+            .setRequiresCharging(settings.chargingOnly)
+            .apply { if (settings.unmeteredOnly) setRequiredNetworkType(NetworkType.UNMETERED) }
+            .build()
         val request = PeriodicWorkRequestBuilder<AutoBackupWorker>(1, TimeUnit.DAYS)
             .setInitialDelay(delay, TimeUnit.MILLISECONDS)
-            .setConstraints(Constraints.Builder().setRequiresBatteryNotLow(true).setRequiresCharging(settings.chargingOnly).build())
+            .setConstraints(constraints)
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.MINUTES).build()
-        val signature = "daily-v2:${settings.days}:${settings.hour}:${settings.chargingOnly}"
+        val signature = "daily-v3:${settings.days}:${settings.hour}:${settings.chargingOnly}:${settings.unmeteredOnly}"
         manager.enqueueUniquePeriodicWork(PERIODIC, if (AutoBackupStore.scheduleKey(context) == signature) ExistingPeriodicWorkPolicy.UPDATE else ExistingPeriodicWorkPolicy.CANCEL_AND_REENQUEUE, request)
         AutoBackupStore.scheduleKey(context, signature)
     }
@@ -160,12 +215,11 @@ internal class AutoBackupWorker(context: Context, parameters: WorkerParameters) 
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val context = applicationContext
-        val settings = AutoBackupStore.read(context)
         val manual = inputData.getBoolean("manual", false)
         val previousSuccess = AutoBackupStore.lastSuccess(context)
-        if (!manual && !settings.enabled) return@withContext Result.success()
-        if (!manual && !AutoBackupSchedule.isDue(settings, AutoBackupStore.lastSuccess(context))) return@withContext Result.success()
         try {
+            val (settings, password) = AutoBackupSettingsRepository.snapshotForBackup(context, manual)
+                ?: return@withContext Result.success()
             // Full archives can take longer than the ordinary background worker window.
             try {
                 setForeground(createForegroundInfo())
@@ -174,9 +228,8 @@ internal class AutoBackupWorker(context: Context, parameters: WorkerParameters) 
             } catch (failure: Exception) {
                 AndroidAgentLogger.warn("Automatic backup foreground promotion failed: ${failure.javaClass.simpleName}")
             }
-            EtaBackupOperations.exclusive {
+            EtaBackupOperations.exclusive(backup = true) {
                 EtaBackupOperations.requireIdle(context)
-                val password = AutoBackupPassword.read(context)
                 AutoBackupDocuments.save(context, settings, password)
             }
             Result.success()
@@ -184,8 +237,10 @@ internal class AutoBackupWorker(context: Context, parameters: WorkerParameters) 
             if (AutoBackupStore.lastSuccess(context) == previousSuccess) AutoBackupStore.status(context, "备份已中断，等待下次执行")
             throw cancelled
         } catch (failure: Exception) {
-            AutoBackupStore.status(context, failure.message ?: "自动备份失败，请检查目录权限")
-            if (runAttemptCount < 3) Result.retry() else Result.failure()
+            val retry = runAttemptCount < 3
+            val detail = failure.message ?: "请检查目录权限"
+            AutoBackupStore.status(context, "自动备份未完成 · $detail" + if (retry) "（系统稍后重试）" else "（请处理后重新备份）")
+            if (retry) Result.retry() else Result.failure()
         }
     }
 
@@ -228,3 +283,5 @@ internal class AutoBackupWorker(context: Context, parameters: WorkerParameters) 
     }
 
 }
+
+internal data class AutoBackupActivity(val running: Boolean = false, val immediatePending: Boolean = false)

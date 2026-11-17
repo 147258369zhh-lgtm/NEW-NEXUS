@@ -19,7 +19,7 @@
 - UI must not write directly through DAOs, Runtime singletons or host-private databases.
 - Third-party plugins must not execute in the UI process.
 - Tool exposure and tool execution must use the same permission and effect policy.
-- Root and high-risk A2A operations require local user confirmation; an Agent review cannot approve them.
+- Approval follows the user's explicitly selected arrangement. Full access executes the authorized task without application approval dialogs, including operations that legacy rules singled out as financial. Smart approval uses an independent reviewer and scoped evidence of genuine user decisions; manual approval asks the user when an additional authorization is needed. None of these modes bypass Android, Root, account, or website requirements. An agent cannot raise its own permission mode. Explicit task constraints and the user's separate UI-change consent rule remain in force.
 
 ## Builds and releases
 

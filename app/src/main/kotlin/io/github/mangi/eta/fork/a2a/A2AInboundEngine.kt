@@ -207,11 +207,9 @@ internal class A2AInboundEngine(
                     extraHeaders = mapOf("WWW-Authenticate" to "Bearer"),
                 )
             }
-            val peerId = headers["x-a2a-peer-id"]
-                ?.trim()
-                ?.takeIf(String::isNotBlank)
-                ?: headers["x-a2a-client-id"]?.trim()?.takeIf(String::isNotBlank)
-                ?: peerIdForCurrentToken()
+            // A display header is not an authenticated node identity. This transport currently
+            // has one credential, so all authority must remain bound to that credential.
+            val peerId = peerIdForCurrentToken()
             val access = accessProvider(peerId)
             peerObserver(peerId)
 
@@ -242,8 +240,8 @@ internal class A2AInboundEngine(
         if (request.jsonrpc != "2.0") return errorResponse(request.id, -32600, "Invalid JSON-RPC version")
         return when (canonicalRpcMethod(request.method)) {
             "SendMessage" -> handleSendMessage(request, access)
-            "GetTask" -> handleGetTask(request)
-            "CancelTask" -> handleCancelTask(request)
+            "GetTask" -> handleGetTask(request, access)
+            "CancelTask" -> handleCancelTask(request, access)
             "SendStreamingMessage", "SubscribeToTask" ->
                 errorResponse(request.id, -32601, "Streaming must use text/event-stream")
             else -> errorResponse(request.id, -32601, "Method not found: ${request.method}")
@@ -260,23 +258,29 @@ internal class A2AInboundEngine(
         return A2A_JSON.encodeToString(A2AJsonRpcResponse(id = request.id, result = result))
     }
 
-    private fun handleGetTask(request: A2AJsonRpcRequest): String {
+    private fun handleGetTask(request: A2AJsonRpcRequest, access: A2AToolAccess): String {
         if (!tasks.persistentTasks) return errorResponse(request.id, -32601, "GetTask is unavailable")
         val params = runCatching {
             A2A_JSON.decodeFromJsonElement<A2AGetTaskRequest>(request.params)
         }.getOrElse { failure -> return errorResponse(request.id, -32602, failure.message ?: "Invalid params") }
-        val task = runCatching { runBlocking { tasks.getTask(params.id, params.historyLength) } }
+        val task = runCatching { runBlocking {
+            tasks.authorizeTask(params.id, access.peerId)
+            tasks.getTask(params.id, params.historyLength)
+        } }
             .getOrElse { failure -> return errorResponse(request.id, -32602, failure.message ?: "Unknown task") }
         val result = A2A_JSON.encodeToJsonElement(task).toJsonObject()
         return A2A_JSON.encodeToString(A2AJsonRpcResponse(id = request.id, result = result))
     }
 
-    private fun handleCancelTask(request: A2AJsonRpcRequest): String {
+    private fun handleCancelTask(request: A2AJsonRpcRequest, access: A2AToolAccess): String {
         if (!tasks.persistentTasks) return errorResponse(request.id, -32601, "CancelTask is unavailable")
         val params = runCatching {
             A2A_JSON.decodeFromJsonElement<A2ACancelTaskRequest>(request.params)
         }.getOrElse { failure -> return errorResponse(request.id, -32602, failure.message ?: "Invalid params") }
-        val task = runCatching { runBlocking { tasks.cancelTask(params.id) } }
+        val task = runCatching { runBlocking {
+            tasks.authorizeTask(params.id, access.peerId)
+            tasks.cancelTask(params.id)
+        } }
             .getOrElse { failure -> return errorResponse(request.id, -32602, failure.message ?: "Unknown task") }
         val result = A2A_JSON.encodeToJsonElement(task).toJsonObject()
         return A2A_JSON.encodeToString(A2AJsonRpcResponse(id = request.id, result = result))
@@ -308,7 +312,7 @@ internal class A2AInboundEngine(
                         val response = tasks.sendMessage(params.copy(configuration = configuration), access)
                         val task = response.task
                         if (task != null) {
-                            streamTask(output, request.id, task)
+                            streamTask(output, request.id, task, access.peerId)
                         } else {
                             val result = A2A_JSON.encodeToJsonElement(response).toJsonObject()
                             writeSseEvent(output, A2A_JSON.encodeToString(A2AJsonRpcResponse(id = request.id, result = result)))
@@ -317,7 +321,8 @@ internal class A2AInboundEngine(
                     "SubscribeToTask" -> {
                         if (!tasks.persistentTasks) error("SubscribeToTask is unavailable")
                         val params = A2A_JSON.decodeFromJsonElement<A2AGetTaskRequest>(request.params)
-                        streamTask(output, request.id, tasks.getTask(params.id, params.historyLength))
+                        tasks.authorizeTask(params.id, access.peerId)
+                        streamTask(output, request.id, tasks.getTask(params.id, params.historyLength), access.peerId)
                     }
                     else -> error("Unsupported streaming method")
                 }
@@ -333,6 +338,7 @@ internal class A2AInboundEngine(
         output: java.io.BufferedOutputStream,
         requestId: String,
         initialTask: A2ATask,
+        peerId: String,
     ) {
         var task = initialTask
         writeTaskEvent(output, requestId, task)
@@ -343,6 +349,7 @@ internal class A2AInboundEngine(
                 error("A2A stream timed out while waiting for task completion")
             }
             delay(STREAM_POLL_INTERVAL_MS)
+            tasks.authorizeTask(task.id, peerId)
             task = tasks.getTask(task.id, historyLength = null)
             val signature = task.streamSignature()
             if (signature == lastSignature) continue

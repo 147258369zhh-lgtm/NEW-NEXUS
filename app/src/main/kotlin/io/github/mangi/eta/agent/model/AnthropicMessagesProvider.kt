@@ -50,7 +50,7 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
             .url(ProviderUrls.anthropicMessagesUrl(config.baseUrl))
             .headers(headers)
             .post(
-                buildRequestJson(config, request.messages, request.effectiveTools)
+                ProviderBudgetOutputLimit.apply(buildRequestJson(config, request.messages, request.effectiveTools), request, capabilities.endpoint)
                     .toString()
                     .toRequestBody(JSON_MEDIA_TYPE)
             )
@@ -66,7 +66,11 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
                 runController.throwIfCancelled()
                 if (!response.isSuccessful) {
                     val errorBody = response.peekBody(16_384).string()
-                    throw AgentModelFailure.http(response.code, errorBody)
+                    throw AgentModelFailure.http(
+                        status = response.code,
+                        body = errorBody,
+                        includeParameterDetails = response.code == 400,
+                    )
                 }
                 val assistant = readStreamingAssistantMessage(response.body.byteStream(), runController, onEvent)
                 onEvent(ProviderEvent.Completed(assistant.optString("finish_reason").ifBlank { null }))

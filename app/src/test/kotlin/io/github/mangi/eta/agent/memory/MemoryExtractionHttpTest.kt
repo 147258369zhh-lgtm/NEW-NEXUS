@@ -11,7 +11,19 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.annotation.Config
+import android.app.Application
+import io.github.mangi.eta.agent.runtime.RuntimeModelTaskHarness
+import io.github.mangi.eta.agent.runtime.NexusRunMapper
+import io.github.mangi.eta.data.repository.NexusExecutionStore
+import io.github.zhh_lgtm.nexus.kernel.api.RunState
+import io.github.zhh_lgtm.nexus.kernel.api.RunSource
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [36], application = Application::class)
 class MemoryExtractionHttpTest {
     @Test fun streamedExtractionUsesRealProviderWithoutToolsAndReturnsVerifiableCandidate() {
         val captured = AtomicReference<JSONObject>()
@@ -35,7 +47,18 @@ class MemoryExtractionHttpTest {
                 apiKey = "fixture", model = "fixture", systemPrompt = "",
                 hostedWebSearchEnabled = true, extraBodyJson = """{"tools":[{"type":"web_search"}]}""",
                 customBody = listOf(CustomBody("messages", JsonPrimitive("BAD_MESSAGES"))))
-            val entries = MemoryAutomaticExtractor.extract(config, source, listOf("global"), AgentRunController())
+            val context = RuntimeEnvironment.getApplication()
+            val entries = NexusExecutionStore(context).use { store ->
+                val runtime = RuntimeModelTaskHarness(context, store)
+                val extracted = MemoryAutomaticExtractor.extract(context, config, source, listOf("global"), AgentRunController(), "source-1",
+                    runTask = runtime::run)
+                val run = store.find(NexusRunMapper.canonicalRunId(runtime.requests.single().runId))!!
+                assertEquals(RunState.SUCCEEDED, run.state)
+                assertEquals(RunSource.NOTE_CONSOLIDATION, run.request.source)
+                assertEquals(1L, store.modelBudgetTotals(run.request.runId).requests)
+                assertEquals(1, runtime.snapshots.last().metrics.requestAttempts)
+                extracted
+            }
             assertEquals("用户偏好中文回答", entries.single().content)
             assertEquals("以后请使用中文回答", entries.single().evidence)
             val request = requireNotNull(captured.get())

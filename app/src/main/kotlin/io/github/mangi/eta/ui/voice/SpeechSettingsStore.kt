@@ -33,13 +33,17 @@ internal class SpeechSettingsStore(
         private set
     var saving by mutableStateOf(false)
         private set
+    var credentialsAvailable by mutableStateOf(false)
+        private set
+    private val credentialChanges = mutableMapOf<SpeechCredentialField, String>()
     var message by mutableStateOf<String?>(null)
         private set
     var messageIsError by mutableStateOf(false)
         private set
+    var recognitionTestResult by mutableStateOf<String?>(null)
+        private set
     val recognition = SpeechInputController(context, scope, onResult = {
-        message = context.getString(R.string.speech_test_result, it)
-        messageIsError = false
+        recognitionTestResult = context.getString(R.string.speech_test_result, it)
     })
     val playback = SpeechPlaybackController(context, scope)
 
@@ -49,6 +53,7 @@ internal class SpeechSettingsStore(
                 settings = SpeechSettingsRepository.settings()
                 try {
                     credentials = SpeechSettingsRepository.credentials(context)
+                    credentialsAvailable = true
                 } catch (_: SpeechCredentialsUnavailable) {
                     message = context.getString(R.string.speech_credentials_lost)
                     messageIsError = true
@@ -64,14 +69,37 @@ internal class SpeechSettingsStore(
 
     fun edit(value: SpeechSettings) {
         stop()
+        recognitionTestResult = null
         settings = value
         message = null
     }
 
     fun credential(field: SpeechCredentialField, value: String) {
+        if (!credentialsAvailable || saving) {
+            message = context.getString(R.string.speech_deepseek_credentials_preserved)
+            messageIsError = true
+            return
+        }
         stop()
+        recognitionTestResult = null
         credentials = credentials.withValue(field, value)
+        credentialChanges[field] = value
         message = null
+    }
+
+    fun retryCredentials() {
+        if (saving || !loaded) return
+        scope.launch {
+            try {
+                credentials = SpeechSettingsRepository.credentials(context)
+                credentialsAvailable = true
+                message = null
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                message = context.getString(R.string.speech_deepseek_credentials_preserved)
+                messageIsError = true
+            }
+        }
     }
 
     fun stop() {
@@ -79,11 +107,18 @@ internal class SpeechSettingsStore(
         playback.stop()
     }
 
+    fun startRecognitionTest() {
+        if (saving) { message = context.getString(R.string.speech_saved_with_pending); messageIsError = true; return }
+        recognitionTestResult = null
+        recognition.start(settings, credentials)
+    }
+
     /** [validate] 由页面按自己的方向提供（识别 / 播报 / 不校验），校验失败即中断保存。 */
     fun save(validate: () -> Unit) {
         if (!loaded || saving) return
         val config = settings
         val secrets = credentials
+        val changes = credentialChanges.toMap()
         stop()
         try {
             validate()
@@ -98,7 +133,12 @@ internal class SpeechSettingsStore(
         saving = true
         scope.launch {
             try {
-                SpeechSettingsRepository.saveCredentials(context, secrets)
+                if (changes.isNotEmpty()) {
+                    SpeechSettingsRepository.updateCredentials(context, changes)
+                    changes.forEach { (field, value) ->
+                        if (credentialChanges[field] == value) credentialChanges.remove(field)
+                    }
+                }
                 SpeechSettingsRepository.save(config)
                 message = context.getString(
                     if (settings === config && credentials === secrets) {

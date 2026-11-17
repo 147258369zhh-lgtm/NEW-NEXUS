@@ -89,6 +89,7 @@ internal fun ConversationSidePaneScaffold(
     onConversationRestore: (ConversationSummaryUi) -> Unit,
     onConversationMoveToFolder: (ConversationSummaryUi) -> Unit,
     onConversationDropToFolder: (conversationId: String, folderId: String) -> Unit = { _, _ -> },
+    onPanePlacement: (io.github.mangi.eta.fork.conversations.ConversationPanePlacement) -> Unit = {},
     onOpenMeetingRoom: (String) -> Unit,
     onMeetingRoomRename: (MeetingRoomSummaryRow) -> Unit,
     onMeetingRoomTogglePin: (MeetingRoomSummaryRow) -> Unit,
@@ -117,7 +118,9 @@ internal fun ConversationSidePaneScaffold(
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val density = LocalDensity.current
-        val paneWidth = minOf(maxWidth * ConversationPaneMetrics.PaneWidthFraction, ConversationPaneMetrics.PaneMaxWidth)
+        val compactPane = io.github.mangi.eta.ui.app.LocalNexusPresentationProfile.current.id in setOf("omni", "aurora")
+        val paneWidth = if (compactPane) minOf(maxWidth * 0.9f, 304.dp) else
+            minOf(maxWidth * ConversationPaneMetrics.PaneWidthFraction, ConversationPaneMetrics.PaneMaxWidth)
         val paneWidthPx = with(density) { paneWidth.toPx() }
         val anchors = remember(paneWidthPx) {
             DraggableAnchors {
@@ -230,33 +233,54 @@ internal fun ConversationSidePaneScaffold(
             modifier = Modifier.fillMaxSize()
                 .clipToBounds()
                 .background(conversationPaneContainerColor())
-                .pointerInput(backHandlerEnabled, isRevealed, paneWidthPx, sceneLifecycleState) {
-                    if (isRevealed || !backHandlerEnabled || sceneLifecycleState != Lifecycle.State.RESUMED) {
+                .pointerInput(backHandlerEnabled, visible, paneWidthPx, sceneLifecycleState) {
+                    if (visible || !backHandlerEnabled || sceneLifecycleState != Lifecycle.State.RESUMED) {
                         return@pointerInput
                     }
-                    val edgeWidthPx = with(density) { 40.dp.toPx() }
-                    val openThresholdPx = with(density) { 50.dp.toPx() }
+                    val edgeWidthPx = size.width * HomeSwipeGesturePolicy.LEFT_EDGE_END_FRACTION
+                    val openThresholdPx = with(density) { 40.dp.toPx() }
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         if (down.position.x > edgeWidthPx) return@awaitEachGesture
-                        var totalDrag = 0f
+                        // 顶部 40% 专用于会话/会议室切换，统一列表只响应底部 60%。
+                        if (down.position.y < size.height * 0.40f) return@awaitEachGesture
+                        var opening = false
                         val active = awaitHorizontalTouchSlopOrCancellation(down.id) { change, overSlop ->
-                            totalDrag = overSlop
-                            if (overSlop > 0f) change.consume()
-                        } ?: return@awaitEachGesture
-                        while (active.pressed) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull { it.id == active.id } ?: break
-                            val delta = change.positionChange().x
-                            if (delta != 0f) {
-                                totalDrag += delta
-                                if (totalDrag > 0f) change.consume()
+                            if (overSlop > 0f) {
+                                opening = true
+                                paneDragState.dispatchRawDelta(overSlop)
+                                change.consume()
                             }
-                            if (!change.pressed) break
-                        }
-                        if (totalDrag >= openThresholdPx) {
-                            currentHapticFeedback.performHapticFeedback(HapticFeedbackType.GestureEnd)
-                            currentOnOpen()
+                        } ?: return@awaitEachGesture
+                        if (!opening) return@awaitEachGesture
+                        var cancelled = true
+                        try {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == active.id } ?: break
+                                if (change.isConsumed) break
+                                val delta = change.positionChange().x
+                                if (delta != 0f) {
+                                    paneDragState.dispatchRawDelta(delta)
+                                    change.consume()
+                                }
+                                if (!change.pressed) {
+                                    cancelled = false
+                                    break
+                                }
+                            }
+                        } finally {
+                            val shouldOpen = !cancelled && paneDragState.offset >= openThresholdPx
+                            if (shouldOpen) {
+                                currentHapticFeedback.performHapticFeedback(HapticFeedbackType.GestureEnd)
+                                currentOnOpen()
+                            }
+                            scope.launch {
+                                paneDragState.animateTo(
+                                    if (shouldOpen) ConversationPaneAnchor.Open else ConversationPaneAnchor.Closed,
+                                    settleAnimation,
+                                )
+                            }
                         }
                     }
                 }
@@ -291,6 +315,7 @@ internal fun ConversationSidePaneScaffold(
                         onConversationRestore = onConversationRestore,
                         onConversationMoveToFolder = onConversationMoveToFolder,
                         onConversationDropToFolder = onConversationDropToFolder,
+                        onPanePlacement = onPanePlacement,
                         onOpenMeetingRoom = onOpenMeetingRoom,
                         onMeetingRoomRename = onMeetingRoomRename,
                         onMeetingRoomTogglePin = onMeetingRoomTogglePin,
@@ -311,6 +336,7 @@ internal fun ConversationSidePaneScaffold(
                         onOpenPermissions = onOpenPermissions,
                         showMeetingsByDefault = showMeetingsByDefault,
                         activeMeetingRoomId = activeMeetingRoomId,
+                        activityAnimationEnabled = isRevealed,
                         modifier = Modifier
                             .focusProperties { onEnter = { if (!isRevealed) cancelFocusChange() } }
                             .focusGroup()

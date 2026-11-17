@@ -3,6 +3,7 @@ package io.github.mangi.eta.ui.screens.prompt
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -28,6 +29,7 @@ import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.prompt.PromptScopeType
 import io.github.mangi.eta.agent.prompt.PromptTarget
 import io.github.mangi.eta.agent.prompt.PromptTemplate
+import io.github.mangi.eta.agent.prompt.PromptInheritance
 import io.github.mangi.eta.ui.components.EtaChoiceChip
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
@@ -233,6 +235,8 @@ internal fun PromptScopePickerScreen(
     val scope = rememberCoroutineScope()
     val currentBinding = store.bindingFor(target)
     val currentTemplate = store.template(currentBinding?.templateId)
+    var inheritanceName by rememberSaveable(target.key) { mutableStateOf(currentBinding?.inheritance?.name ?: PromptInheritance.APPEND.name) }
+    val inheritance = PromptInheritance.fromWire(inheritanceName)
     val targetLabel = promptTargetLabel(store, target, target.primaryId)
     var pendingReplacement by remember { mutableStateOf<Pair<PromptTemplate, PromptTemplate>?>(null) }
     val templates = store.config.templates.sortedWith(
@@ -244,7 +248,7 @@ internal fun PromptScopePickerScreen(
     val unbindFailed = stringResource(R.string.prompt_injection_unbind_failed)
     val bindNow: (PromptTemplate) -> Unit = { template ->
         scope.launch {
-            val succeeded = store.bind(template.id, target)
+            val succeeded = store.bind(template.id, target, inheritance)
             store.report(if (succeeded) bindSuccess else bindFailed)
             if (succeeded) onBound()
         }
@@ -309,6 +313,22 @@ internal fun PromptScopePickerScreen(
                     },
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
                 )
+            }
+        }
+        item(key = "picker_inheritance") {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("继承方式", style = MiuixTheme.textStyles.body1)
+                Text("仅控制行为方案模板；不会移除运行时合同、角色卡或真实权限边界。", style = MiuixTheme.textStyles.footnote1)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PromptInheritance.entries.forEach { mode ->
+                        EtaChoiceChip(text = mode.title, selected = mode == inheritance, onClick = {
+                            inheritanceName = mode.name
+                            currentBinding?.let { binding -> scope.launch {
+                                store.report(if (store.bind(binding.templateId, target, mode)) "继承方式已应用" else bindFailed)
+                            } }
+                        })
+                    }
+                }
             }
         }
         if (templates.isEmpty()) {

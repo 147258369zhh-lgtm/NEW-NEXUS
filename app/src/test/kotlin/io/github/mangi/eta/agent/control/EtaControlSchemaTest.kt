@@ -7,6 +7,17 @@ import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class EtaControlSchemaTest {
+    @Test fun nullArrayBoundsAndDuplicateValuesCannotBypassTheDeclaredContract() {
+        val schema = JSONObject().put("type", "object").put("properties", JSONObject()
+            .put("values", JSONObject().put("type", "array").put("maxItems", 2).put("uniqueItems", true)
+                .put("items", JSONObject().put("type", "string"))))
+        for (values in listOf(org.json.JSONArray().put(JSONObject.NULL), org.json.JSONArray(listOf("a", "a")),
+            org.json.JSONArray(listOf("a", "b", "c")))) {
+            org.junit.Assert.assertThrows(EtaControlException::class.java) { EtaControlSchema.validate(schema, JSONObject().put("values", values)) }
+        }
+        org.junit.Assert.assertThrows(EtaControlException::class.java) { EtaControlSchema.validate(schema, JSONObject().put("values", JSONObject.NULL)) }
+        EtaControlSchema.validate(schema, JSONObject().put("values", org.json.JSONArray(listOf("a", "b"))))
+    }
     private val schema = JSONObject()
         .put("type", "object")
         .put(

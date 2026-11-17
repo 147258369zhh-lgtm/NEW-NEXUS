@@ -105,4 +105,38 @@ class CanvasRoutingPolicyTest {
         assertFalse(CanvasRoutingPolicy.isVirtualDisplay(Display.INVALID_DISPLAY))
         assertTrue(CanvasRoutingPolicy.isVirtualDisplay(2))
     }
+
+    @Test
+    fun displayFlagProfileIsInspectableWithoutTreatingRequestedFocusAsObserved() {
+        assertEquals(
+            VirtualDisplayFlagProfile.TRUSTED_INTERACTIVE,
+            CanvasRoutingPolicy.flagProfile(CanvasRoutingPolicy.TRUSTED_INTERACTIVE_FLAGS),
+        )
+        assertEquals(
+            VirtualDisplayFlagProfile.INTERACTIVE_COMPAT,
+            CanvasRoutingPolicy.flagProfile(CanvasRoutingPolicy.INTERACTIVE_COMPAT_FLAGS),
+        )
+        assertEquals(
+            VirtualDisplayFlagProfile.CAPTURE_COMPAT,
+            CanvasRoutingPolicy.flagProfile(CanvasRoutingPolicy.CAPTURE_COMPAT_FLAGS),
+        )
+        assertEquals(VirtualDisplayFlagProfile.UNKNOWN, CanvasRoutingPolicy.flagProfile(0))
+        assertFalse(
+            VirtualDisplaySnapshot(
+                active = true,
+                flagProfile = VirtualDisplayFlagProfile.TRUSTED_INTERACTIVE,
+            ).hasObservedApplicationWindowFocus,
+        )
+    }
+
+    @Test
+    fun rootBridgeReadinessCarriesDisplayAndAcceptedFlagProfile() {
+        val ready = VirtualDisplayCommandMain.parseDisplayReadyLine(
+            "${VirtualDisplayCommandMain.READY_PREFIX}7:${CanvasRoutingPolicy.INTERACTIVE_COMPAT_FLAGS}",
+        )
+        assertEquals(7, ready?.displayId)
+        assertEquals(CanvasRoutingPolicy.INTERACTIVE_COMPAT_FLAGS, ready?.flags)
+        assertNull(VirtualDisplayCommandMain.parseDisplayReadyLine("${VirtualDisplayCommandMain.READY_PREFIX}7"))
+        assertNull(VirtualDisplayCommandMain.parseDisplayReadyLine("ETA_VD_RESULT:broken"))
+    }
 }

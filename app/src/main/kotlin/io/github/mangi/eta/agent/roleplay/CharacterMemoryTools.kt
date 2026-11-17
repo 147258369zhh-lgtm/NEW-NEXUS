@@ -53,7 +53,7 @@ internal class CharacterMemoryTools(
                             val parsed = LayeredMemoryDocument.fromLegacy(current.content)
                             val merged = listOf(parsed.sections[target].orEmpty().trim(), args.getString("content").trim())
                                 .filter { it.isNotBlank() }.joinToString("\n\n")
-                            val next = LayeredMemoryDocument(parsed.sections + (target to merged)).render()
+                            val next = parsed.copy(sections = parsed.sections + (target to merged)).render()
                             if (current.lineCount == 0) AgentMemoryMutation.Append(revision, next)
                             else AgentMemoryMutation.ReplaceRange(revision, 1, current.lineCount, next)
                         }

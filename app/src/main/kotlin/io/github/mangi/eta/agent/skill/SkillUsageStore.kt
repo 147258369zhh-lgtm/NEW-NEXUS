@@ -18,12 +18,11 @@ data class SkillUsageRecord(
 internal class SkillUsageStore(context: Context) {
     private val file = File(context.applicationContext.filesDir, "capability-center/skill-usage.json")
 
-    @Synchronized
-    fun readAll(): Map<String, SkillUsageRecord> {
+    fun readAll(): Map<String, SkillUsageRecord> = synchronized(lock) {
         if (!file.isFile) return emptyMap()
         return runCatching {
             val root = JSONObject(file.readText(Charsets.UTF_8))
-            require(root.optInt("version", 0) == VERSION)
+            require(root.optInt("version", 0) in 1..VERSION)
             val skills = root.getJSONObject("skills")
             buildMap {
                 skills.keys().forEach { key ->
@@ -33,8 +32,7 @@ internal class SkillUsageStore(context: Context) {
         }.getOrDefault(emptyMap())
     }
 
-    @Synchronized
-    fun recordRun(skillIds: Collection<String>, successful: Boolean, now: Long = System.currentTimeMillis()) {
+    fun recordRun(skillIds: Collection<String>, successful: Boolean?, now: Long = System.currentTimeMillis(), runId: String? = null) = synchronized(lock) {
         val ids = skillIds.asSequence()
             .map(String::trim)
             .filter(SKILL_ID::matches)
@@ -42,13 +40,17 @@ internal class SkillUsageStore(context: Context) {
             .take(MAX_SKILLS_PER_RUN)
             .toList()
         if (ids.isEmpty()) return
+        val receipts = readReceipts().toMutableMap()
         val updated = readAll().toMutableMap()
         ids.forEach { skillId ->
+            val key = runId?.let { skillRevision("$it\u0000$skillId".toByteArray()) }
+            if (key != null && key in receipts) return@forEach
+            if (key != null) receipts[key] = now.coerceAtLeast(0)
             val previous = updated[skillId] ?: SkillUsageRecord(skillId)
             updated[skillId] = previous.copy(
                 useCount = previous.useCount.saturatedIncrement(),
-                successCount = previous.successCount.saturatedIncrement(successful),
-                failureCount = previous.failureCount.saturatedIncrement(!successful),
+                successCount = previous.successCount.saturatedIncrement(successful == true),
+                failureCount = previous.failureCount.saturatedIncrement(successful == false),
                 lastUsedAt = maxOf(previous.lastUsedAt, now.coerceAtLeast(0L)),
             )
         }
@@ -56,19 +58,24 @@ internal class SkillUsageStore(context: Context) {
             .sortedByDescending { it.value.lastUsedAt }
             .take(MAX_SKILLS)
             .associate { it.key to it.value }
-        write(bounded)
+        write(bounded, receipts)
     }
 
-    @Synchronized
-    fun remove(skillId: String) {
+    fun remove(skillId: String) = synchronized(lock) {
         val current = readAll()
         if (skillId !in current) return
-        write(current - skillId)
+        write(current - skillId, readReceipts())
     }
 
-    private fun write(entries: Map<String, SkillUsageRecord>) {
+    private fun readReceipts(): Map<String, Long> = runCatching {
+        val records = JSONObject(file.readText()).optJSONObject("receipts") ?: return@runCatching emptyMap()
+        records.keys().asSequence().filter { it.matches(Regex("[a-f0-9]{64}")) }.associateWith { records.getLong(it) }
+    }.getOrDefault(emptyMap())
+
+    private fun write(entries: Map<String, SkillUsageRecord>, receipts: Map<String, Long>) {
         val root = JSONObject()
             .put("version", VERSION)
+            .put("receipts", JSONObject(receipts.entries.sortedByDescending { it.value }.take(4096).associate { it.key to it.value }))
             .put("skills", JSONObject().also { target ->
                 entries.toSortedMap().forEach { (id, value) ->
                     target.put(
@@ -119,7 +126,8 @@ internal class SkillUsageStore(context: Context) {
         if (increment) (this + 1).coerceAtMost(MAX_COUNTER) else this
 
     private companion object {
-        const val VERSION = 1
+        val lock = Any()
+        const val VERSION = 2
         const val MAX_SKILLS = 512
         const val MAX_SKILLS_PER_RUN = 200
         const val MAX_COUNTER = 1_000_000_000

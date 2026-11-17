@@ -1,0 +1,7 @@
+exp4j 0.4.8
+Author: Frank Asseg
+https://github.com/fasseg/exp4j/tree/exp4j-0.4.8
+
+Distributed under the Apache License, Version 2.0 in LICENSE-APACHE-2.0.txt.
+Used as an arithmetic parser for the bounded DSH view expression vocabulary.
+No expression can invoke application code, tools or system services.

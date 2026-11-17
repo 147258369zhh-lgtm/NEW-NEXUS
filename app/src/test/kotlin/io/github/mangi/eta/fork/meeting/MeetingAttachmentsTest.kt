@@ -35,7 +35,8 @@ class MeetingAttachmentsTest {
     @After fun cleanup() { MeetingDatabase.closeForTests(); context.deleteDatabase("eta_meeting.db") }
     private suspend fun room() = MeetingRepository.createRoom(context, "Attachments", MeetingParticipantDraft("lead", "Lead", "host"), emptyList())
     private fun attachments() = ConversationAttachments(
-        images = listOf(PendingImageUi("image", "file://${context.filesDir}/picture.image", "file://${context.filesDir}/preview.image", "image/png")),
+        images = listOf(PendingImageUi("image", File(context.filesDir, "picture.image").toURI().toString(),
+            File(context.filesDir, "preview.image").toURI().toString(), "image/png")),
         files = listOf(PendingFileReferenceUi("file", AgentFileReference("Brief", "/storage/emulated/0/brief.txt", AgentFileReferenceKind.File))),
     )
 
@@ -54,16 +55,65 @@ class MeetingAttachmentsTest {
         assertEquals(value, MeetingRepository.snapshot(context, room).first()!!.messageAttachments[message.id])
     }
 
-    @Test fun participantHistoryIncludesImageOnceAndRetainsIsolatedAssistantResults() = runBlocking(Dispatchers.IO) {
+    @Test fun stoppedQueuedInputsRetainAttachmentsWithoutDuplicatingAnAlreadyStoredCurrentTurn() = runBlocking(Dispatchers.IO) {
+        val room = room()
+        val current = QueuedMeetingTurn("current", attachments())
+        val pending = QueuedMeetingTurn("pending", attachments())
+        MeetingRepository.appendMessage(context, room, MeetingAuthorType.USER, null, "You", "current",
+            messageId = current.id, attachments = current.attachments)
+        repeat(2) { MeetingRepository.retainUnstartedTurns(context, room, listOf(current, pending)) }
+        val snapshot = MeetingRepository.snapshot(context, room).first()!!
+        assertEquals(setOf(current.id, pending.id), snapshot.messages.filter { it.authorType == MeetingAuthorType.USER }.map { it.id }.toSet())
+        assertEquals(3, snapshot.messages.size)
+        assertEquals(pending.attachments, snapshot.messageAttachments[pending.id])
+    }
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun participantHistoryIncludesImageOnceAndRetainsIsolatedAssistantResults() = runBlocking(Dispatchers.IO) {
         val room = room(); val value = attachments()
+        val bitmap = android.graphics.Bitmap.createBitmap(2, 2, android.graphics.Bitmap.Config.ARGB_8888)
+        try {
+            File(context.filesDir, "picture.image").outputStream().use {
+                check(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it))
+            }
+        } finally { bitmap.recycle() }
         MeetingRepository.appendMessage(context, room, MeetingAuthorType.USER, null, "You", "Inspect image", attachments = value)
         MeetingRepository.appendMessage(context, room, MeetingAuthorType.AGENT, "other", "Other", "Other private result")
         val snapshot = MeetingRepository.snapshot(context, room).first()!!
         val history = MeetingRepository.participantHistory(context, room, "lead", snapshot.messages)
         assertEquals(1, history.size)
-        assertTrue(history.single().contentJson.contains("image_url"))
+        assertTrue("Historical image missing: ${value.images.single().uri}; path=${android.net.Uri.parse(value.images.single().uri).path}; history=${history.single().content}",
+            history.single().contentJson.contains("image_url"))
+        val modelContent = io.github.mangi.eta.agent.model.AgentConversationCodec.toJsonObject(history.single()).getJSONArray("content")
+        assertEquals("image_url", modelContent.getJSONObject(1).getString("type"))
         assertFalse(history.single().contentJson.contains("file:"))
         assertFalse(history.any { it.content.contains("Other private result") })
+    }
+
+    @Test fun missingHistoricalImageIsReportedWithoutSendingInvalidPlaceholder() = runBlocking(Dispatchers.IO) {
+        val room = room()
+        File(context.filesDir, "picture.image").delete()
+        MeetingRepository.appendMessage(context, room, MeetingAuthorType.USER, null, "You", "Inspect missing image", attachments = attachments())
+        val snapshot = MeetingRepository.snapshot(context, room).first()!!
+        val history = MeetingRepository.participantHistory(context, room, "lead", snapshot.messages)
+        assertTrue(history.single().content.contains("部分历史图片无法读取"))
+        assertEquals("", history.single().contentJson)
+    }
+
+    @Test fun acceptedPendingInputSurvivesProcessRecoveryWithNoAutomaticExecution() = runBlocking(Dispatchers.IO) {
+        val room = room()
+        val turn = MeetingRepository.persistPendingTurn(context, room,
+            QueuedMeetingTurn("排队后尚未执行", ConversationAttachments(files = attachments().files)))
+        assertEquals(1, MeetingDatabase.get(context).meetingDao().pendingTurnEvents().size)
+        MeetingRepository.recoverInterruptedRuns(context)
+        MeetingRepository.recoverInterruptedRuns(context)
+        val snapshot = MeetingRepository.snapshot(context, room).first()!!
+        assertEquals(2, snapshot.messages.size)
+        assertEquals(turn.id, snapshot.messages.single { it.authorType == MeetingAuthorType.USER }.id)
+        assertEquals(turn.attachments, snapshot.messageAttachments[turn.id])
+        assertTrue(snapshot.tasks.isEmpty())
+        assertTrue(MeetingDatabase.get(context).meetingDao().pendingTurnEvents().isEmpty())
     }
 
     @Test fun metadataWriteFailureRollsBackTheUserMessageAndItsOrder() = runBlocking(Dispatchers.IO) {

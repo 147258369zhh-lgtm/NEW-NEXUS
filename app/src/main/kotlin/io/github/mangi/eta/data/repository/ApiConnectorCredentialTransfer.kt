@@ -2,6 +2,7 @@ package io.github.mangi.eta.data.repository
 
 import android.content.Context
 import io.github.mangi.eta.agent.capability.ApiConnectorAuthType
+import io.github.mangi.eta.agent.capability.ApiConnectorException
 import io.github.mangi.eta.agent.capability.ApiConnectorStore
 import io.github.mangi.eta.agent.capability.apiConnectorSecretKey
 
@@ -18,7 +19,14 @@ internal object ApiConnectorCredentialTransfer {
     ): ApiConnectorCredentialSnapshot {
         val credentials = linkedMapOf<String, String>()
         var unreadable = 0
-        ApiConnectorStore(context.applicationContext).load()
+        val connectors = try {
+            ApiConnectorStore(context.applicationContext).load()
+        } catch (_: ApiConnectorException) {
+            // The raw configuration is still included by the full backup. Skipping only the
+            // unmappable credential layer keeps all other recoverable data exportable.
+            return ApiConnectorCredentialSnapshot(unreadable = 1)
+        }
+        connectors
             .filter { it.authType != ApiConnectorAuthType.NONE }
             .forEach { connector ->
                 try {

@@ -8,6 +8,58 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MeetingUiStateTest {
+    @Test fun hostCoordinationWaitIsVisibleAfterACompletedHostTask() {
+        val host = participant("lead", isHost = true)
+        val state = MeetingRoomSnapshot(
+            room = room(MeetingRoomStatus.RUNNING), participants = listOf(host),
+            messages = listOf(message("user", MeetingAuthorType.USER, null, "继续")),
+            tasks = listOf(task("host-task", MeetingTaskStatus.COMPLETED).copy(participantProfile = "lead")),
+            timelineEvents = listOf(MeetingEventEntity(id = 1, roomId = "room", type = "approval_wait:run",
+                payloadJson = "{\"profile\":\"lead\",\"phase\":\"REQUESTED\"}", createdAt = 1)),
+        ).toUiState()
+        assertTrue(state.isParticipantWaiting("lead"))
+    }
+
+    @Test fun completedHostTaskDoesNotLeaveAStaleWait() {
+        val state = MeetingRoomSnapshot(
+            room = room(MeetingRoomStatus.RUNNING), participants = listOf(participant("lead", isHost = true)),
+            messages = listOf(message("user", MeetingAuthorType.USER, null, "继续")),
+            tasks = listOf(task("host-task", MeetingTaskStatus.COMPLETED).copy(participantProfile = "lead")),
+            timelineEvents = listOf(MeetingEventEntity(id = 1, roomId = "room", taskId = "host-task", type = "approval_wait:run",
+                payloadJson = "{\"profile\":\"lead\",\"phase\":\"REQUESTED\"}", createdAt = 1)),
+        ).toUiState()
+        assertFalse(state.isParticipantWaiting("lead"))
+    }
+    @Test fun completionFormatsNamesThatCannotUseSimpleMentions() {
+        val active = MeetingComposerState.activeMention("@张", 2)!!
+        val result = MeetingComposerState.completeMention("@张", active, "张三 · A2A")
+        assertEquals("@[张三 · A2A] ", result)
+        assertEquals(MeetingRoutingDecision.Direct("张三 · A2A"),
+            MeetingMentionRouter.route(result + "处理", listOf("张三 · A2A")))
+    }
+
+    @Test fun editingBracketedMentionReplacesTheWholeName() {
+        val text = "请 @[name@team] 检查"
+        val active = MeetingComposerState.activeMention(text, 8)!!
+        assertEquals("name", active.query)
+        assertEquals("请 @[新成员]  检查", MeetingComposerState.completeMention(text, active, "新成员"))
+    }
+
+    @Test fun nestedAtTextAndUnfinishedMentionCanBeCompleted() {
+        val nested = "@[A @[team] 处理"
+        val active = MeetingComposerState.activeMention(nested, 9)!!
+        assertEquals(0, active.replaceStart)
+        assertEquals("@[新成员]  处理", MeetingComposerState.completeMention(nested, active, "新成员"))
+        val unfinished = "请 @[张 检查"
+        val partial = MeetingComposerState.activeMention(unfinished, 5)!!
+        assertEquals("请 @[张三]  检查", MeetingComposerState.completeMention(unfinished, partial, "张三"))
+    }
+
+    @Test fun adjacentMentionsCanBeEditedIndividually() {
+        assertEquals(6, MeetingComposerState.activeMention("@coder@pl", 9)!!.replaceStart)
+        assertEquals(6, MeetingComposerState.activeMention("@coder@[张三]", 10)!!.replaceStart)
+    }
+
     @Test
     fun activeMentionOnlyMatchesTypingAtATokenBoundary() {
         assertEquals(ActiveMention("co", 0, 3), MeetingComposerState.activeMention("@co", 3))
@@ -106,6 +158,22 @@ class MeetingUiStateTest {
         ).toUiState()
 
         assertNull(state.latestSummary)
+    }
+
+    @Test
+    fun participantActivityDoesNotShowPreviousRound() {
+        val state = MeetingRoomSnapshot(
+            room = room(MeetingRoomStatus.RUNNING),
+            participants = listOf(participant("coder")),
+            messages = listOf(
+                message("old-user", MeetingAuthorType.USER, null, "旧任务"),
+                message("old-result", MeetingAuthorType.AGENT, "coder", "旧结果"),
+                message("new-user", MeetingAuthorType.USER, null, "新任务"),
+            ),
+            tasks = emptyList(),
+        ).toUiState()
+
+        assertNull(state.latestActivityFor("coder"))
     }
 
     private fun room(status: String) = MeetingRoomEntity(

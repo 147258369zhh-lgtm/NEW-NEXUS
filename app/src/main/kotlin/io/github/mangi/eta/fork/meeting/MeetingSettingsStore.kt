@@ -14,6 +14,10 @@ internal data class MeetingSettings(
     val requestTimeoutSeconds: Int = 600,
     val fallbackToAllAgents: Boolean = true,
     val autoSummarizeResults: Boolean = true,
+    /** 会议参与者是否按 `MEETING` 用途使用模型候选路由；关闭时保持原有会议模型优先级。 */
+    val candidateRoutingEnabled: Boolean = false,
+    val workflowMaxCalls: Int = 40,
+    val workflowMaxMinutes: Int = 20,
 )
 
 /** Meeting-specific defaults shared by the room UI and runtime. */
@@ -37,6 +41,9 @@ internal class MeetingSettingsStore private constructor(context: Context) {
             .putInt(KEY_REQUEST_TIMEOUT_SECONDS, updated.requestTimeoutSeconds)
             .putBoolean(KEY_FALLBACK_TO_ALL_AGENTS, updated.fallbackToAllAgents)
             .putBoolean(KEY_AUTO_SUMMARIZE_RESULTS, updated.autoSummarizeResults)
+            .putBoolean(KEY_CANDIDATE_ROUTING, updated.candidateRoutingEnabled)
+            .putInt(KEY_WORKFLOW_CALLS, updated.workflowMaxCalls)
+            .putInt(KEY_WORKFLOW_MINUTES, updated.workflowMaxMinutes)
             .apply()
         mutableSettings.value = updated
     }
@@ -51,6 +58,9 @@ internal class MeetingSettingsStore private constructor(context: Context) {
             requestTimeoutSeconds = preferences.getInt(KEY_REQUEST_TIMEOUT_SECONDS, 600),
             fallbackToAllAgents = preferences.getBoolean(KEY_FALLBACK_TO_ALL_AGENTS, true),
             autoSummarizeResults = preferences.getBoolean(KEY_AUTO_SUMMARIZE_RESULTS, true),
+            candidateRoutingEnabled = preferences.getBoolean(KEY_CANDIDATE_ROUTING, false),
+            workflowMaxCalls = preferences.getInt(KEY_WORKFLOW_CALLS, 40),
+            workflowMaxMinutes = preferences.getInt(KEY_WORKFLOW_MINUTES, 20),
         ),
     )
 
@@ -58,6 +68,8 @@ internal class MeetingSettingsStore private constructor(context: Context) {
         maxParallelParticipants = settings.maxParallelParticipants.coerceIn(1, 8),
         summaryPreviewLines = settings.summaryPreviewLines.takeIf { it == 0 || it in 1..12 } ?: 1,
         requestTimeoutSeconds = settings.requestTimeoutSeconds.coerceIn(60, 3_600),
+        workflowMaxCalls = settings.workflowMaxCalls.coerceIn(4, 64),
+        workflowMaxMinutes = settings.workflowMaxMinutes.coerceIn(2, 60),
     )
 
     companion object {
@@ -70,6 +82,9 @@ internal class MeetingSettingsStore private constructor(context: Context) {
         private const val KEY_REQUEST_TIMEOUT_SECONDS = "request_timeout_seconds"
         private const val KEY_FALLBACK_TO_ALL_AGENTS = "fallback_to_all_agents"
         private const val KEY_AUTO_SUMMARIZE_RESULTS = "auto_summarize_results"
+        private const val KEY_CANDIDATE_ROUTING = "candidate_routing_enabled"
+        private const val KEY_WORKFLOW_CALLS = "workflow_max_calls"
+        private const val KEY_WORKFLOW_MINUTES = "workflow_max_minutes"
 
         @Volatile
         private var instance: MeetingSettingsStore? = null

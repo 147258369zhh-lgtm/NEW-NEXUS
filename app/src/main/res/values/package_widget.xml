@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="package_widget_name">NEXA plugin</string>
+    <string name="package_widget_description">A widget from an enabled NEXA package</string>
+    <color name="package_widget_background">#FBFBFD</color>
+    <color name="package_widget_text">#202124</color>
+    <color name="package_widget_secondary">#64676D</color>
+    <color name="package_widget_accent">#3265CA</color>
+    <color name="package_widget_outline">#E6E7EB</color>
+    <color name="package_widget_button">#EDF2FC</color>
+</resources>

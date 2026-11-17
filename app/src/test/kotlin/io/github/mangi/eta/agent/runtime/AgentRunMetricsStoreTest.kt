@@ -24,6 +24,16 @@ import org.robolectric.annotation.SQLiteMode
 @Config(sdk = [36], application = Application::class)
 @SQLiteMode(SQLiteMode.Mode.NATIVE)
 class AgentRunMetricsStoreTest {
+    @Test fun admittedProjectIncludingNoProjectIsNotReplacedByTheCurrentBinding() = runBlocking(Dispatchers.IO) {
+        val project = io.github.mangi.eta.fork.projects.ProjectRepository.create(context,
+            io.github.mangi.eta.fork.projects.ProjectDraft("current", "fixture", "root:current", "current", "fixture"))
+        io.github.mangi.eta.fork.projects.ProjectRepository.bindSubject(context, project,
+            io.github.mangi.eta.fork.projects.ProjectSubjectType.CONVERSATION, "frozen-chat")
+        AgentRunMetricsStore.save(context, snapshot("none").copy(conversationId = "frozen-chat", projectId = ""))
+        AgentRunMetricsStore.save(context, snapshot("old").copy(conversationId = "frozen-chat", projectId = "old-project"))
+        assertEquals("", db.dao().record("none")?.projectId)
+        assertEquals("old-project", db.dao().record("old")?.projectId)
+    }
     private val context: Context = RuntimeEnvironment.getApplication()
     private lateinit var db: AgentMetricsDatabase
 
@@ -92,6 +102,62 @@ class AgentRunMetricsStoreTest {
             .putString(AgentRunMetricsStore.LEGACY_KEY, "{corrupt").commit()
         AgentRunMetricsStore.save(context, snapshot())
         assertEquals(1, db.dao().records().size)
+    }
+
+    @Test fun legacyImportKeepsOnlyProvableEpochMillisAndLeavesOtherTimesUnknown() = runBlocking(Dispatchers.IO) {
+        val millis = 1_760_000_000_000L
+        val raw = JSONArray()
+            .put(JSONObject().put("run_id", "millis").put("completed_at", millis).put("input_tokens", 20))
+            .put(JSONObject().put("run_id", "seconds").put("completed_at", 1_760_000_000))
+            .put(JSONObject().put("run_id", "text").put("completed_at", millis.toString()))
+            .put(JSONObject().put("run_id", "fraction").put("completed_at", millis + 0.5))
+            .put(JSONObject().put("run_id", "future").put("completed_at", 4_102_444_800_001L))
+            .put(JSONObject().put("run_id", "negative").put("completed_at", -millis))
+            .put(JSONObject().put("run_id", "absent"))
+        context.getSharedPreferences(AgentRunMetricsStore.LEGACY_PREFS, Context.MODE_PRIVATE).edit()
+            .putString(AgentRunMetricsStore.LEGACY_KEY, raw.toString()).commit()
+
+        repeat(2) { AgentRunMetricsStore.migrateLegacy(context, db) }
+
+        val kept = requireNotNull(db.dao().record("millis"))
+        assertEquals(millis, kept.completedAt)
+        assertEquals(AgentMetricsTime.UNKNOWN, kept.startedAt)
+        assertEquals(AgentMetricsTime.UNKNOWN, kept.updatedAt)
+        assertEquals(0L, kept.durationMs)
+        assertEquals(AgentMetricStatus.LEGACY, kept.status)
+        assertEquals(20L, kept.metrics.inputTokens)
+        listOf("seconds", "text", "fraction", "future", "negative", "absent").forEach { id ->
+            val record = requireNotNull(db.dao().record(id)) { id }
+            assertNull("$id must not carry an unprovable completion time", record.completedAt)
+            assertEquals(AgentMetricsTime.UNKNOWN, record.startedAt)
+            assertEquals(AgentMetricsTime.UNKNOWN, record.updatedAt)
+            assertEquals(0L, record.durationMs)
+        }
+    }
+
+    @Test fun importedTimeRepairClearsOnlyUnprovableTimesAndIsIdempotent() = runBlocking(Dispatchers.IO) {
+        val millis = 1_760_000_000_000L
+        val usage = AgentRunMetrics(rounds = 3, toolCalls = 2, failedTools = 1, inputTokens = 42, outputTokens = 7)
+        fun legacy(id: String, time: Long, metrics: AgentRunMetrics) = AgentRunMetricsRecord(id, id, "legacy", "legacy", "chat",
+            "", "", "", "", time, time, time, 0, AgentMetricStatus.LEGACY, 0, 0, metrics)
+        db.dao().putRun(legacy("imported-ok", millis, usage))
+        db.dao().putRun(legacy("imported-bad", 1_000, usage.copy(inputTokens = 5)))
+        AgentRunMetricsStore.save(context, snapshot("current", status = AgentMetricStatus.SUCCEEDED))
+        val current = requireNotNull(db.dao().record("current"))
+
+        repeat(3) { AgentRunMetricsStore.migrateLegacy(context, db) }
+
+        val ok = requireNotNull(db.dao().record("imported-ok"))
+        assertEquals(millis, ok.completedAt)
+        assertEquals(AgentMetricsTime.UNKNOWN, ok.startedAt)
+        assertEquals(AgentMetricsTime.UNKNOWN, ok.updatedAt)
+        assertEquals(usage, ok.metrics)
+        val bad = requireNotNull(db.dao().record("imported-bad"))
+        assertNull(bad.completedAt)
+        assertEquals(AgentMetricsTime.UNKNOWN, bad.startedAt)
+        assertEquals(AgentMetricsTime.UNKNOWN, bad.updatedAt)
+        assertEquals(5L, bad.metrics.inputTokens)
+        assertEquals(current, db.dao().record("current"))
     }
 
     @Test fun pruningCascadesDetailsAndAlwaysRetainsActiveRuns() = runBlocking(Dispatchers.IO) {

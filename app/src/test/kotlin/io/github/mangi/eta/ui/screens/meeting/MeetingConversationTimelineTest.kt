@@ -8,6 +8,7 @@ import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 import io.github.mangi.eta.agent.runtime.AgentEvent
+import io.github.mangi.eta.agent.runtime.AgentArtifactReference
 
 class MeetingConversationTimelineTest {
     private val room = MeetingRoomEntity("room", "Room", "lead", MeetingRoomStatus.RUNNING, 1, 1)
@@ -20,6 +21,33 @@ class MeetingConversationTimelineTest {
         payloadJson = JSONObject().put("run_id", "run").put("outage", 1).put("phase", phase.wireValue).toString(), createdAt = 2,
     )
 
+    @Test fun meetingKeepsEveryToolAttachmentAndSettledModelMediaWithItsNativeMime() {
+        val artifacts = listOf(
+            AgentArtifactReference("audio", "音频成果", "audio/ogg"),
+            AgentArtifactReference("video", "视频成果", "video/mp4"),
+        )
+        val tool = MeetingToolActivity("run", 1, "call", false, "mcp_media", MeetingToolPhase.SUCCESS,
+            artifacts = artifacts)
+        val stream = MeetingStreamActivity("run", 1, 0, AgentEvent.AssistantBlockKind.TEXT,
+            MeetingStreamPhase.SETTLED, "模型成果", artifacts = artifacts)
+        val events = listOf(
+            MeetingEventEntity(id = 1, roomId = room.id, type = tool.eventType, payloadJson = tool.encode(false), createdAt = 1),
+            MeetingEventEntity(id = 2, roomId = room.id, type = stream.eventType, payloadJson = stream.encode(false), createdAt = 2),
+        )
+        val timeline = state(listOf(
+            message(tool.messageId, MeetingAuthorType.SYSTEM),
+            message(stream.messageId, MeetingAuthorType.AGENT, stream.content, 1),
+        ), events).conversationTimeline(1)
+        val toolMedia = timeline.messages.filterIsInstance<AgentMessageUi>().filter { it.id.startsWith("${tool.messageId}:file") }
+        assertEquals(listOf("${tool.messageId}:file", "${tool.messageId}:file:video"), toolMedia.map { it.id })
+        assertTrue(toolMedia[0].contentParts.single() is io.github.zhh_lgtm.nexus.kernel.api.AudioPart)
+        assertTrue(toolMedia[1].contentParts.single() is io.github.zhh_lgtm.nexus.kernel.api.VideoPart)
+        val settled = timeline.messages.filterIsInstance<AgentMessageUi>().single { it.id == stream.messageId }
+        assertEquals(1, settled.contentParts.filterIsInstance<io.github.zhh_lgtm.nexus.kernel.api.AudioPart>().size)
+        assertEquals(1, settled.contentParts.filterIsInstance<io.github.zhh_lgtm.nexus.kernel.api.VideoPart>().size)
+        assertTrue(stream.messageId in timeline.completedReplyIds)
+    }
+
     @Test fun unchangedHistoricalMessagesKeepTheirInstancesWhenOneStreamAdvances() {
         val activity = MeetingStreamActivity("run", 1, 0, AgentEvent.AssistantBlockKind.TEXT, MeetingStreamPhase.STREAMING, "first")
         val event = MeetingEventEntity(id = 1, roomId = room.id, type = activity.eventType, payloadJson = activity.encode(false), createdAt = 1)
@@ -31,6 +59,24 @@ class MeetingConversationTimelineTest {
         assertSame(first.messages.first(), second.messages.first())
         assertNotSame(first.messages.last(), second.messages.last())
         assertEquals("first second", (second.messages.last() as AgentMessageUi).content)
+    }
+
+    @Test fun cachedMetadataReflectsChangedContentAndHostIdentity() {
+        val cache = MeetingTimelineMetadataCache()
+        val activity = MeetingStreamActivity("run", 1, 0, AgentEvent.AssistantBlockKind.TEXT, MeetingStreamPhase.STREAMING, "first")
+        val originalEvent = MeetingEventEntity(id = 1, roomId = room.id, type = activity.eventType,
+            payloadJson = activity.encode(false), createdAt = 1)
+        val original = state(listOf(message(activity.messageId, MeetingAuthorType.SYSTEM, "first")), listOf(originalEvent))
+        val first = original.conversationTimeline(1, metadataCache = cache)
+        assertEquals(ConversationAuthorRole.Agent, first.identities.getValue(activity.messageId).role)
+        val updated = original.copy(
+            messages = original.messages.map { it.copy(content = "second") },
+            timelineEvents = listOf(originalEvent.copy(payloadJson = activity.encode(true))),
+        )
+        val result = updated.conversationTimeline(1, previous = first, metadataCache = cache)
+        assertEquals("second", (result.messages.single() as AgentMessageUi).content)
+        assertEquals(ConversationAuthorRole.Host, result.identities.getValue(activity.messageId).role)
+        assertEquals(updated.conversationTimeline(1), result)
     }
 
     @Test fun streamPreviewWarningAndInterruptedStateAreVisibleWithoutMarkingItAFinalReply() {
@@ -67,6 +113,16 @@ class MeetingConversationTimelineTest {
             assertEquals(message.content, projected.content)
             assertFalse(projected.renderMarkdown)
         }
+    }
+
+    @Test fun completedMeetingMediaUsesNativePartInsteadOfAGenericFileCard() {
+        val tool = MeetingToolActivity("run", 1, "call", false, "write_file", MeetingToolPhase.SUCCESS,
+            artifactId = "media-artifact", artifactName = "clip.mp4")
+        val message = message(tool.messageId, MeetingAuthorType.SYSTEM)
+        val event = MeetingEventEntity(id = 1, roomId = room.id, type = tool.eventType, payloadJson = tool.encode(false), createdAt = 1)
+        val projected = state(listOf(message), listOf(event)).conversationTimeline(1).messages
+        val media = projected.filterIsInstance<AgentMessageUi>().single { it.id.contains(":file") }
+        assertTrue(media.contentParts.single() is io.github.zhh_lgtm.nexus.kernel.api.VideoPart)
     }
 
     @Test fun completedTaskCannotLeaveItsOldToolAnimatingWhileAnotherMemberRuns() {

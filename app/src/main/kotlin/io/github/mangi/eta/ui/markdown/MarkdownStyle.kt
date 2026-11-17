@@ -9,6 +9,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
+import io.github.mangi.eta.data.model.MessageFont
+import io.github.mangi.eta.ui.app.LocalAppearanceSettings
+import io.github.mangi.eta.ui.components.NexaHumanist
+import io.github.mangi.eta.ui.components.NexaEditorial
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /** 正文与思考共用同一套渲染器，只在字号、颜色与留白上区分层级。 */
@@ -32,6 +36,9 @@ internal class MarkdownStyle(
     val codeBackground: Color,
     val tableHeaderBackground: Color,
     val inline: MarkdownInlineStyle,
+    val paragraphGapScale: Float = 1f,
+    val codeWrap: Boolean = false,
+    val tableDensity: Float = 1f,
 ) {
     fun heading(level: Int): TextStyle = headings[(level - 1).coerceIn(0, headings.lastIndex)]
 
@@ -49,6 +56,9 @@ internal class MarkdownStyle(
         codeBackground = codeBackground,
         tableHeaderBackground = tableHeaderBackground,
         inline = inline,
+        paragraphGapScale = paragraphGapScale,
+        codeWrap = codeWrap,
+        tableDensity = tableDensity,
     )
 }
 
@@ -56,12 +66,18 @@ internal class MarkdownStyle(
 internal fun rememberMarkdownStyle(tone: MarkdownTone): MarkdownStyle {
     val colors = MiuixTheme.colorScheme
     val textStyles = MiuixTheme.textStyles
-    return remember(tone, colors, textStyles) {
+    val typography = LocalAppearanceSettings.current.messageTypography.normalized()
+    return remember(tone, colors, textStyles, typography) {
         val answer = tone == MarkdownTone.Answer
         val textColor = if (answer) colors.onSurface else colors.onSurfaceVariantSummary
         val body = (if (answer) textStyles.body1 else textStyles.body2).copy(
-            fontSize = if (answer) 16.sp else 14.sp,
-            lineHeight = if (answer) ANSWER_LINE_HEIGHT_SP.sp else THINKING_LINE_HEIGHT_SP.sp,
+            fontSize = (if (answer) typography.bodySize else typography.thinkingSize).sp,
+            lineHeight = (if (answer) typography.lineHeight else typography.thinkingLineHeight).sp,
+            fontFamily = messageFontFamily(typography.font) ?: textStyles.body1.fontFamily,
+            fontWeight = if (answer && typography.bodyWeight != 0) FontWeight(typography.bodyWeight)
+                else (if (answer) textStyles.body1 else textStyles.body2).fontWeight,
+            letterSpacing = (if (answer) typography.bodyLetterSpacing else typography.thinkingLetterSpacing)
+                .takeUnless { it == 0f }?.sp ?: (if (answer) textStyles.body1 else textStyles.body2).letterSpacing,
             color = textColor,
         )
         // 聊天里的标题只是段落强调，不是页面标题：字号克制，层级主要靠字重区分。
@@ -75,17 +91,25 @@ internal fun rememberMarkdownStyle(tone: MarkdownTone): MarkdownStyle {
         } else {
             listOf(body.copy(fontSize = 15.sp, fontWeight = FontWeight.SemiBold))
         }
+        val scaledHeadings = headings.map { heading ->
+            val bodyScale = if (answer) typography.bodySize / 16f else typography.thinkingSize / 14f
+            heading.copy(
+                fontSize = (heading.fontSize.value * typography.headingScale * bodyScale).sp,
+                lineHeight = (heading.lineHeight.value * typography.headingScale * bodyScale).sp,
+                fontWeight = FontWeight(typography.headingWeight),
+            )
+        }
         MarkdownStyle(
             tone = tone,
             body = body,
-            headings = headings,
+            headings = scaledHeadings,
             code = TextStyle(
                 fontFamily = FontFamily.Monospace,
-                fontSize = if (answer) 13.sp else 12.sp,
-                lineHeight = if (answer) 20.sp else 18.sp,
+                fontSize = (if (answer) typography.codeSize else (typography.codeSize - 1).coerceAtLeast(10f)).sp,
+                lineHeight = (typography.codeSize * typography.codeLineHeightScale).sp,
                 color = textColor,
             ),
-            table = body.copy(fontSize = if (answer) 14.sp else 13.sp, lineHeight = if (answer) 21.sp else 19.sp),
+            table = body.copy(fontSize = typography.tableSize.sp, lineHeight = (typography.tableSize * 1.5f).sp),
             textColor = textColor,
             secondaryColor = colors.onSurfaceVariantSummary,
             markerColor = if (answer) colors.onSurface.copy(alpha = 0.55f) else colors.onSurfaceVariantSummary,
@@ -96,6 +120,9 @@ internal fun rememberMarkdownStyle(tone: MarkdownTone): MarkdownStyle {
                 linkColor = colors.primary,
                 codeBackground = colors.onSurface.copy(alpha = 0.07f),
             ),
+            paragraphGapScale = typography.paragraphGapScale,
+            codeWrap = typography.codeWrap,
+            tableDensity = typography.tableDensity,
         )
     }
 }
@@ -124,3 +151,24 @@ internal fun markdownCompactGap(previous: MarkdownBlock?, tone: MarkdownTone): T
 internal const val ANSWER_LINE_HEIGHT_SP = 26
 internal const val THINKING_LINE_HEIGHT_SP = 22
 private const val THINKING_GAP_SCALE = 0.75f
+
+internal fun messageFontFamily(font: MessageFont): FontFamily? = when (font) {
+    MessageFont.FOLLOW_INTERFACE -> null
+    MessageFont.SYSTEM -> FontFamily.Default
+    MessageFont.HUMANIST -> NexaHumanist
+    MessageFont.EDITORIAL -> NexaEditorial
+    MessageFont.MONOSPACE -> FontFamily.Monospace
+    MessageFont.SYSTEM_SERIF -> FontFamily.Serif
+}
+
+@Composable
+internal fun messageBodyTextStyle(): TextStyle {
+    val typography = LocalAppearanceSettings.current.messageTypography.normalized()
+    val base = MiuixTheme.textStyles.body1
+    return remember(typography, base) {
+        base.copy(fontSize = typography.bodySize.sp, lineHeight = typography.lineHeight.sp,
+            fontFamily = messageFontFamily(typography.font) ?: base.fontFamily,
+            fontWeight = if (typography.bodyWeight == 0) base.fontWeight else FontWeight(typography.bodyWeight),
+            letterSpacing = typography.bodyLetterSpacing.takeUnless { it == 0f }?.sp ?: base.letterSpacing)
+    }
+}

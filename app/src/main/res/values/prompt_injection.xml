@@ -100,7 +100,7 @@
     <string name="prompt_injection_block_content">Prompt content</string>
     <string name="prompt_injection_position">Insertion point</string>
     <string name="prompt_injection_position_prefix">Before conversation</string>
-    <string name="prompt_injection_position_post">After history</string>
+    <string name="prompt_injection_position_post">After current input</string>
     <string name="prompt_injection_block_number">Block %1$d</string>
     <string name="prompt_injection_move_up">Move up</string>
     <string name="prompt_injection_move_down">Move down</string>
@@ -112,7 +112,7 @@
     <string name="prompt_injection_discard">Discard</string>
     <string name="prompt_injection_transfer_title">Move templates between devices</string>
     <string name="prompt_injection_transfer_note">Files contain templates and scope bindings only. Provider credentials and conversations are never exported.</string>
-    <string name="prompt_injection_native_json">Nexus native JSON</string>
+    <string name="prompt_injection_native_json">NEXA native JSON</string>
     <string name="prompt_injection_export_json">Export all as JSON</string>
     <string name="prompt_injection_export_json_summary">Full backup of templates and scope bindings.</string>
     <string name="prompt_injection_import_json">Import JSON</string>
@@ -144,7 +144,7 @@
     <string name="prompt_injection_export_txt">TXT</string>
     <string name="prompt_injection_export_picker_title">Choose a template to export</string>
     <string name="prompt_injection_export_picker_note">Each file contains one template. Use JSON to move the whole library.</string>
-    <string name="prompt_injection_format_native">Nexus native backup</string>
+    <string name="prompt_injection_format_native">NEXA native backup</string>
     <string name="prompt_injection_format_pro">Small PRO preset</string>
     <string name="prompt_injection_format_sillytavern">SillyTavern preset</string>
     <string name="prompt_injection_format_json">Generic JSON</string>
@@ -158,4 +158,5 @@
     <string name="skills_tools_search_tools">Search tools</string>
     <string name="skills_tools_save_failed">Could not save tool permission</string>
     <string name="skills_tools_group_blocked">%1$s · capability group disabled</string>
+    <string name="prompt_injection_scope_project">项目</string>
 </resources>

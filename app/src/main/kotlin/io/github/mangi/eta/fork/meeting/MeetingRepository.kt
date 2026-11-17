@@ -6,6 +6,7 @@ import io.github.mangi.eta.agent.accessibility.AccessibilityWaitPhase
 import io.github.mangi.eta.agent.accessibility.textResource
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.model.AgentContextSnapshot
+import io.github.mangi.eta.agent.model.AgentFileReferencePromptCodec
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.data.model.ConversationSubject
 import io.github.mangi.eta.data.repository.ConversationAttachmentDrafts
@@ -13,8 +14,11 @@ import io.github.mangi.eta.data.repository.ConversationAttachments
 import io.github.mangi.eta.data.repository.ConversationDraftRepository
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import io.github.mangi.eta.R
@@ -22,15 +26,77 @@ import io.github.mangi.eta.agent.model.AgentSensitiveToolPolicy
 import org.json.JSONArray
 import org.json.JSONObject
 
+internal data class PlannedMeetingParticipant(
+    val profileName: String, val displayName: String, val summary: String,
+    val providerId: String, val modelId: String, val modelIdentity: String, val modelReason: String,
+)
+internal data class PlannedMeetingTask(val profileName: String, val instruction: String, val dependencies: List<String>)
+internal data class CommittedMeetingPlan(val participants: List<MeetingParticipantEntity>, val tasks: List<MeetingTaskEntity>)
+
 internal object MeetingRepository {
+    val lifecycleMutex = Mutex()
+    /** Save acceptance before the composer can clear input. Recovery never runs this work again. */
+    suspend fun persistPendingTurn(context: Context, roomId: String, turn: QueuedMeetingTurn): QueuedMeetingTurn {
+        val drafts = ConversationAttachmentDrafts.get(context)
+        val owned = turn.copy(attachments = drafts.materialize(turn.attachments))
+        val db = MeetingDatabase.get(context)
+        db.withTransaction {
+            checkNotNull(db.meetingDao().room(roomId)) { "会议室不存在" }
+            appendEvent(context, roomId, null, "pending_turn:${turn.id}",
+                JSONObject().put("text", owned.text).put("attachments", drafts.encode(owned.attachments)))
+        }
+        return owned
+    }
+
+    suspend fun forgetPendingTurn(context: Context, roomId: String, id: String) =
+        MeetingDatabase.get(context).meetingDao().deleteEventType(roomId, "pending_turn:$id")
+
+    private suspend fun recoverPendingTurnInputs(context: Context) {
+        val drafts = ConversationAttachmentDrafts.get(context)
+        MeetingDatabase.get(context).meetingDao().pendingTurnEvents().groupBy { it.roomId }.forEach { (room, events) ->
+            if (MeetingRunCoordinator.isRunning(room)) return@forEach
+            val turns = events.map { event ->
+                val payload = JSONObject(event.payloadJson)
+                QueuedMeetingTurn(payload.getString("text"), drafts.decode(payload.getString("attachments")),
+                    event.type.removePrefix("pending_turn:"))
+            }
+            retainUnstartedTurns(context, room, turns)
+        }
+    }
+
+    /** Stopped follow-ups remain visible with their attachments, but are never silently executed. */
+    suspend fun retainUnstartedTurns(context: Context, roomId: String, turns: List<QueuedMeetingTurn>) {
+        if (turns.isEmpty()) return
+        val dao = MeetingDatabase.get(context).meetingDao()
+        if (dao.room(roomId) == null) return
+        var retained = 0
+        turns.forEach { turn ->
+            if (dao.message(turn.id) != null) {
+                forgetPendingTurn(context, roomId, turn.id)
+                return@forEach
+            }
+            appendMessage(context, roomId, MeetingAuthorType.USER, null, "You",
+                AgentFileReferencePromptCodec.format(turn.text, turn.attachments.files.map { it.reference }),
+                attachments = turn.attachments, messageId = turn.id)
+            retained++
+        }
+        if (retained > 0) appendMessage(context, roomId, MeetingAuthorType.SYSTEM, null, "Meeting",
+            "以上 $retained 条排队消息尚未执行，内容和附件已保留。请核对后重新发送需要继续的任务。")
+    }
+
     /**
      * A previous process cannot prove that an interrupted participant run produced no side effects.
      * Reopen the room for an explicit user retry instead of silently replaying the turn.
      */
-    suspend fun recoverInterruptedRuns(context: Context): Int {
+    suspend fun recoverInterruptedRuns(context: Context): Int = lifecycleMutex.withLock {
         val dao = MeetingDatabase.get(context).meetingDao()
-        val rooms = dao.runningRooms()
+        // A room can already be failed/waiting while one of its tasks retained a queued,
+        // running or unknown status after process death. The task itself is authoritative for
+        // recovery ownership; room status alone must not hide that unresolved work.
+        val rooms = dao.recoverableRooms()
+        var recovered = 0
         rooms.forEach { room ->
+            if (MeetingRunCoordinator.isRunning(room.id)) return@forEach
             dao.streamActivityEvents(room.id).forEach { event ->
                 val message = dao.message(event.type.removePrefix(MeetingStreamActivity.EVENT_PREFIX))
                 val activity = message?.let { MeetingStreamActivity.decode(event.payloadJson, it.content) }
@@ -54,7 +120,7 @@ internal object MeetingRepository {
                 val latest = JSONObject(history.last().payloadJson)
                 if (latest.optString("phase") == AccessibilityWaitPhase.WAITING.wireValue) {
                     recordAccessibilityWait(context, room.id, latest.optString("profile"), latest.optString("author"),
-                        latest.optString("run_id"), AgentEvent.AccessibilityWaiting(latest.optInt("outage"), AccessibilityWaitPhase.CANCELLED))
+                        latest.optString("run_id"), AgentEvent.AccessibilityWaiting(latest.optInt("outage"), AccessibilityWaitPhase.CANCELLED), history.last().taskId)
                 }
             }
             dao.unfinishedTasks(room.id).forEach { task ->
@@ -65,6 +131,16 @@ internal object MeetingRepository {
                     errorMessage = "应用进程中断，未自动重放可能产生外部副作用的任务",
                 )
             }
+            dao.workflowCheckpoints(room.id).groupBy { event -> JSONObject(event.payloadJson).optString("run_id") }
+                .filterKeys(String::isNotBlank).forEach { (runId, checkpoints) ->
+                    val terminal = checkpoints.any { event ->
+                        val body = JSONObject(event.payloadJson)
+                        body.optString("stage_id") == "run" && body.optString("state") in setOf("completed", "partial", "interrupted", "cancelled", "failed")
+                    }
+                    if (!terminal) appendEvent(context, room.id, null, "workflow_checkpoint:$runId:run:1:interrupted",
+                        JSONObject().put("run_id", runId).put("stage_id", "run").put("state", "interrupted")
+                            .put("attempt", 1).put("retry", "user_required").put("committed_outputs_preserved", true))
+                }
             appendMessage(
                 context = context,
                 roomId = room.id,
@@ -86,12 +162,21 @@ internal object MeetingRepository {
                     updatedAt = System.currentTimeMillis(),
                 ),
             )
+            recovered++
         }
-        return rooms.size
+        recoverPendingTurnInputs(context)
+        recovered
     }
 
     fun rooms(context: Context): Flow<List<MeetingRoomSummaryRow>> =
         MeetingDatabase.get(context).meetingDao().roomSummariesFlow()
+
+    val activeRoomIds: Flow<Set<String>> get() = MeetingRunCoordinator.activeRoomIds
+
+    suspend fun hostOverride(context: Context, roomId: String): MeetingHostOverride? =
+        MeetingDatabase.get(context).meetingDao().latestEvent(roomId, "room_created")?.let { event ->
+            MeetingHostOverride.decode(JSONObject(event.payloadJson).optJSONObject("host_override"))
+        }
 
     suspend fun firstActiveRoomId(context: Context): String? =
         MeetingDatabase.get(context).meetingDao().roomsFlow().first()
@@ -105,19 +190,31 @@ internal object MeetingRepository {
         val db = MeetingDatabase.get(context)
         val dao = db.meetingDao()
         // Message text and its stream/tool metadata must come from the same committed state.
-        return db.invalidationTracker.createFlow("meeting_rooms", "meeting_participants", "meeting_messages", "meeting_tasks", "meeting_events")
-            .map { db.withTransaction {
+        return kotlinx.coroutines.flow.flow {
+            var cachedAttachmentEvents: List<MeetingEventEntity> = emptyList()
+            var cachedAttachments: Map<String, ConversationAttachments> = emptyMap()
+            db.invalidationTracker.createFlow("meeting_rooms", "meeting_participants", "meeting_messages", "meeting_tasks", "meeting_events")
+            .collect {
+                val snapshot = db.withTransaction {
                 val room = dao.room(roomId) ?: return@withTransaction null
                 val timelineEvents = dao.timelineEvents(roomId)
+                val attachmentEvents = timelineEvents.filter { it.type.startsWith("message_attachments:") }
+                if (attachmentEvents != cachedAttachmentEvents) {
+                    cachedAttachments = decodeMessageAttachments(context, attachmentEvents)
+                    cachedAttachmentEvents = attachmentEvents
+                }
                 MeetingRoomSnapshot(
                     room = room,
                     participants = dao.participants(roomId),
                     messages = dao.messages(roomId),
                     tasks = dao.tasks(roomId),
                     timelineEvents = timelineEvents,
-                    messageAttachments = decodeMessageAttachments(context, timelineEvents),
+                    messageAttachments = cachedAttachments,
                 )
-            } }.flowOn(Dispatchers.IO)
+                }
+                emit(snapshot)
+            }
+        }.distinctUntilChanged().flowOn(Dispatchers.IO)
     }
 
     suspend fun createRoom(
@@ -126,9 +223,17 @@ internal object MeetingRepository {
         host: MeetingParticipantDraft,
         participants: List<MeetingParticipantDraft>,
         now: Long = System.currentTimeMillis(),
+        templateId: String? = null,
+        templateVersion: Int = 1,
+        hostOverride: MeetingHostOverride? = null,
     ): String {
         require(title.isNotBlank()) { "会议室名称不能为空" }
         require(host.profileName.isNotBlank()) { "主持人不能为空" }
+        require(hostOverride?.validate() != false) { "临时主持名称或职责无效" }
+        val workflow = templateId?.let { id ->
+            requireNotNull(MeetingWorkflowCatalog.find(id)) { "会议用途不可用" }
+                .also { require(it.version == templateVersion) { "会议用途版本已变化，请重新选择" } }
+        }
         val roomId = UUID.randomUUID().toString()
         val normalizedParticipants = buildList {
             add(host.copy(isHost = true))
@@ -147,6 +252,7 @@ internal object MeetingRepository {
                     status = MeetingRoomStatus.IDLE,
                     createdAt = now,
                     updatedAt = now,
+                    workflowSnapshotJson = workflow?.encode(),
                 ),
             )
             dao.insertParticipants(
@@ -171,6 +277,7 @@ internal object MeetingRepository {
                     payloadJson = JSONObject()
                         .put("host", host.profileName)
                         .put("participants", JSONArray(normalizedParticipants.map { it.profileName }))
+                        .apply { hostOverride?.let { put("host_override", it.encode()) } }
                         .toString(),
                     createdAt = now,
                 ),
@@ -182,7 +289,7 @@ internal object MeetingRepository {
     /** 将 Runtime 等待阶段呈现在原会议消息流；相同断线更新原位置，不挤出新对话。 */
     suspend fun recordAccessibilityWait(
         context: Context, roomId: String, profile: String, author: String, runId: String,
-        event: AgentEvent.AccessibilityWaiting,
+        event: AgentEvent.AccessibilityWaiting, taskId: String? = null,
     ) {
         val database = MeetingDatabase.get(context)
         database.withTransaction {
@@ -191,17 +298,18 @@ internal object MeetingRepository {
             if (event.phase == AccessibilityWaitPhase.WAITING && room.status != MeetingRoomStatus.RUNNING) return@withTransaction
             val messageId = "accessibility-$runId-${event.outage}"
             val type = "accessibility_wait:$messageId"
-            val previous = dao.latestEvent(roomId, type)?.let { JSONObject(it.payloadJson).optString("phase") }
+            val previousEvent = dao.latestEvent(roomId, type)
+            val previous = previousEvent?.let { JSONObject(it.payloadJson).optString("phase") }
             if (previous == event.phase.wireValue || (previous != null && previous != "waiting")) return@withTransaction
             val existing = dao.message(messageId)
             val now = System.currentTimeMillis()
             val content = context.getString(io.github.mangi.eta.R.string.accessibility_wait_title) + "\n" + context.getString(event.phase.textResource())
-            dao.insertMessage(existing?.copy(content = content) ?: MeetingMessageEntity(
+            dao.insertMessage(existing?.copy(content = content, taskId = taskId ?: existing.taskId) ?: MeetingMessageEntity(
                 id = messageId, roomId = roomId, sortIndex = dao.maxMessageSortIndex(roomId) + 1,
                 authorType = MeetingAuthorType.SYSTEM, authorProfile = profile, authorName = author,
-                content = content, createdAt = now,
+                content = content, taskId = taskId, createdAt = now,
             ))
-            dao.insertEvent(MeetingEventEntity(roomId = roomId, type = type,
+            dao.insertEvent(MeetingEventEntity(roomId = roomId, taskId = taskId ?: previousEvent?.taskId, type = type,
                 payloadJson = JSONObject().put("run_id", runId).put("profile", profile).put("author", author)
                     .put("outage", event.outage).put("phase", event.phase.wireValue).toString(), createdAt = now))
             dao.updateRoom(room.copy(updatedAt = now))
@@ -298,7 +406,8 @@ internal object MeetingRepository {
         attachments: ConversationAttachments = ConversationAttachments(),
     ): MeetingMessageEntity {
         val database = MeetingDatabase.get(context)
-        return database.withTransaction {
+        var persisted = false
+        val result = database.withTransaction {
             val dao = database.meetingDao()
             suspend fun recordStreamResult(message: MeetingMessageEntity) {
                 if (streamRunId != null) dao.insertEvent(MeetingEventEntity(roomId = roomId, taskId = taskId,
@@ -324,6 +433,7 @@ internal object MeetingRepository {
                     val message = existing.copy(authorType = authorType, authorName = authorName, content = content,
                         mentionsJson = JSONArray(mentions.distinct()).toString(), taskId = taskId)
                     dao.insertMessage(message)
+                    persisted = true
                     dao.updateEvent(candidate.first.copy(payloadJson = candidate.second.copy(phase = MeetingStreamPhase.SETTLED,
                         truncated = false).encode(authorType == MeetingAuthorType.HOST)))
                     dao.room(roomId)?.let { dao.updateRoom(it.copy(updatedAt = now)) }
@@ -345,6 +455,8 @@ internal object MeetingRepository {
                 createdAt = now,
             )
             dao.insertMessage(message)
+            if (authorType == MeetingAuthorType.USER) dao.deleteEventType(roomId, "pending_turn:$messageId")
+            persisted = true
             if (!attachments.isEmpty) {
                 require(authorType == MeetingAuthorType.USER) { "Only user messages accept attachments" }
                 dao.insertEvent(MeetingEventEntity(roomId = roomId, taskId = taskId, type = "message_attachments:${message.id}",
@@ -354,6 +466,12 @@ internal object MeetingRepository {
             dao.room(roomId)?.let { dao.updateRoom(it.copy(updatedAt = now)) }
             message
         }
+        if (persisted && authorType in setOf(MeetingAuthorType.USER, MeetingAuthorType.AGENT, MeetingAuthorType.HOST)) {
+            io.github.mangi.eta.agent.packages.PackageMessageEvents.committed(context, listOf(
+                io.github.mangi.eta.agent.packages.PackagePersistedMessage(io.github.mangi.eta.data.model.ConversationSubject.meeting(roomId),
+                    result.id, if (authorType == MeetingAuthorType.USER) "user" else "ai", result.content, now)))
+        }
+        return result
     }
 
     suspend fun createTask(
@@ -376,6 +494,54 @@ internal object MeetingRepository {
         dao.insertTask(task)
         appendEvent(context, roomId, task.id, "task_queued", JSONObject().put("participant", participantProfile), now)
         return task
+    }
+
+    suspend fun commitPlannedDispatch(context: Context, roomId: String, recruits: List<PlannedMeetingParticipant>, plans: List<PlannedMeetingTask>): CommittedMeetingPlan {
+        val database = MeetingDatabase.get(context)
+        return database.withTransaction {
+            val participants = createPlannedParticipants(context, roomId, recruits)
+            val tasks = createPlannedTasks(context, roomId, plans)
+            CommittedMeetingPlan(participants, tasks)
+        }
+    }
+
+    suspend fun createPlannedTasks(context: Context, roomId: String, plans: List<PlannedMeetingTask>): List<MeetingTaskEntity> {
+        val database = MeetingDatabase.get(context)
+        return database.withTransaction {
+            val dao = database.meetingDao()
+            requireNotNull(dao.room(roomId)) { "MEETING_NOT_FOUND" }
+            val members = dao.participants(roomId)
+            require(plans.map { it.profileName }.distinct().size == plans.size &&
+                MeetingPlanScheduler.validDependencies(plans.associate { it.profileName to it.dependencies })) { "INVALID_PLAN_DEPENDENCIES" }
+            require(plans.all { plan -> members.any { it.profileName == plan.profileName && it.enabled && !it.isHost } }) { "PARTICIPANT_UNAVAILABLE" }
+            val now = System.currentTimeMillis()
+            plans.map { plan ->
+                val task = MeetingTaskEntity(id = UUID.randomUUID().toString(), roomId = roomId,
+                    participantProfile = plan.profileName, instruction = plan.instruction, status = MeetingTaskStatus.QUEUED,
+                    createdAt = now, updatedAt = now)
+                dao.insertTask(task)
+                dao.insertEvent(MeetingEventEntity(roomId = roomId, taskId = task.id, type = "task_queued",
+                    payloadJson = JSONObject().put("participant", plan.profileName).put("depends_on", JSONArray(plan.dependencies)).toString(), createdAt = now))
+                task
+            }
+        }
+    }
+
+    suspend fun createHostTask(context: Context, roomId: String, profileName: String, instruction: String): MeetingTaskEntity {
+        val database = MeetingDatabase.get(context)
+        return database.withTransaction {
+            val dao = database.meetingDao()
+            requireNotNull(dao.room(roomId)) { "MEETING_NOT_FOUND" }
+            require(dao.participants(roomId).any { it.profileName == profileName && it.enabled && it.isHost }) { "HOST_UNAVAILABLE" }
+            val now = System.currentTimeMillis()
+            val task = MeetingTaskEntity(id = UUID.randomUUID().toString(), roomId = roomId,
+                participantProfile = profileName, instruction = instruction, status = MeetingTaskStatus.QUEUED,
+                createdAt = now, updatedAt = now)
+            dao.insertTask(task)
+            dao.insertEvent(MeetingEventEntity(roomId = roomId, taskId = task.id, type = "task_queued",
+                payloadJson = JSONObject().put("participant", profileName).put("depends_on", JSONArray()).toString(), createdAt = now))
+            task
+        }
     }
 
     suspend fun createDynamicParticipant(
@@ -426,6 +592,36 @@ internal object MeetingRepository {
         }
     }
 
+    /** Commit all planned recruits and their model decisions together, or none of them. */
+    suspend fun createPlannedParticipants(context: Context, roomId: String, drafts: List<PlannedMeetingParticipant>): List<MeetingParticipantEntity> {
+        if (drafts.isEmpty()) return emptyList()
+        return MeetingDatabase.get(context).withTransaction {
+            val dao = MeetingDatabase.get(context).meetingDao()
+            requireNotNull(dao.room(roomId)) { "MEETING_NOT_FOUND" }
+            val existing = dao.participants(roomId)
+            val names = drafts.map { it.profileName.trim().lowercase() }
+            require(names.distinct().size == names.size && names.all { name ->
+                Regex("[a-z0-9][a-z0-9_-]{1,47}").matches(name) && existing.none { it.profileName.equals(name, true) }
+            }) { "PARTICIPANT_NAME_CONFLICT" }
+            val firstOrder = (existing.maxOfOrNull { it.sortOrder } ?: 0) + 1
+            val created = drafts.mapIndexed { index, draft -> MeetingParticipantEntity(
+                roomId = roomId, profileName = names[index], displayName = draft.displayName.trim().take(80).ifBlank { names[index] },
+                profileSummary = draft.summary.trim().take(2_000), providerId = draft.providerId, modelId = draft.modelId,
+                isHost = false, sortOrder = firstOrder + index, enabled = true,
+            ) }
+            dao.insertParticipants(created)
+            created.zip(drafts).forEach { (participant, draft) ->
+                val now = System.currentTimeMillis()
+                dao.insertEvent(MeetingEventEntity(roomId = roomId, type = "dynamic_agent_created",
+                    payloadJson = JSONObject().put("profile", participant.profileName).put("displayName", participant.displayName).toString(), createdAt = now))
+                dao.insertEvent(MeetingEventEntity(roomId = roomId, type = "participant_model_selected",
+                    payloadJson = JSONObject().put("profile", participant.profileName).put("provider_id", draft.providerId)
+                        .put("model_id", draft.modelId).put("model_identity", draft.modelIdentity).put("reason", draft.modelReason).toString(), createdAt = now))
+            }
+            created
+        }
+    }
+
     suspend fun updateTask(
         context: Context,
         task: MeetingTaskEntity,
@@ -434,24 +630,22 @@ internal object MeetingRepository {
         errorMessage: String? = task.errorMessage,
         now: Long = System.currentTimeMillis(),
     ) {
-        MeetingDatabase.get(context).meetingDao().updateTask(
-            task.copy(
+        val database = MeetingDatabase.get(context)
+        database.withTransaction {
+        database.meetingDao().updateTask(task.copy(
                 status = status,
                 resultMessageId = resultMessageId,
                 errorMessage = errorMessage,
                 updatedAt = now,
             ),
         )
-        appendEvent(
-            context = context,
-            roomId = task.roomId,
-            taskId = task.id,
-            type = "task_$status",
-            payload = JSONObject().put("participant", task.participantProfile).apply {
+        database.meetingDao().insertEvent(MeetingEventEntity(
+            roomId = task.roomId, taskId = task.id, type = "task_$status",
+            payloadJson = JSONObject().put("participant", task.participantProfile).apply {
                 errorMessage?.let { put("error", it.take(1_000)) }
-            },
-            now = now,
-        )
+            }.toString(), createdAt = now,
+        ))
+        }
     }
 
     suspend fun setRoomStatus(
@@ -529,6 +723,7 @@ internal object MeetingRepository {
         database.withTransaction {
             val dao = database.meetingDao()
             val room = dao.room(roomId) ?: return@withTransaction
+            if ((room.pinnedAt != null) == pinned) return@withTransaction
             val pinnedAt = if (pinned) now else null
             if (room.pinnedAt == pinnedAt) return@withTransaction
             dao.updateRoom(room.copy(pinnedAt = pinnedAt, updatedAt = now))
@@ -562,6 +757,45 @@ internal object MeetingRepository {
                     roomId = roomId,
                     type = "room_context_window_changed",
                     payloadJson = org.json.JSONObject().put("contextWindow", contextWindow).toString(),
+                    createdAt = now,
+                ),
+            )
+        }
+    }
+
+    suspend fun roomCompactionBinding(context: Context, roomId: String): io.github.mangi.eta.data.model.ModelRoleBinding? =
+        MeetingDatabase.get(context).meetingDao().room(roomId)?.let { room ->
+            room.compactionModelId?.let { modelId ->
+                io.github.mangi.eta.data.model.ModelRoleBinding(
+                    modelId = modelId,
+                    providerId = room.compactionProviderId,
+                )
+            }
+        }
+
+    suspend fun setRoomCompactionBinding(
+        context: Context,
+        roomId: String,
+        binding: io.github.mangi.eta.data.model.ModelRoleBinding?,
+        now: Long = System.currentTimeMillis(),
+    ) {
+        val database = MeetingDatabase.get(context)
+        database.withTransaction {
+            val dao = database.meetingDao()
+            val room = dao.room(roomId) ?: throw IllegalArgumentException("MEETING_NOT_FOUND")
+            dao.updateRoom(room.copy(
+                compactionModelId = binding?.modelId,
+                compactionProviderId = binding?.providerId,
+                updatedAt = now,
+            ))
+            dao.insertEvent(
+                MeetingEventEntity(
+                    roomId = roomId,
+                    type = "room_compaction_model_changed",
+                    payloadJson = org.json.JSONObject()
+                        .put("modelId", binding?.modelId ?: org.json.JSONObject.NULL)
+                        .put("providerId", binding?.providerId ?: org.json.JSONObject.NULL)
+                        .toString(),
                     createdAt = now,
                 ),
             )

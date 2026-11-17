@@ -11,6 +11,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
@@ -47,12 +48,14 @@ import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.RocketLaunch
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -63,6 +66,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.graphics.BlendMode
@@ -85,6 +89,7 @@ import io.github.mangi.eta.agent.browser.BrowserSessionSnapshot
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.ui.app.AgentConversationRevisionReducer
 import io.github.mangi.eta.ui.app.LocalBlurEnabled
+import io.github.mangi.eta.ui.app.LocalEtaDesignTokens
 import io.github.mangi.eta.ui.markdown.StreamingMarkdownStateCache
 import io.github.mangi.eta.ui.model.ConversationHistoryLoadState
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
@@ -148,6 +153,12 @@ internal fun AgentChatBody(
     isStreaming: Boolean,
     reasoningEffort: ReasoningEffort,
     workflowMode: WorkflowMode = WorkflowMode.CHAT,
+    selectedSkillIds: List<String> = emptyList(),
+    availableSkills: List<io.github.mangi.eta.ui.model.SkillChoiceUi> = emptyList(),
+    onSelectedSkillIdsChange: (List<String>) -> Unit = {},
+    skillChoicesLoading: Boolean = false,
+    skillChoicesLoadFailed: Boolean = false,
+    onRetrySkillChoices: () -> Unit = {},
     workflowSnapshot: WorkflowSnapshot? = null,
     availableReasoningEfforts: List<ReasoningEffort>,
     pendingImages: List<PendingImageUi>,
@@ -180,6 +191,7 @@ internal fun AgentChatBody(
     onDeleteMessage: (String) -> Unit,
     onRegenerateMessage: (String) -> Unit,
     onForkMessage: ((String) -> Unit)? = null,
+    onCreateTaskFromMessage: ((String) -> Unit)? = null,
     onSelectReplyCandidate: (String, Int) -> Unit,
     onSuggestionClick: (String) -> Unit,
     onRunTraceClick: () -> Unit,
@@ -187,6 +199,9 @@ internal fun AgentChatBody(
     onOpenBrowser: () -> Unit,
     onNewConversation: () -> Unit,
     onOpenNotepad: (() -> Unit)? = null,
+    onOpenMcp: (() -> Unit)? = null,
+    onOpenTools: (() -> Unit)? = null,
+    onOpenSettings: (() -> Unit)? = null,
     hasEarlierMessages: Boolean = false,
     messageStartIndex: Int = 0,
     historyLoadState: ConversationHistoryLoadState = ConversationHistoryLoadState.Idle,
@@ -263,6 +278,12 @@ internal fun AgentChatBody(
             isStreaming = isStreaming,
             reasoningEffort = reasoningEffort,
             workflowMode = workflowMode,
+            selectedSkillIds = selectedSkillIds,
+            availableSkills = availableSkills,
+            onSelectedSkillIdsChange = onSelectedSkillIdsChange,
+            skillChoicesLoading = skillChoicesLoading,
+            skillChoicesLoadFailed = skillChoicesLoadFailed,
+            onRetrySkillChoices = onRetrySkillChoices,
             workflowSnapshot = workflowSnapshot,
             availableReasoningEfforts = availableReasoningEfforts,
             pendingImages = pendingImages,
@@ -311,6 +332,7 @@ internal fun AgentChatBody(
             onDeleteMessage = onDeleteMessage,
             onRegenerateMessage = onRegenerateMessage,
             onForkMessage = onForkMessage,
+            onCreateTaskFromMessage = onCreateTaskFromMessage,
             onSelectReplyCandidate = onSelectReplyCandidate,
             onSuggestionClick = onSuggestionClick,
             onRunTraceClick = onRunTraceClick,
@@ -318,6 +340,9 @@ internal fun AgentChatBody(
             onOpenBrowser = onOpenBrowser,
             onNewConversation = onNewConversation,
             onOpenNotepad = onOpenNotepad,
+            onOpenMcp = onOpenMcp,
+            onOpenTools = onOpenTools,
+            onOpenSettings = onOpenSettings,
             currentBrowserMessageId = currentBrowserMessageId,
             hasEarlierMessages = hasEarlierMessages,
             messageStartIndex = messageStartIndex,
@@ -349,6 +374,12 @@ private fun AgentChatScaffold(
     isStreaming: Boolean,
     reasoningEffort: ReasoningEffort,
     workflowMode: WorkflowMode,
+    selectedSkillIds: List<String>,
+    availableSkills: List<io.github.mangi.eta.ui.model.SkillChoiceUi>,
+    onSelectedSkillIdsChange: (List<String>) -> Unit,
+    skillChoicesLoading: Boolean,
+    skillChoicesLoadFailed: Boolean,
+    onRetrySkillChoices: () -> Unit,
     workflowSnapshot: WorkflowSnapshot?,
     availableReasoningEfforts: List<ReasoningEffort>,
     pendingImages: List<PendingImageUi>,
@@ -384,6 +415,7 @@ private fun AgentChatScaffold(
     onDeleteMessage: (String) -> Unit,
     onRegenerateMessage: (String) -> Unit,
     onForkMessage: ((String) -> Unit)? = null,
+    onCreateTaskFromMessage: ((String) -> Unit)? = null,
     onSelectReplyCandidate: (String, Int) -> Unit,
     onSuggestionClick: (String) -> Unit,
     onRunTraceClick: () -> Unit,
@@ -391,6 +423,9 @@ private fun AgentChatScaffold(
     onOpenBrowser: () -> Unit,
     onNewConversation: () -> Unit,
     onOpenNotepad: (() -> Unit)?,
+    onOpenMcp: (() -> Unit)?,
+    onOpenTools: (() -> Unit)?,
+    onOpenSettings: (() -> Unit)?,
     currentBrowserMessageId: String?,
     hasEarlierMessages: Boolean,
     messageStartIndex: Int,
@@ -400,7 +435,10 @@ private fun AgentChatScaffold(
     modifier: Modifier = Modifier,
 ) {
     val surfaceColor = MiuixTheme.colorScheme.surface
-    val frostEnabled = hasMessages && LocalBlurEnabled.current && isRuntimeShaderSupported()
+    val glass = LocalEtaDesignTokens.current.skin.isGlass
+    val renderPolicy = rememberGlassRenderPolicy()
+    val frostEnabled = hasMessages && if (glass) renderPolicy.sampleBackdrop
+        else LocalBlurEnabled.current && isRuntimeShaderSupported()
     val messageBackdrop = rememberLayerBackdrop {
         // Backdrop 必须包含不透明底色，否则文字边缘模糊到透明区域时会出现黑边。
         drawRect(surfaceColor)
@@ -427,6 +465,12 @@ private fun AgentChatScaffold(
                 isStreaming = isStreaming,
                 reasoningEffort = reasoningEffort,
                 workflowMode = workflowMode,
+                selectedSkillIds = selectedSkillIds,
+                availableSkills = availableSkills,
+                onSelectedSkillIdsChange = onSelectedSkillIdsChange,
+                skillChoicesLoading = skillChoicesLoading,
+                skillChoicesLoadFailed = skillChoicesLoadFailed,
+                onRetrySkillChoices = onRetrySkillChoices,
                 workflowSnapshot = workflowSnapshot,
                 availableReasoningEfforts = availableReasoningEfforts,
                 pendingImages = pendingImages,
@@ -456,7 +500,9 @@ private fun AgentChatScaffold(
                 onRemoveFileReference = onRemoveFileReference,
                 onCancelMessageEdit = onCancelMessageEdit,
                 onNewConversation = onNewConversation,
-                onOpenNotepad = onOpenNotepad,
+                onOpenMcp = onOpenMcp,
+                onOpenTools = onOpenTools,
+                onOpenSettings = onOpenSettings,
             )
         },
     ) { innerPadding ->
@@ -482,10 +528,12 @@ private fun AgentChatScaffold(
                 onOpenPermissions = onOpenPermissions,
                 onStopWaiting = onStop,
                 onOpenBrowser = onOpenBrowser,
+                hasNotepadHandle = onOpenNotepad != null && visibleMessages.isNotEmpty(),
                 onEditMessage = onEditMessage,
                 onDeleteMessage = onDeleteMessage,
                 onRegenerateMessage = onRegenerateMessage,
                 onForkMessage = onForkMessage,
+                onCreateTaskFromMessage = onCreateTaskFromMessage,
                 onSelectReplyCandidate = onSelectReplyCandidate,
                 messageActionsEnabled = !isStreaming && messageEdit == null,
                 editTargetMessageId = messageEdit?.targetMessageId,
@@ -518,10 +566,12 @@ internal fun AgentConversationMessages(
     onOpenPermissions: (() -> Unit)? = null,
     onStopWaiting: (() -> Unit)? = null,
     onOpenBrowser: () -> Unit = {},
+    hasNotepadHandle: Boolean = false,
     onEditMessage: (String) -> Unit = {},
     onDeleteMessage: (String) -> Unit = {},
     onRegenerateMessage: (String) -> Unit = {},
     onForkMessage: ((String) -> Unit)? = null,
+    onCreateTaskFromMessage: ((String) -> Unit)? = null,
     onSelectReplyCandidate: (String, Int) -> Unit = { _, _ -> },
     messageActionsEnabled: Boolean = false,
     editTargetMessageId: String? = null,
@@ -538,29 +588,73 @@ internal fun AgentConversationMessages(
     initiallyScrollToBottom: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
+    val questionNavigation = LocalConversationQuestionNavigation.current
+    var historyPreview by remember(questionNavigation?.key) { mutableStateOf<List<AgentChatMessageUi>?>(null) }
+    var previewLoading by remember(questionNavigation?.key) { mutableStateOf(false) }
+    var previewError by remember(questionNavigation?.key) { mutableStateOf<String?>(null) }
+    var previewGeneration by remember(questionNavigation?.key) { mutableIntStateOf(0) }
+    var previewNode by remember(questionNavigation?.key) { mutableStateOf<String?>(null) }
+    var previewPage by remember(questionNavigation?.key) { mutableIntStateOf(0) }
+    var previewHasMore by remember(questionNavigation?.key) { mutableStateOf(false) }
+    var pendingQuestion by remember(questionNavigation?.key) { mutableStateOf<String?>(null) }
+    val currentQuestionNavigation by rememberUpdatedState(questionNavigation)
+    val questionScope = rememberCoroutineScope()
+    fun loadQuestionPage(nodeId: String, page: Int) {
+        val navigation = currentQuestionNavigation ?: return
+        val owner = navigation.key
+        val generation = ++previewGeneration
+        previewLoading = true
+        previewError = null
+        questionScope.launch {
+            try {
+                val window = navigation.loadWindow(nodeId, page)
+                if (generation != previewGeneration || currentQuestionNavigation?.key != owner) return@launch
+                if (window.isEmpty()) previewError = "暂时无法定位该问题，请重试"
+                else {
+                    historyPreview = window.take(128)
+                    previewHasMore = window.size > 128
+                    previewNode = nodeId
+                    previewPage = page
+                    pendingQuestion = window.first().id
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) {
+                if (generation == previewGeneration && currentQuestionNavigation?.key == owner) previewError = "历史记录读取失败，请重试"
+            } finally {
+                if (generation == previewGeneration && currentQuestionNavigation?.key == owner) previewLoading = false
+            }
+        }
+    }
+    val renderedMessages = historyPreview ?: visibleMessages
+    val displayStreaming = historyPreview == null && isStreaming
+    val displayEarlier = historyPreview == null && hasEarlierMessages
+    val displayAnchored = historyPreview == null && keepBottomAnchored
+    val displayFollow = historyPreview == null && followIncomingMessages
+    val displayActions = historyPreview == null && messageActionsEnabled
+
     // 上一版条目只作复用比对，不参与组合观察。
     val previousTimelineEntries = remember { arrayOf(emptyList<AgentTimelineEntry>()) }
     val workGroups = remember(messageIdentities) { messageIdentities.mapValues { it.value.workGroup } }
-    val timelineEntries = remember(visibleMessages, workGroups) {
-        visibleMessages.toTimelineEntries(previous = previousTimelineEntries[0], workGroups = workGroups)
+    val timelineEntries = remember(renderedMessages, workGroups) {
+        renderedMessages.toTimelineEntries(previous = previousTimelineEntries[0], workGroups = workGroups)
     }
     SideEffect { previousTimelineEntries[0] = timelineEntries }
-    val activeWorkProcessKey = if (isStreaming) {
+    val activeWorkProcessKey = if (displayStreaming) {
         (timelineEntries.lastOrNull() as? AgentTimelineEntry.WorkProcess)?.key
     } else {
         null
     }
     // 复制按钮只出现在每轮对话的最终结果上，中间步骤的过渡文本不提供复制入口。
     // 流式进行中当前这一轮尚未收尾，此时的“最后一条正文”只是中间步骤，不标记。
-    val finalResultMessageIds = completedReplyMessageIds ?: remember(visibleMessages, isStreaming) {
-        resolveFinalResultMessageIds(visibleMessages, isStreaming = isStreaming)
+    val finalResultMessageIds = completedReplyMessageIds ?: remember(renderedMessages, displayStreaming) {
+        resolveFinalResultMessageIds(renderedMessages, isStreaming = displayStreaming)
     }
     // 流式消息的渲染会话按 id 提升到列表层持有：item 滚出视口被 LazyColumn 销毁后，
     // 滑回时复用同一解析会话与打字机进度，避免整段内容重新解析并重放显现动画。
     val streamingMarkdownCache = remember { StreamingMarkdownStateCache() }
     val streamingMarkdownStates = streamingMarkdownCache.states
-    val streamingMessageIds = remember(visibleMessages) {
-        visibleMessages.mapNotNullTo(mutableSetOf()) { message ->
+    val streamingMessageIds = remember(renderedMessages) {
+        renderedMessages.mapNotNullTo(mutableSetOf()) { message ->
             when (message) {
                 is AgentMessageUi -> message.id.takeIf { message.isStreaming }
                 is ThinkingMessageUi -> message.id.takeIf { message.isStreaming }
@@ -574,7 +668,35 @@ internal fun AgentConversationMessages(
                 if (unused.isNotEmpty()) streamingMarkdownCache.discardUnused(streamingMessageIds)
             }
     }
-    val earlierMessagesItemCount = if (hasEarlierMessages) 1 else 0
+    val earlierMessagesItemCount = if (displayEarlier) 1 else 0
+    val localQuestionNodes = remember(timelineEntries) { timelineEntries.mapNotNull { entry ->
+        (entry as? AgentTimelineEntry.Message)?.message?.let { it as? io.github.mangi.eta.ui.model.UserMessageUi }
+            ?.let { ConversationQuestionNode(it.id, it.content.take(160)) }
+    } }
+    val questionNodes = questionNavigation?.nodes ?: localQuestionNodes
+    val questionPositions = remember(timelineEntries, questionNodes) {
+        val ranks = questionNodes.withIndex().associate { it.value.id to it.index }
+        timelineEntries.mapIndexedNotNull { index, entry -> ranks[entry.key]?.let { index to it } }
+    }
+    val previewQuestionIndex = remember(questionNodes, previewNode) { questionNodes.indexOfFirst { it.id == previewNode }.coerceAtLeast(0) }
+    val currentQuestionIndex by remember(scrollState, questionPositions, earlierMessagesItemCount, previewQuestionIndex) {
+        derivedStateOf {
+            val target = scrollState.firstVisibleItemIndex - earlierMessagesItemCount
+            val found = questionPositions.binarySearchBy(target) { it.first }
+            questionPositions.getOrNull(if (found >= 0) found else -found - 2)?.second ?: previewQuestionIndex
+        }
+    }
+    LaunchedEffect(pendingQuestion, timelineEntries) {
+        val requested = pendingQuestion ?: return@LaunchedEffect
+        val position = timelineEntries.indexOfFirst { it.key == requested }.let {
+            if (it < 0 && historyPreview?.firstOrNull()?.id == requested && timelineEntries.isNotEmpty()) 0 else it
+        }
+        if (position >= 0) {
+            onBottomAnchorChanged(false)
+            scrollState.scrollToItem(position + earlierMessagesItemCount)
+            pendingQuestion = null
+        }
+    }
     val bottomItemIndex = timelineEntries.size + earlierMessagesItemCount
     val isUserDragging by scrollState.interactionSource.collectIsDraggedAsState()
     val isAtBottom by remember(scrollState) {
@@ -599,20 +721,20 @@ internal fun AgentConversationMessages(
         isListMeasured,
         isUserDragging,
         isAtBottom,
-        keepBottomAnchored,
+        displayAnchored,
     ) {
         if (!isListMeasured) return@LaunchedEffect
         val next = resolveKeepBottomAnchored(
-            current = keepBottomAnchored,
+            current = displayAnchored,
             isUserDragging = isUserDragging,
             isAtBottom = isAtBottom,
         )
-        if (next != keepBottomAnchored) {
+        if (next != displayAnchored) {
             onBottomAnchorChanged(next)
         }
     }
 
-    val tailMessage = visibleMessages.lastOrNull() as? AgentMessageUi
+    val tailMessage = renderedMessages.lastOrNull() as? AgentMessageUi
     val currentTailMessage by rememberUpdatedState(tailMessage)
     // 显现进度属于尾部条目的高频状态；列表作用域只观察离散化后的布尔值。
     val isTailRendering by remember {
@@ -624,12 +746,12 @@ internal fun AgentConversationMessages(
             } == true
         }
     }
-    var isBottomSettling by remember { mutableStateOf(isStreaming) }
+    var isBottomSettling by remember { mutableStateOf(displayStreaming) }
 
-    LaunchedEffect(isStreaming, isTailRendering, keepBottomAnchored, isUserDragging, followIncomingMessages) {
-        if (!keepBottomAnchored || isUserDragging || !followIncomingMessages) {
+    LaunchedEffect(displayStreaming, isTailRendering, displayAnchored, isUserDragging, displayFollow) {
+        if (!displayAnchored || isUserDragging || !displayFollow) {
             isBottomSettling = false
-        } else if (isStreaming || isTailRendering) {
+        } else if (displayStreaming || isTailRendering) {
             isBottomSettling = true
         } else if (isBottomSettling) {
             // 显现完成后还会切换稳定排版并插入操作行，等其完成测量再收口跟底。
@@ -644,21 +766,21 @@ internal fun AgentConversationMessages(
         scrollState = scrollState,
         entries = timelineEntries,
         messageStartIndex = messageStartIndex,
-        messageCount = visibleMessages.size,
-        hasEarlier = hasEarlierMessages,
+        messageCount = renderedMessages.size,
+        hasEarlier = displayEarlier,
         loadState = historyLoadState,
-        enabled = !isStreaming && editTargetMessageId == null,
+        enabled = !displayStreaming && editTargetMessageId == null,
         canReleasePages = !isTailRendering && !isBottomSettling,
-        keepBottomAnchored = keepBottomAnchored,
+        keepBottomAnchored = displayAnchored,
         onBottomAnchorChanged = onBottomAnchorChanged,
         onLoadEarlier = onLoadEarlierMessages,
-        onViewportChanged = onHistoryViewportChanged,
+        onViewportChanged = { if (historyPreview == null) onHistoryViewportChanged(it) },
     )
 
     val shouldFollowBottom by rememberUpdatedState(
-        followIncomingMessages && resolveBottomFollowEnabled(
-            isStreaming = isStreaming,
-            keepBottomAnchored = keepBottomAnchored,
+        displayFollow && resolveBottomFollowEnabled(
+            isStreaming = displayStreaming,
+            keepBottomAnchored = displayAnchored,
             isUserDragging = isUserDragging,
             isBottomSettling = isBottomSettling,
         )
@@ -670,14 +792,14 @@ internal fun AgentConversationMessages(
 
     LaunchedEffect(
         bottomItemIndex,
-        keepBottomAnchored,
+        displayAnchored,
         isUserDragging,
-        isStreaming,
-        followIncomingMessages,
+        displayStreaming,
+        displayFollow,
     ) {
-        if (followIncomingMessages && shouldRequestInitialBottom(
-                isStreaming = isStreaming,
-                keepBottomAnchored = keepBottomAnchored,
+        if (displayFollow && shouldRequestInitialBottom(
+                isStreaming = displayStreaming,
+                keepBottomAnchored = displayAnchored,
                 isUserDragging = isUserDragging,
             )
         ) {
@@ -801,16 +923,16 @@ internal fun AgentConversationMessages(
                 .nestedScroll(historyPaging.scrollConnection)
                 .overScrollVertical(),
             contentPadding = PaddingValues(
-                top = 16.dp,
+                top = if (hasNotepadHandle) NexusNotepadHandleTouchHeight else 16.dp,
                 bottom = bottomInset + 16.dp,
             ),
             overscrollEffect = null,
         ) {
-            if (hasEarlierMessages) {
+            if (displayEarlier) {
                 item(key = ChatHistoryBoundaryKey) {
                     AgentHistoryLoadStatus(
                         state = historyLoadState,
-                        enabled = !isStreaming && editTargetMessageId == null,
+                        enabled = !displayStreaming && editTargetMessageId == null,
                         onRetry = historyPaging.retry,
                     )
                 }
@@ -852,13 +974,17 @@ internal fun AgentConversationMessages(
                                 message.id in finalResultMessageIds ||
                                     (message is AgentMessageUi && message.characterEditable)
                                 ),
-                            messageActionsEnabled = messageActionsEnabled,
+                            messageActionsEnabled = displayActions,
                             isEditing = message.id == editTargetMessageId,
                             onEditMessage = onEditMessage,
                             onDeleteMessage = onDeleteMessage,
                             onRegenerateMessage = onRegenerateMessage,
                             onForkMessage = onForkMessage?.takeIf {
                                 !assistantOverlay && (message is UserMessageUi || message.id in finalResultMessageIds)
+                            },
+                            onCreateTaskFromMessage = onCreateTaskFromMessage?.takeIf {
+                                !assistantOverlay && message is UserMessageUi &&
+                                    io.github.mangi.eta.agent.model.AgentFileReferencePromptCodec.parse(message.content).request.isNotBlank()
                             },
                             onSelectReplyCandidate = onSelectReplyCandidate,
                             allowMessageChanges = allowMessageChanges,
@@ -878,7 +1004,7 @@ internal fun AgentConversationMessages(
                             AgentWorkProcess(
                                 id = entry.key,
                                 active = if (messageIdentities.isEmpty()) entry.key == activeWorkProcessKey else
-                                    isStreaming && entry.messages.any { message ->
+                                    displayStreaming && entry.messages.any { message ->
                                         (message is ToolActivityMessageUi && message.status == ToolActivityStatusUi.Running) ||
                                             (message is ThinkingMessageUi && message.isStreaming)
                                     },
@@ -901,8 +1027,44 @@ internal fun AgentConversationMessages(
             }
         }
 
+        if (historyPreview != null || previewLoading || previewError != null) {
+            Column(Modifier.align(Alignment.TopCenter).padding(top = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (!previewLoading && previewPage > 0 && previewNode != null) {
+                        NexaCompactAction("上一段", onClick = { loadQuestionPage(previewNode!!, previewPage - 1) })
+                    }
+                    NexaCompactAction(if (previewLoading) "正在定位…" else "返回最新对话", onClick = {
+                        previewGeneration++; previewLoading = false; previewError = null; historyPreview = null; pendingQuestion = null
+                        previewNode = null; previewPage = 0; previewHasMore = false
+                        onBottomAnchorChanged(true)
+                    })
+                    if (!previewLoading && previewHasMore && previewNode != null) {
+                        NexaCompactAction("下一段", onClick = { loadQuestionPage(previewNode!!, previewPage + 1) })
+                    }
+                }
+                previewError?.let { Text(it, style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.error) }
+            }
+        }
+        if (questionNavigation?.enabled != false && editTargetMessageId == null) ConversationQuestionRail(
+            nodes = questionNodes,
+            currentIndex = currentQuestionIndex,
+            onSelect = { node ->
+                onBottomAnchorChanged(false)
+                previewError = null
+                if (visibleMessages.any { it.id == node.id }) {
+                    previewGeneration++
+                    previewLoading = false
+                    historyPreview = null
+                    previewNode = null; previewPage = 0; previewHasMore = false
+                    pendingQuestion = node.id
+                } else if (questionNavigation != null) {
+                    loadQuestionPage(node.id, 0)
+                } else pendingQuestion = node.id
+            },
+            modifier = Modifier.align(Alignment.CenterEnd).padding(end = 2.dp),
+        )
         AnimatedVisibility(
-            visible = !keepBottomAnchored && !isAtBottom,
+            visible = historyPreview == null && !displayAnchored && !isAtBottom,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = bottomInset + 12.dp),
@@ -916,18 +1078,16 @@ internal fun AgentConversationMessages(
                         shape = CircleShape,
                         shadow = Shadow(radius = 8.dp, color = Color.Black, alpha = 0.08f),
                     )
-                    .squircleBorder(
-                        width = 0.5.dp,
-                        color = MiuixTheme.colorScheme.outline.copy(alpha = 0.55f),
-                        cornerRadius = IconButtonDefaults.CornerRadius,
-                    ),
+                    .background(MiuixTheme.colorScheme.surfaceContainerHigh, CircleShape)
+                    .border(0.5.dp, MiuixTheme.colorScheme.outline.copy(alpha = 0.55f), CircleShape)
+                    .clip(CircleShape),
                 onClick = {
                     onBottomAnchorChanged(true)
                     coroutineScope.launch {
                         scrollState.animateScrollToItem(bottomItemIndex)
                     }
                 },
-                backgroundColor = MiuixTheme.colorScheme.surfaceContainerHigh,
+                backgroundColor = Color.Transparent,
                 minWidth = 40.dp,
                 minHeight = 40.dp,
             ) {
@@ -1092,6 +1252,12 @@ private fun AgentChatBottomBar(
     isStreaming: Boolean,
     reasoningEffort: ReasoningEffort,
     workflowMode: WorkflowMode,
+    selectedSkillIds: List<String>,
+    availableSkills: List<io.github.mangi.eta.ui.model.SkillChoiceUi>,
+    onSelectedSkillIdsChange: (List<String>) -> Unit,
+    skillChoicesLoading: Boolean,
+    skillChoicesLoadFailed: Boolean,
+    onRetrySkillChoices: () -> Unit,
     workflowSnapshot: WorkflowSnapshot?,
     availableReasoningEfforts: List<ReasoningEffort>,
     pendingImages: List<PendingImageUi>,
@@ -1121,63 +1287,19 @@ private fun AgentChatBottomBar(
     onRemoveFileReference: (String) -> Unit,
     onCancelMessageEdit: () -> Unit,
     onNewConversation: () -> Unit,
-    onOpenNotepad: (() -> Unit)?,
+    onOpenMcp: (() -> Unit)?,
+    onOpenTools: (() -> Unit)?,
+    onOpenSettings: (() -> Unit)?,
 ) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .imePadding(),
     ) {
-        if (messageBackdrop != null) {
-            val blurColors = BlurDefaults.blurColors(
-                blendColors = listOf(
-                    BlendColorEntry(MiuixTheme.colorScheme.surface.copy(alpha = 0.72f))
-                ),
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(ChatBottomFrostHeight)
-                    // DstIn 让真实磨砂在顶部透明、靠近输入框时逐渐变实，消除硬裁切线。
-                    .graphicsLayer {
-                        compositingStrategy = CompositingStrategy.Offscreen
-                    }
-                    .drawWithContent {
-                        drawContent()
-                        drawRect(
-                            brush = Brush.verticalGradient(
-                                colors = listOf(Color.Transparent, Color.Black),
-                            ),
-                            blendMode = BlendMode.DstIn,
-                        )
-                    }
-                    .textureBlur(
-                        backdrop = messageBackdrop,
-                        shape = RectangleShape,
-                        blurRadius = 20f,
-                        colors = blurColors,
-                    ),
-            )
-        } else {
-            // 空白主页沿用原来的轻微渐隐，不改变主页视觉。
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(16.dp)
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                Color.Transparent,
-                                MiuixTheme.colorScheme.surface,
-                            ),
-                        )
-                    ),
-            )
-        }
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(MiuixTheme.colorScheme.surface)
+
                 .navigationBarsPadding()
                 .padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
         ) {
@@ -1188,60 +1310,56 @@ private fun AgentChatBottomBar(
                 )
             }
             Box(modifier = Modifier.fillMaxWidth()) {
-                AgentChatInputBar(
-                    input = input,
-                    modelPickerState = modelPickerState,
-                    isCompacting = isCompacting,
-                    contextUsage = contextUsage,
-                    showContextUsage = showContextUsage,
-                    isStreaming = isStreaming,
-                    reasoningEffort = reasoningEffort,
-                    workflowMode = workflowMode,
-                    availableReasoningEfforts = availableReasoningEfforts,
-                    pendingImages = pendingImages,
-                    pendingFileReferences = pendingFileReferences,
-                    queuedMessages = queuedMessages,
-                    inputSyncVersion = inputSyncVersion,
-                    onInputSyncApplied = onInputSyncApplied,
-                    focusInputOnSync = focusInputOnSync,
-                    isEditingMessage = messageEdit != null,
-                    editHasLaterTurns = messageEdit?.hasLaterTurns == true,
-                    preserveFollowingMessages = messageEdit?.preserveFollowingMessages == true,
-                    onSubmit = onSubmit,
-                    onInterruptAndSubmit = onInterruptAndSubmit,
-                    onSteerQueuedMessage = onSteerQueuedMessage,
-                    onRecallQueuedMessage = onRecallQueuedMessage,
-                    onRemoveQueuedMessage = onRemoveQueuedMessage,
-                    onReasoningEffortChange = onReasoningEffortChange,
-                    onWorkflowModeChange = onWorkflowModeChange,
-                    onCompactContext = onCompactContext,
-                    onConfigureContextBudget = onConfigureContextBudget,
-                    canCompactContext = canCompactContext,
-                    onModelSelected = onModelSelected,
-                    onStop = onStop,
-                    onAttachImage = onAttachImage,
-                    onRemoveImage = onRemoveImage,
-                    onAttachFiles = onAttachFiles,
-                    onAttachFolder = onAttachFolder,
-                    onAttachFilePath = onAttachFilePath,
-                    onRemoveFileReference = onRemoveFileReference,
-                    onCancelMessageEdit = onCancelMessageEdit,
-                    onOpenNotepad = onOpenNotepad,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                // 浮在输入框上沿，避免新建会话长期占用一整行；附件与排队操作出现时自动让位。
-                if (
-                    queuedMessages.isEmpty() &&
-                    pendingImages.isEmpty() &&
-                    pendingFileReferences.isEmpty() &&
-                    messageEdit == null
-                ) {
-                    AgentNewConversationPill(
-                        messageBackdrop = messageBackdrop,
-                        onClick = onNewConversation,
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .offset(y = (-42).dp),
+                CompositionLocalProvider(LocalNexusBackdrop provides messageBackdrop) {
+                    AgentChatInputBar(
+                        input = input,
+                        modelPickerState = modelPickerState,
+                        isCompacting = isCompacting,
+                        contextUsage = contextUsage,
+                        showContextUsage = showContextUsage,
+                        isStreaming = isStreaming,
+                        reasoningEffort = reasoningEffort,
+                        workflowMode = workflowMode,
+                        selectedSkillIds = selectedSkillIds,
+                        availableSkills = availableSkills,
+                        onSelectedSkillIdsChange = onSelectedSkillIdsChange,
+                        skillChoicesLoading = skillChoicesLoading,
+                        skillChoicesLoadFailed = skillChoicesLoadFailed,
+                        onRetrySkillChoices = onRetrySkillChoices,
+                        availableReasoningEfforts = availableReasoningEfforts,
+                        pendingImages = pendingImages,
+                        pendingFileReferences = pendingFileReferences,
+                        queuedMessages = queuedMessages,
+                        inputSyncVersion = inputSyncVersion,
+                        onInputSyncApplied = onInputSyncApplied,
+                        focusInputOnSync = focusInputOnSync,
+                        isEditingMessage = messageEdit != null,
+                        editHasLaterTurns = messageEdit?.hasLaterTurns == true,
+                        preserveFollowingMessages = messageEdit?.preserveFollowingMessages == true,
+                        onSubmit = onSubmit,
+                        onInterruptAndSubmit = onInterruptAndSubmit,
+                        onSteerQueuedMessage = onSteerQueuedMessage,
+                        onRecallQueuedMessage = onRecallQueuedMessage,
+                        onRemoveQueuedMessage = onRemoveQueuedMessage,
+                        onReasoningEffortChange = onReasoningEffortChange,
+                        onWorkflowModeChange = onWorkflowModeChange,
+                        onCompactContext = onCompactContext,
+                        onConfigureContextBudget = onConfigureContextBudget,
+                        canCompactContext = canCompactContext,
+                        onModelSelected = onModelSelected,
+                        onStop = onStop,
+                        onAttachImage = onAttachImage,
+                        onRemoveImage = onRemoveImage,
+                        onAttachFiles = onAttachFiles,
+                        onAttachFolder = onAttachFolder,
+                        onAttachFilePath = onAttachFilePath,
+                        onRemoveFileReference = onRemoveFileReference,
+                        onCancelMessageEdit = onCancelMessageEdit,
+                        onNewConversation = onNewConversation,
+                        onOpenMcp = onOpenMcp,
+                        onOpenTools = onOpenTools,
+                        onOpenSettings = onOpenSettings,
+                        modifier = Modifier.fillMaxWidth(),
                     )
                 }
             }
@@ -1258,7 +1376,8 @@ private fun AgentNewConversationPill(
     modifier: Modifier = Modifier,
 ) {
     val colors = MiuixTheme.colorScheme
-    val glassBackground = if (messageBackdrop != null) {
+    val glass = LocalEtaDesignTokens.current.skin.isGlass
+    val glassBackground = if (glass) Modifier.etaGlassSurface(cornerRadius = 18.dp) else if (messageBackdrop != null) {
         val blurColors = BlurDefaults.blurColors(
             blendColors = listOf(
                 BlendColorEntry(colors.surface.copy(alpha = 0.72f)),
@@ -1277,39 +1396,42 @@ private fun AgentNewConversationPill(
         )
     }
     Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-        Row(
-            modifier = Modifier
-                .widthIn(min = 136.dp, max = 208.dp)
-                .height(36.dp)
-                .dropShadow(
-                    shape = NewConversationPillShape,
-                    shadow = Shadow(radius = 7.dp, color = Color.Black, alpha = 0.075f),
+        Box(contentAlignment = Alignment.Center) {
+            if (glass) NexusGlassBackdrop(Modifier.matchParentSize(), messageBackdrop, cornerRadius = 18.dp, selected = true)
+            Row(
+                modifier = Modifier
+                    .widthIn(min = 126.dp, max = 188.dp)
+                    .height(if (glass) 40.dp else 34.dp)
+                    .dropShadow(
+                        shape = NewConversationPillShape,
+                        shadow = Shadow(radius = 7.dp, color = Color.Black, alpha = 0.075f),
+                    )
+                    .then(glassBackground)
+                    .squircleBorder(
+                        width = 0.5.dp,
+                        color = colors.outline.copy(alpha = 0.5f),
+                        cornerRadius = 18.dp,
+                    )
+                    .clickable(onClick = onClick)
+                    .padding(horizontal = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Add,
+                    contentDescription = null,
+                    modifier = Modifier.size(15.dp),
+                    tint = colors.primary,
                 )
-                .then(glassBackground)
-                .squircleBorder(
-                    width = 0.5.dp,
-                    color = colors.outline.copy(alpha = 0.5f),
-                    cornerRadius = 18.dp,
+                Spacer(modifier = Modifier.width(7.dp))
+                Text(
+                    text = stringResource(R.string.action_new_conversation_pill),
+                    style = MiuixTheme.textStyles.body2,
+                    color = colors.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
-                .clickable(onClick = onClick)
-                .padding(horizontal = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center,
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.Add,
-                contentDescription = null,
-                modifier = Modifier.size(15.dp),
-                tint = colors.primary,
-            )
-            Spacer(modifier = Modifier.width(7.dp))
-            Text(
-                text = stringResource(R.string.action_new_conversation_pill),
-                style = MiuixTheme.textStyles.body2,
-                color = colors.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            }
         }
     }
 }

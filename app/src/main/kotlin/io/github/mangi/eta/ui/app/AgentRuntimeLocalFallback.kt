@@ -10,8 +10,11 @@ import io.github.mangi.eta.agent.runtime.AgentRuntimeWire
 import io.github.mangi.eta.agent.runtime.AgentRunTelemetry
 import io.github.mangi.eta.agent.runtime.AgentRunTelemetrySnapshot
 import io.github.mangi.eta.agent.runtime.AgentTokenPrice
+import io.github.mangi.eta.agent.runtime.NexusExecutionRecorder
+import io.github.mangi.eta.agent.runtime.NexusRunMapper
 import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
+import io.github.zhh_lgtm.nexus.application.api.ExecutionStore
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -21,7 +24,7 @@ import org.json.JSONObject
  */
 internal object AgentRuntimeLocalFallback {
     fun shouldUse(request: AgentRuntimeWire.RunRequest, result: AgentRuntimeWire.RunResult): Boolean =
-        request.operation == AgentRuntimeWire.OP_CHAT &&
+        !io.github.mangi.eta.data.repository.EtaBackupOperations.dataOperationActive && request.operation == AgentRuntimeWire.OP_CHAT &&
             result.operation == AgentRuntimeWire.OP_CHAT &&
             result.runId == request.runId &&
             !result.ok && result.content.isEmpty() && result.reasoningContent.isEmpty() &&
@@ -31,18 +34,21 @@ internal object AgentRuntimeLocalFallback {
             // Binder or failed send has an unknown outcome and must use result recovery instead.
             result.error in setOf(
                 "Agent Runtime 服务绑定失败",
-                "无法启动后台执行服务，请返回 Nexus 后重试",
+                "无法启动后台执行服务，请返回 NEXA 后重试",
                 "Agent Runtime 无法准备请求",
             )
 
     fun run(
         request: AgentRuntimeWire.RunRequest,
         runController: AgentRunController,
+        executionStore: ExecutionStore,
         provider: AgentProviderClient? = null,
         onTelemetry: (AgentRunTelemetrySnapshot) -> Unit = {},
         priceResolver: (String, String) -> AgentTokenPrice? = { _, _ -> null },
         onEvent: (AgentEvent) -> Unit,
     ): AgentRuntimeWire.RunResult {
+        if (io.github.mangi.eta.data.repository.EtaBackupOperations.dataOperationActive) return AgentRuntimeWire.RunResult(
+            request.runId, false, "", "备份或恢复正在处理，请完成后再运行任务", failureCode = "BACKUP_IN_PROGRESS")
         val safeConfig = request.config.copy(
             systemPrompt = request.config.systemPrompt + "\n\n" +
                 "The cross-process Agent Runtime is temporarily unavailable. " +
@@ -59,10 +65,36 @@ internal object AgentRuntimeLocalFallback {
             extraBodyJson = "",
             customBody = emptyList(),
         )
+        val compactionConfig = runCatching {
+            val appContext = io.github.mangi.eta.data.datastore.SettingsDataStore.applicationContext()
+            kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
+                val meetingRoomId = request.promptScope.meetingRoomId.takeIf(String::isNotBlank)
+                val conversationId = request.promptScope.conversationId.takeIf(String::isNotBlank)
+                    ?: request.handoff?.takeIf { it.source == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE }
+                        ?.let { io.github.mangi.eta.agent.runtime.AgentUiHandoffPayload.from(it.payload).conversationId }
+                        ?.takeIf(String::isNotBlank)
+                val scopedBinding = meetingRoomId?.let {
+                    io.github.mangi.eta.fork.meeting.MeetingRepository.roomCompactionBinding(appContext, it)
+                } ?: conversationId?.let {
+                    io.github.mangi.eta.fork.conversations.ConversationExtensionRepository.compactionBinding(appContext, it)
+                }
+                io.github.mangi.eta.data.repository.RuntimeConfigRepository.compactionRuntimeConfig(safeConfig, scopedBinding)
+            }
+        }.getOrDefault(safeConfig)
+        val recorder = try {
+            val ledgerRequest = NexusRunMapper.fromLegacy(
+                request.copy(runId = "${request.runId}:local-fallback"),
+            ).request
+            NexusExecutionRecorder(executionStore, ledgerRequest).also { it.start() }
+        } catch (failure: Exception) {
+            return ledgerFailure(request, "本地回复未能建立执行记录", failure)
+        }
+        var terminal = false
         val telemetry = AgentRunTelemetry(request, onSnapshot = onTelemetry, recordId = "${request.runId}:local-reply", priceResolver = priceResolver)
         val result = runCatching {
             val response = AgentModelClient.complete(
                 config = safeConfig,
+                compactionConfig = compactionConfig,
                 prompt = request.prompt,
                 images = request.images,
                 history = request.history,
@@ -87,7 +119,41 @@ internal object AgentRuntimeLocalFallback {
                 operationId = request.runId,
                 initialUserMessageId = "user-${request.runId}",
                 textOnlyFallback = true,
-                onEvent = { telemetry.accept(it); onEvent(it) },
+                onEvent = { event ->
+                    if (terminal) return@complete
+                    when (event) {
+                        is AgentEvent.ToolStarted -> {
+                            recorder.record(event)
+                            recorder.record(AgentEvent.ToolFinished(
+                                round = event.round,
+                                toolCallId = event.toolCallId,
+                                name = event.name,
+                                resultSummary = "LOCAL_FALLBACK_TOOL_DISABLED",
+                                imageCount = 0,
+                                imageBytes = 0,
+                                success = false,
+                            ))
+                            throw IllegalStateException("LOCAL_FALLBACK_UNEXPECTED_TOOL")
+                        }
+                        is AgentEvent.HostedToolStarted -> {
+                            recorder.record(event)
+                            recorder.record(AgentEvent.HostedToolFinished(
+                                round = event.round,
+                                toolCallId = event.toolCallId,
+                                name = event.name,
+                                success = false,
+                            ))
+                            throw IllegalStateException("LOCAL_FALLBACK_UNEXPECTED_TOOL")
+                        }
+                        is AgentEvent.ToolFinished, is AgentEvent.HostedToolFinished ->
+                            throw IllegalStateException("LOCAL_FALLBACK_UNEXPECTED_TOOL")
+                        else -> Unit
+                    }
+                    // The durable fact must commit before the same observation reaches the UI.
+                    recorder.record(event)
+                    telemetry.accept(event)
+                    onEvent(event)
+                },
             )
             AgentRuntimeWire.RunResult(
                 runId = request.runId,
@@ -109,7 +175,29 @@ internal object AgentRuntimeLocalFallback {
                 rewriteTargetMessageId = request.rewriteTargetMessageId,
             )
         }
-        telemetry.finish(result.ok, runController.isCancelled)
+        val cancelled = runController.isUserCancelled
+        terminal = true
+        try {
+            recorder.finish(result, cancelled)
+        } catch (failure: Exception) {
+            telemetry.finish(false, cancelled)
+            return ledgerFailure(request, "本地回复未能写入最终执行记录", failure)
+        }
+        telemetry.finish(result.ok, cancelled)
         return result
     }
+
+    private fun ledgerFailure(
+        request: AgentRuntimeWire.RunRequest,
+        message: String,
+        failure: Exception,
+    ) = AgentRuntimeWire.RunResult(
+        runId = request.runId,
+        ok = false,
+        content = "",
+        error = "$message：${failure.message ?: failure.javaClass.simpleName}",
+        operation = request.operation,
+        rewriteTargetMessageId = request.rewriteTargetMessageId,
+        failureCode = "LOCAL_FALLBACK_LEDGER_FAILED",
+    )
 }

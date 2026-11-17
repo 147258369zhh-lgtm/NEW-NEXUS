@@ -60,7 +60,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.BasicComponentDefaults
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
@@ -122,7 +122,7 @@ internal fun SharedFoldersScreen(
         item(key = "mounts-card") {
             Card(
                 modifier = Modifier
-                    .padding(horizontal = 12.dp)
+                    .padding(horizontal = 16.dp)
                     .padding(top = 8.dp, bottom = 12.dp),
             ) {
                 if (mounts.isEmpty()) {
@@ -198,7 +198,7 @@ internal fun SharedFoldersScreen(
                 Card(
                     modifier = Modifier
                         .animateItem()
-                        .padding(horizontal = 12.dp)
+                        .padding(horizontal = 16.dp)
                         .padding(bottom = 12.dp),
                 ) {
                     BasicComponent(

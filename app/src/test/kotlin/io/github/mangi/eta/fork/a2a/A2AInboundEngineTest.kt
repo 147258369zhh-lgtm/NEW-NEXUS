@@ -12,6 +12,34 @@ import org.junit.Test
 
 class A2AInboundEngineTest {
     @Test
+    fun `self reported peer headers cannot borrow another nodes authority`() {
+        val port = ServerSocket(0).use { it.localPort }
+        val token = "identity-fixture"
+        val observed = mutableListOf<String>()
+        val engine = A2AInboundEngine(
+            port = port,
+            bearerTokenProvider = { token },
+            tasks = LegacyA2AInboundMessageHandler { _, _ -> "done" },
+            bindAddress = "127.0.0.1",
+            accessProvider = { peer -> observed += peer; A2AToolAccess.readOnly(peer) },
+        )
+        engine.start()
+        try {
+            val connection = URI("http://127.0.0.1:$port/a2a").toURL().openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.doOutput = true
+            connection.setRequestProperty("Authorization", "Bearer $token")
+            connection.setRequestProperty("X-A2A-Peer-Id", "privileged-node")
+            connection.setRequestProperty("X-A2A-Client-Id", "another-privileged-node")
+            connection.outputStream.use { it.write("""{"jsonrpc":"2.0","id":"identity","method":"SendMessage","params":{"message":{"messageId":"identity-message","role":"ROLE_USER","parts":[{"text":"hello"}]}}}""".toByteArray()) }
+            assertEquals(200, connection.responseCode)
+            connection.inputStream.use { it.readBytes() }
+            connection.disconnect()
+            assertEquals(listOf(A2AAccessPolicyStore.tokenPeerId(token)), observed)
+        } finally { engine.stop() }
+    }
+
+    @Test
     fun `agent card can advertise the transport endpoint while binding locally`() = runBlocking {
         val port = ServerSocket(0).use { it.localPort }
         val advertisedEndpoint = "http://100.88.20.10:43121/a2a"
@@ -50,7 +78,7 @@ class A2AInboundEngineTest {
             val policy = a2aPeerPolicyForManualEndpoint("http://127.0.0.1:$port/a2a")
             val client = A2AHttpClient(policy)
             val card = client.discoverAgentCard("http://127.0.0.1:$port/.well-known/agent-card.json")
-            assertEquals("Eta on this device", card.name)
+            assertEquals("Nexus on this device", card.name)
             assertTrue(card.supportedInterfaces.any { it.protocolVersion == A2A_PROTOCOL_VERSION })
 
             val first = client.sendMessage(

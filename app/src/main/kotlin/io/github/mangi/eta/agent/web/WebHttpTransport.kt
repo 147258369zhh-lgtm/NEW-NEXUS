@@ -27,6 +27,7 @@ internal data class WebHttpResponse(
     val contentType: String?,
     val bytes: ByteArray,
     val truncated: Boolean,
+    val headers: Map<String, String> = emptyMap(),
 )
 
 /** 独立匿名 GET 请求，不继承 WebView 登录状态；关闭只取消本次运行拥有的请求。 */
@@ -58,16 +59,18 @@ internal class WebHttpTransport(baseClient: OkHttpClient) : Closeable {
         body: ByteArray? = null,
         contentType: String? = null,
         maxBytes: Int = MAX_RESPONSE_BYTES,
+        followRedirects: Boolean = true,
+        includeErrorBody: Boolean = false,
     ): WebHttpResponse {
         require(maxBytes in 1..MAX_RESPONSE_BYTES)
         val normalizedMethod = method.trim().uppercase(Locale.ROOT)
-        if (normalizedMethod != "GET" && normalizedMethod != "POST") {
-            throw WebRequestException("INVALID_ARGUMENT", "仅支持 GET 或 POST 请求方式")
+        if (normalizedMethod !in setOf("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")) {
+            throw WebRequestException("INVALID_ARGUMENT", "不支持的 HTTP 请求方式")
         }
         val initial = validateUrl(rawUrl)
         var url = initial
         var currentMethod = normalizedMethod
-        var currentBody = if (normalizedMethod == "POST") body ?: byteArrayOf() else null
+        var currentBody = if (normalizedMethod in setOf("POST", "PUT", "PATCH")) body ?: byteArrayOf() else body
         val visited = hashSetOf<String>()
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
         repeat(MAX_REDIRECTS + 1) { redirectCount ->
@@ -87,35 +90,36 @@ internal class WebHttpTransport(baseClient: OkHttpClient) : Closeable {
                 if (!sameOrigin && isSensitiveHeader(name)) return@forEach
                 requestBuilder.header(name, value)
             }
-            if (currentMethod == "POST") {
+            if (currentBody != null && currentMethod !in setOf("GET", "HEAD")) {
                 val mediaType = (contentType ?: "application/json; charset=utf-8").toMediaTypeOrNull()
-                requestBuilder.post((currentBody ?: byteArrayOf()).toRequestBody(mediaType))
+                requestBuilder.method(currentMethod, currentBody!!.toRequestBody(mediaType))
             } else {
-                requestBuilder.get()
+                requestBuilder.method(currentMethod, null)
             }
             val request = requestBuilder.build()
             val call = client.newCall(request)
             call.timeout().timeout(remaining, TimeUnit.NANOSECONDS)
             activeCalls += call
+            val cancellation = io.github.mangi.eta.agent.runtime.RuntimeInvocationScope.controller?.register(call::cancel)
             if (closed.get()) call.cancel()
             try {
                 call.execute().use { response ->
                     ensureActive()
-                    if (response.code in REDIRECT_STATUS) {
+                    if (followRedirects && response.code in REDIRECT_STATUS) {
                         if (redirectCount == MAX_REDIRECTS) throw WebRequestException("WEB_REDIRECT_LIMIT", "网页重定向次数超过限制")
                         val location = response.header("Location")
                             ?: throw WebRequestException("WEB_REDIRECT_INVALID", "网页重定向缺少目标地址")
                         val resolved = url.resolve(location)
                             ?: throw WebRequestException("WEB_REDIRECT_INVALID", "网页重定向地址无效")
                         url = validateUrl(resolved.toString())
-                        if (response.code in setOf(301, 302, 303) && currentMethod == "POST") {
+                        if (response.code == 303 && currentMethod != "HEAD" || response.code in setOf(301, 302) && currentMethod == "POST") {
                             currentMethod = "GET"
                             currentBody = null
                         }
                     } else {
                         val status = response.code
                         // 错误响应不读取正文，避免认证信息和服务器回显进入日志或错误说明。
-                        if (!response.isSuccessful) return WebHttpResponse(initial.toString(), url.toString(), status, response.header("Content-Type"), byteArrayOf(), false)
+                        if (!response.isSuccessful && !includeErrorBody) return WebHttpResponse(initial.toString(), url.toString(), status, response.header("Content-Type"), byteArrayOf(), false)
                         val responseBody = response.body
                         val output = ByteArrayOutputStream(minOf(maxBytes, 16_384))
                         var truncated = false
@@ -135,7 +139,9 @@ internal class WebHttpTransport(baseClient: OkHttpClient) : Closeable {
                             }
                         }
                         ensureActive()
-                        return WebHttpResponse(initial.toString(), url.toString(), status, response.header("Content-Type"), output.toByteArray(), truncated)
+                        val safeHeaders = response.headers.names().filterNot { isSensitiveHeader(it) || it.equals("Set-Cookie", true) }
+                            .associateWith { response.header(it).orEmpty().take(4096) }
+                        return WebHttpResponse(initial.toString(), url.toString(), status, response.header("Content-Type"), output.toByteArray(), truncated, safeHeaders)
                     }
                 }
             } catch (failure: WebRequestException) {
@@ -150,6 +156,7 @@ internal class WebHttpTransport(baseClient: OkHttpClient) : Closeable {
                 ensureActive()
                 throw WebRequestException("WEB_NETWORK_ERROR", "无法完成网页请求，请检查网络、证书及相关网络授权")
             } finally {
+                cancellation?.close()
                 activeCalls -= call
             }
         }

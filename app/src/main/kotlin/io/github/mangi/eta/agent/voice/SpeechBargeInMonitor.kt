@@ -14,6 +14,7 @@ import android.os.Looper
 import android.os.SystemClock
 import io.github.mangi.eta.core.AndroidAgentLogger
 import kotlin.math.sqrt
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.runInterruptible
 
 /** 打断监测是否真正具备“听见用户”的能力，以及为此挂上的系统音频效果。 */
@@ -39,6 +40,9 @@ internal interface BargeInMonitor {
 
     /** 等待采集线程真正退出，最多 [timeoutMs]。 */
     suspend fun awaitStopped(timeoutMs: Long = 600)
+
+    /** Non-null transfers the existing microphone; the new owner must finish/cancel it. */
+    fun takeSpeechCapture(): SpeechAudioCapture? = null
 }
 
 /**
@@ -119,20 +123,37 @@ internal class VoiceBargeInDetector(
 }
 
 @SuppressLint("MissingPermission")
-internal class SpeechBargeInMonitor(private val context: Context) : BargeInMonitor {
+internal class SpeechBargeInMonitor(private val context: Context,
+    private val requireEchoCancellation: Boolean = true,
+    private val continuousEdges: Boolean = false,
+    private val onSpeechEnded: () -> Unit = {},
+    private val onFailure: (String) -> Unit = {},
+    private val conservativeWithoutEcho: Boolean = false,
+    private val playbackActive: () -> Boolean = { true },
+    private val onPcm: ((ByteArray) -> Unit)? = null,
+    private val continuousSilenceMs: () -> Int = { 700 },
+) : BargeInMonitor {
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val detector = VoiceBargeInDetector()
+    private val detector = VoiceBargeInDetector(warmupMs = if (continuousEdges) 400 else 320)
+    private val conservativeDetector = VoiceBargeInDetector(absoluteThreshold = .035f, floorRatio = 3.4f, holdMs = 260, warmupMs = 400)
     @Volatile private var record: AudioRecord? = null
     @Volatile private var stopping = false
     private var worker: Thread? = null
+    private val handoffLock = Any()
+    private var preroll = SpeechPrerollBuffer()
+    @Volatile private var handoff: SpeechCaptureHandoff? = null
+    @Volatile private var triggered = false
 
     override fun start(
         onArmed: (BargeInMonitorStatus) -> Unit,
         onLevel: (Float) -> Unit,
         onTriggered: () -> Unit,
     ) {
-        stop()
+        if (worker?.isAlive == true) {
+            postArmed(onArmed, BargeInMonitorStatus(false, reason = "上一次麦克风尚未退出")); return
+        }
         stopping = false
+        preroll = SpeechPrerollBuffer(); handoff = null; triggered = false
         val thread = Thread({ run(onArmed, onLevel, onTriggered) }, "NexusSpeechBargeIn")
         thread.isDaemon = true
         worker = thread
@@ -145,10 +166,18 @@ internal class SpeechBargeInMonitor(private val context: Context) : BargeInMonit
         runCatching { record?.stop() }
     }
 
+    override fun takeSpeechCapture(): SpeechAudioCapture? = synchronized(handoffLock) {
+        if (stopping || record == null || worker?.isAlive != true || !triggered || handoff != null) return@synchronized null
+        SpeechCaptureHandoff(::stop).also { capture ->
+            preroll.drain().forEach(capture::offer)
+            handoff = capture
+        }
+    }
+
     override suspend fun awaitStopped(timeoutMs: Long) {
         val thread = worker ?: return
-        worker = null
         runCatching { runInterruptible { thread.join(timeoutMs) } }
+        if (!thread.isAlive && worker === thread) worker = null
     }
 
     private fun run(
@@ -156,8 +185,22 @@ internal class SpeechBargeInMonitor(private val context: Context) : BargeInMonit
         onLevel: (Float) -> Unit,
         onTriggered: () -> Unit,
     ) {
+        val admissionDeadline = SystemClock.elapsedRealtime() + 300
+        while (!CAPTURING.compareAndSet(false, true)) {
+            if (stopping) return
+            if (SystemClock.elapsedRealtime() >= admissionDeadline) {
+                postArmed(onArmed, BargeInMonitorStatus(false, reason = "已有语音检测正在使用麦克风")); return
+            }
+            try { Thread.sleep(10) } catch (_: InterruptedException) { return }
+        }
+        try { kotlinx.coroutines.runBlocking { BackgroundWakeWordRuntime.yieldMicrophone() } }
+        catch (_: Exception) {
+            CAPTURING.set(false)
+            postArmed(onArmed, BargeInMonitorStatus(false, reason = "唤醒麦克风尚未释放")); return
+        }
         val audio = createRecord()
         if (audio == null) {
+            CAPTURING.set(false)
             postArmed(onArmed, BargeInMonitorStatus(canHearUser = false, reason = "麦克风不可用"))
             return
         }
@@ -165,7 +208,9 @@ internal class SpeechBargeInMonitor(private val context: Context) : BargeInMonit
         val attached = mutableListOf<AudioEffect>()
         val names = mutableListOf<String>()
         var frameIndex = 0
+        var captureError: Throwable? = null
         try {
+            if (stopping) return
             if (audio.state != AudioRecord.STATE_INITIALIZED) {
                 postArmed(onArmed, BargeInMonitorStatus(canHearUser = false, reason = "麦克风初始化失败"))
                 return
@@ -177,7 +222,7 @@ internal class SpeechBargeInMonitor(private val context: Context) : BargeInMonit
                 attach(AutomaticGainControl.create(session), "AGC", attached, names)
             }
             // AEC 是自动打断的前提；缺了它宁可只保留手动打断。
-            if (names.none { it == "AEC" }) {
+            if (requireEchoCancellation && names.none { it == "AEC" } && !conservativeWithoutEcho) {
                 postArmed(
                     onArmed,
                     BargeInMonitorStatus(
@@ -194,27 +239,59 @@ internal class SpeechBargeInMonitor(private val context: Context) : BargeInMonit
                 return
             }
             detector.reset(SystemClock.elapsedRealtime())
+            conservativeDetector.reset(SystemClock.elapsedRealtime())
             postArmed(
                 onArmed,
-                BargeInMonitorStatus(canHearUser = true, effects = names.joinToString("+")),
+                BargeInMonitorStatus(canHearUser = true, effects = names.joinToString("+"),
+                    reason = if (requireEchoCancellation && names.none { it == "AEC" }) "使用增强门槛，设备未提供回声消除" else null),
             )
             val frame = ByteArray(FRAME_BYTES)
+            var speech = false
+            var silentAt = -1L
+            var playing = playbackActive()
+            var triggerDeadline = Long.MAX_VALUE
             while (!stopping) {
                 val count = audio.read(frame, 0, frame.size)
                 if (count <= 0) {
                     if (stopping) break
-                    continue
+                    throw IllegalStateException("Microphone capture stopped")
+                }
+                if (count % 2 != 0) throw IllegalStateException("Unaligned microphone PCM")
+                onPcm?.invoke(frame.copyOf(count))
+                synchronized(handoffLock) {
+                    val bytes = frame.copyOf(count)
+                    val capture = handoff
+                    if (capture == null) preroll.add(bytes) else capture.offer(bytes)
                 }
                 val rms = rms(frame, count)
                 // 50 帧/秒的电平不必逐帧推给界面，三帧一次足够顺滑。
                 if (frameIndex++ % LEVEL_STRIDE == 0) postLevel(onLevel, rms)
-                if (detector.observe(rms, SystemClock.elapsedRealtime())) {
+                val now = SystemClock.elapsedRealtime()
+                if (triggered && !continuousEdges) {
+                    if (handoff == null && now >= triggerDeadline) break
+                    continue
+                }
+                val currentPlayback = playbackActive()
+                if (continuousEdges && currentPlayback != playing && !speech) { detector.reset(now); conservativeDetector.reset(now) }
+                playing = currentPlayback
+                if (continuousEdges && speech) {
+                    if (rms >= .006f) silentAt = -1 else if (silentAt < 0) silentAt = now
+                    val silenceMs = continuousSilenceMs()
+                    if (silenceMs > 0 && silentAt >= 0 && now - silentAt >= silenceMs.coerceAtLeast(600)) {
+                        speech = false; silentAt = -1; detector.reset(now); conservativeDetector.reset(now)
+                        mainHandler.post { if (!stopping) onSpeechEnded() }
+                    }
+                } else if ((if (conservativeWithoutEcho && playing && names.none { it == "AEC" }) conservativeDetector else detector).observe(rms, now)) {
                     AndroidAgentLogger.info("Nexus speech barge-in detected: rms=$rms")
-                    mainHandler.post(onTriggered)
-                    break
+                    triggered = true
+                    triggerDeadline = now + 1_000
+                    mainHandler.post { if (!stopping) onTriggered() }
+                    if (continuousEdges) { speech = true; silentAt = -1 }
                 }
             }
         } catch (failure: Throwable) {
+            if (!stopping) captureError = failure
+            if (!stopping) mainHandler.post { if (!stopping) onFailure(failure.javaClass.simpleName) }
             AndroidAgentLogger.warnThrottled("eta_speech_barge_in_failed") {
                 "Nexus speech barge-in monitor failed: type=${failure.javaClass.simpleName}"
             }
@@ -223,6 +300,12 @@ internal class SpeechBargeInMonitor(private val context: Context) : BargeInMonit
             runCatching { audio.stop() }
             runCatching { audio.release() }
             if (record === audio) record = null
+            synchronized(handoffLock) {
+                stopping = true
+                handoff?.sourceClosed(captureError)
+                preroll.drain()
+            }
+            CAPTURING.set(false)
         }
     }
 
@@ -280,7 +363,13 @@ internal class SpeechBargeInMonitor(private val context: Context) : BargeInMonit
         return if (samples == 0) 0f else sqrt(energy / samples).toFloat()
     }
 
-    private companion object {
+    companion object {
+        internal suspend fun awaitCaptureReleased(timeoutMs: Long = 1_200) {
+            kotlinx.coroutines.withTimeout(timeoutMs) {
+                while (CAPTURING.get()) kotlinx.coroutines.delay(10)
+            }
+        }
+        private val CAPTURING = AtomicBoolean(false)
         const val RATE = 16_000
         /** 20 ms 一帧，足够分辨句首，又不会让检测延迟明显。 */
         const val FRAME_BYTES = 640

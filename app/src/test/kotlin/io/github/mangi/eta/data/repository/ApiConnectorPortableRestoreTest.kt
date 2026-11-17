@@ -13,6 +13,7 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -78,5 +79,18 @@ class ApiConnectorPortableRestoreTest {
             "portable-api-token",
             storage.bearerToken(apiConnectorSecretKey(connector.id)),
         )
+    }
+
+    @Test
+    fun corruptConnectorMetadataSkipsOnlyCredentialsSoTheRestOfTheBackupRemainsAvailable() {
+        val file = File(context.filesDir, "capability-center/api-connectors.json")
+        file.parentFile!!.mkdirs()
+        file.writeText("{\"version\":\"corrupt\"")
+
+        val snapshot = ApiConnectorCredentialTransfer.capture(context, storage)
+
+        assertTrue(snapshot.credentials.isEmpty())
+        assertEquals(1, snapshot.unreadable)
+        assertEquals("{\"version\":\"corrupt\"", file.readText())
     }
 }

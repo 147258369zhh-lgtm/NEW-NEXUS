@@ -19,6 +19,7 @@ internal data class SubagentStepSnapshot(
         const val KIND_TOOL = "tool"
 
         const val STATUS_RUNNING = "running"
+        const val STATUS_QUEUED = "queued"
         const val STATUS_SUCCESS = "success"
         const val STATUS_FAILED = "failed"
     }
@@ -58,6 +59,7 @@ internal data class SubagentActivitySnapshot(
 
     companion object {
         const val STATUS_RUNNING = "running"
+        const val STATUS_QUEUED = "queued"
         const val STATUS_COMPLETED = "completed"
         const val STATUS_FAILED = "failed"
         const val STATUS_CANCELLED = "cancelled"

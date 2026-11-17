@@ -6,6 +6,7 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 
+@kotlinx.serialization.Serializable
 internal data class MemoryAutomationSettings(
     val extractMemory: Boolean = true,
     val idleEnabled: Boolean = true,
@@ -33,14 +34,26 @@ internal object MemoryAutomationSettingsStore {
             p.getBoolean("decisions", true), p.getBoolean("procedures", true))
     }
     fun save(context: Context, s: MemoryAutomationSettings) {
-        prefs(context).edit().putBoolean("extract", s.extractMemory).putBoolean("idle", s.idleEnabled)
+        require(s.intervalMinutes in 15..1440 && s.quietMinutes in 1..120 && s.dailyLimit in 1..50 &&
+            s.batchSize in 1..10 && s.retentionDays in 1..365) { "MEMORY_POLICY_RANGE_INVALID" }
+        check(prefs(context).edit().putBoolean("extract", s.extractMemory).putBoolean("idle", s.idleEnabled)
             .putBoolean("charging", s.chargingOnly).putBoolean("screen_off", s.screenOffOnly)
             .putBoolean("wifi", s.unmeteredOnly).putInt("interval", s.intervalMinutes)
             .putInt("quiet", s.quietMinutes).putInt("daily", s.dailyLimit).putInt("batch", s.batchSize)
             .putInt("retention", s.retentionDays).putBoolean("preferences", s.capturePreferences)
-            .putBoolean("decisions", s.captureDecisions).putBoolean("procedures", s.captureProcedures).apply()
+            .putBoolean("decisions", s.captureDecisions).putBoolean("procedures", s.captureProcedures).commit()) { "MEMORY_POLICY_SAVE_FAILED" }
         MemoryMaintenanceScheduler.sync(context)
+        if (s.idleEnabled) io.github.mangi.eta.agent.skill.SkillEvolution.enqueue(context)
     }
+    fun observe(context: Context) = callbackFlow {
+        val p = prefs(context)
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key !in setOf("status", "last_activity")) trySend(read(context))
+        }
+        p.registerOnSharedPreferenceChangeListener(listener)
+        trySend(read(context))
+        awaitClose { p.unregisterOnSharedPreferenceChangeListener(listener) }
+    }.distinctUntilChanged()
     fun touch(context: Context) { prefs(context).edit().putLong("last_activity", System.currentTimeMillis()).apply() }
     fun lastActivity(context: Context): Long = prefs(context).getLong("last_activity", 0)
     fun status(context: Context): String = prefs(context).getString("status", "尚未整理").orEmpty()

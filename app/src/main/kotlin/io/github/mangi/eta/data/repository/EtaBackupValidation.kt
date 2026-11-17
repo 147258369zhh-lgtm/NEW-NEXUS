@@ -108,6 +108,10 @@ internal object EtaBackupValidation {
     }
 
     private fun validateHeader(document: EtaBackupDocument) {
+        document.approvalPreferences?.let { evidence ->
+            if (EtaBackupContent.MODELS !in document.includedContents) throw EtaBackupException("审批证据与备份内容清单不一致")
+            try { evidence.validate() } catch (failure: Exception) { throw EtaBackupException("审批证据备份无效", failure) }
+        }
         if (document.includedContents.isEmpty() || document.schemaVersion < 8 && document.includedContents != EtaBackupContent.entries.toSet()) {
             throw EtaBackupException("备份内容选择无效")
         }

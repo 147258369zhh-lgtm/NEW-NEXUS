@@ -9,9 +9,46 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class AgentRunControllerTest {
+    @Test fun abortWakesPausedRunAndPreservesFailureWhenResourceInterruptsWorker() {
+        val controller = AgentRunController()
+        val reason = IllegalStateException("budget expired")
+        val entered = CountDownLatch(1)
+        val finished = CountDownLatch(1)
+        val observed = AtomicReference<Throwable>()
+        controller.pause()
+        val worker = thread {
+            val resource = controller.register(Thread.currentThread()::interrupt)
+            try {
+                entered.countDown()
+                controller.throwIfCancelled()
+            } catch (failure: Throwable) { observed.set(failure) }
+            finally { resource.close(); finished.countDown() }
+        }
+        try {
+            assertTrue(entered.await(1, TimeUnit.SECONDS))
+            controller.abort(reason)
+            assertTrue(finished.await(1, TimeUnit.SECONDS))
+            assertSame(reason, observed.get())
+            assertTrue(controller.isCancelled)
+            assertFalse(controller.isUserCancelled)
+            controller.cancel()
+            assertSame(reason, controller.abortFailure)
+        } finally { controller.cancel(); worker.join(1_000) }
+    }
+
+    @Test fun explicitCancellationWinsOverALaterDeadline() {
+        val controller = AgentRunController()
+        controller.cancel()
+        controller.abort(IllegalStateException("late deadline"))
+        assertNull(controller.abortFailure)
+        assertTrue(controller.isUserCancelled)
+        assertThrows(AgentRunCancelledException::class.java, controller::throwIfCancelled)
+    }
     @Test
     fun cancellationWakesLongRetryWait() {
         val controller = AgentRunController()
@@ -178,4 +215,111 @@ class AgentRunControllerTest {
         }
         assertFalse(worker.isAlive)
     }
+
+    @Test
+    fun inboundA2AApprovalReleasesOnlyTheExactPendingCallOnce() {
+        val controller = AgentRunController()
+        controller.bindRecoverySurface(io.github.zhh_lgtm.nexus.kernel.api.RunSource.A2A_INBOUND)
+        val digest = "c".repeat(64)
+        controller.bindLocalA2AApproval(
+            grant = a2aApprovalGrant(digest = digest),
+            expectedTaskId = "task-1",
+            expectedContinuationCount = 1,
+        )
+
+        val exact = controller.beginApproval(
+            toolName = "write_file",
+            effect = io.github.zhh_lgtm.nexus.kernel.api.EffectClass.REVERSIBLE_WRITE,
+            argumentsDigest = digest,
+        )
+        assertTrue(exact.isPreapproved)
+
+        // The same grant must not release the call a second time.
+        val replay = assertThrows(AgentRunPauseException::class.java) {
+            controller.beginApproval(
+                toolName = "write_file",
+                effect = io.github.zhh_lgtm.nexus.kernel.api.EffectClass.REVERSIBLE_WRITE,
+                argumentsDigest = digest,
+            )
+        }
+        assertFalse(replay.pause.pendingExecuted)
+    }
+
+    @Test
+    fun inboundA2AApprovalRejectsADifferentArgumentDigest() {
+        val controller = AgentRunController()
+        controller.bindRecoverySurface(io.github.zhh_lgtm.nexus.kernel.api.RunSource.A2A_INBOUND)
+        controller.bindLocalA2AApproval(
+            grant = a2aApprovalGrant(digest = "c".repeat(64)),
+            expectedTaskId = "task-1",
+            expectedContinuationCount = 1,
+        )
+
+        val pause = assertThrows(AgentRunPauseException::class.java) {
+            controller.beginApproval(
+                toolName = "write_file",
+                effect = io.github.zhh_lgtm.nexus.kernel.api.EffectClass.REVERSIBLE_WRITE,
+                argumentsDigest = "d".repeat(64),
+            )
+        }
+        assertEquals("write_file", pause.pause.pendingTool)
+        assertEquals("d".repeat(64), pause.pause.pendingArgumentsDigest)
+        assertFalse(pause.pause.pendingExecuted)
+    }
+
+    @Test
+    fun settledInboundA2ACallsAreBlockedByToolEffectAndDigest() {
+        val controller = AgentRunController()
+        val digest = "c".repeat(64)
+        controller.bindA2ASettledCalls(listOf("write_file|REVERSIBLE_WRITE|$digest"))
+
+        assertTrue(
+            controller.isSettledA2ACall(
+                "write_file",
+                io.github.zhh_lgtm.nexus.kernel.api.EffectClass.REVERSIBLE_WRITE,
+                digest,
+            ),
+        )
+        assertFalse(
+            controller.isSettledA2ACall(
+                "write_file",
+                io.github.zhh_lgtm.nexus.kernel.api.EffectClass.REVERSIBLE_WRITE,
+                "d".repeat(64),
+            ),
+        )
+        assertFalse(
+            controller.isSettledA2ACall(
+                "read_file",
+                io.github.zhh_lgtm.nexus.kernel.api.EffectClass.REVERSIBLE_WRITE,
+                digest,
+            ),
+        )
+        assertTrue(controller.hasSettledA2AEffectfulCall())
+        controller.recordSettledA2AToolCall(
+            "read_file",
+            io.github.zhh_lgtm.nexus.kernel.api.EffectClass.READ,
+            "e".repeat(64),
+        )
+        assertTrue(
+            controller.isSettledA2ACall(
+                "read_file",
+                io.github.zhh_lgtm.nexus.kernel.api.EffectClass.READ,
+                "e".repeat(64),
+            ),
+        )
+        assertEquals(2, controller.settledA2ACallsSnapshot().size)
+    }
+
+    private fun a2aApprovalGrant(digest: String) = AgentRuntimeWire.A2ALocalApprovalGrant(
+        taskId = "task-1",
+        messageId = "message-1",
+        continuationCount = 1,
+        allowedTools = setOf("write_file"),
+        allowedToolEffects = setOf("write_file=REVERSIBLE_WRITE"),
+        originalGrantFingerprint = "original",
+        currentGrantFingerprint = "current",
+        pendingTool = "write_file",
+        pendingEffect = "REVERSIBLE_WRITE",
+        pendingArgumentsDigest = digest,
+    )
 }

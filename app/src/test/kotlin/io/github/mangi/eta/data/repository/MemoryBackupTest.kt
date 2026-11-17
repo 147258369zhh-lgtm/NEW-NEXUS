@@ -35,7 +35,7 @@ class MemoryBackupTest {
 
     @Test fun structuredEntriesRoundTripWithScopeEvidenceExpiryAndReviewState() = runBlocking(Dispatchers.IO) {
         val db = LearningDatabase.get(context)
-        val repo = MemoryReviewRepository(db) { 1000 }
+        val repo = MemoryReviewRepository(db, { 1000 })
         val pending = requireNotNull(repo.propose(AgentMemoryScope.project("sample"), "project", "项目框架",
             "项目使用 Kotlin 和 Compose", "项目使用 Kotlin 和 Compose", "conversation:sample"))
         val active = requireNotNull(repo.propose(AgentMemoryScope.task("sample"), "task", "验收标准",
@@ -57,7 +57,7 @@ class MemoryBackupTest {
 
     @Test fun invalidMemoryMetadataIsRejectedBeforeReplacingExistingData() = runBlocking(Dispatchers.IO) {
         val db = LearningDatabase.get(context)
-        val repo = MemoryReviewRepository(db) { 1000 }
+        val repo = MemoryReviewRepository(db, { 1000 })
         val original = requireNotNull(repo.propose(AgentMemoryScope.GLOBAL, "core", "回复语言",
             "以后请使用中文回答", "以后请使用中文回答", "conversation:a"))
         val dao = EtaDatabase.get(context).conversationDao()

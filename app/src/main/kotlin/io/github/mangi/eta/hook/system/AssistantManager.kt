@@ -11,8 +11,11 @@ import io.github.mangi.eta.core.safeLogType
 import android.app.KeyguardManager
 import android.app.role.RoleManager
 import android.content.ComponentName
+import android.content.BroadcastReceiver
 import android.content.ContentResolver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.os.Bundle
 import android.os.Build
@@ -29,6 +32,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.function.Consumer
 
 internal object AssistantManager {
+    const val SELECTION_REQUEST_KEY = "assistant_selection_request"
+    private const val MANAGED_TARGET_SETTING = "nexa_managed_assistant_target"
+    private const val CONSUMED_REQUEST_SETTING = "nexa_assistant_selection_consumed"
     private const val BOOT_COMPLETED_PHASE = 1_000
     private const val SHOW_SOURCE_PUSH_TO_TALK = 1 shl 5
     private const val DEFAULT_SHOW_FLAGS = SHOW_SOURCE_PUSH_TO_TALK
@@ -44,6 +50,12 @@ internal object AssistantManager {
     private data class ConfigurationKey(
         val userId: Int,
         val target: PowerAssistantTarget,
+    )
+
+    private data class SelectionRequest(
+        val target: PowerAssistantTarget,
+        val requestId: String,
+        val explicit: Boolean,
     )
 
     private val configurationLock = Any()
@@ -73,9 +85,12 @@ internal object AssistantManager {
     @Volatile
     private var systemContext: Context? = null
 
+    private var packageReceiverRegistered = false
+
     private val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key != Prefs.Keys.POWER_KEY_ASSISTANT_TARGET &&
-            key != Prefs.Keys.ASSISTANT_AUTO_CONFIG
+            key != Prefs.Keys.POWER_KEY_TAKEOVER &&
+            key != Prefs.Keys.ASSISTANT_AUTO_CONFIG && key != SELECTION_REQUEST_KEY
         ) {
             return@OnSharedPreferenceChangeListener
         }
@@ -83,6 +98,7 @@ internal object AssistantManager {
         schedulePreferenceSelection(
             context = context,
             logger = preferenceLogger ?: return@OnSharedPreferenceChangeListener,
+            explicitSelection = key != Prefs.Keys.ASSISTANT_AUTO_CONFIG,
         )
     }
 
@@ -188,6 +204,20 @@ internal object AssistantManager {
             return false
         }
         val service = resolveVoiceInteractionService(logger, source, logFailures) ?: return false
+
+        // Secure settings can change before VoiceInteractionManager replaces its
+        // active implementation. Never consume a NEXA trigger by showing the old assistant.
+        val activeComponent = runCatching {
+            service.javaClass.methods.firstOrNull {
+                it.name == "getActiveServiceComponentName" && it.parameterTypes.isEmpty()
+            }?.invoke(service) as? ComponentName
+        }.getOrNull()
+        if (activeComponent?.flattenToString() != binding.componentName) {
+            logShowSessionFailure(logger, "${source}_assistant_switch_pending", logFailures) {
+                "$source: 默认助理服务尚未完成切换，改用应用入口"
+            }
+            return false
+        }
 
         if (isKeyguardLocked(context)) {
             val launchFromKeyguardMethod = service.javaClass.methods.firstOrNull {
@@ -368,19 +398,15 @@ internal object AssistantManager {
         handler: Handler,
         forceRefresh: Boolean,
         rebuildWhenVerified: Boolean,
+        selectionRequest: SelectionRequest? = null,
     ): Boolean = handler.post {
         try {
             // 请求入队后目标或开关可能变化，真正执行前必须重新读取 RemotePreferences。
             val target = Prefs.powerAssistantTarget()
-            if (!shouldConfigureAssistant(
-                    autoConfigEnabled = Prefs.isEnabled(Prefs.Keys.ASSISTANT_AUTO_CONFIG),
-                    target = target,
-                )
-            ) {
-                return@post
-            }
-            val binding = assistantBindingFor(target) ?: return@post
             val resolvedUserId = userId ?: resolveCurrentUserId()
+            val selection = selectionRequest ?: readSelectionRequest(context, resolvedUserId)
+            if (!isSelectionCurrent(context, resolvedUserId, selection) || target == PowerAssistantTarget.OEM) return@post
+            val binding = assistantBindingFor(target) ?: return@post
             configureAssistantForUser(
                 context = context,
                 userId = resolvedUserId,
@@ -389,6 +415,7 @@ internal object AssistantManager {
                 handler = handler,
                 forceRefresh = forceRefresh,
                 rebuildWhenVerified = rebuildWhenVerified,
+                selectionRequest = selection,
             )
         } catch (exception: Exception) {
             logger.errorThrottled(
@@ -404,23 +431,30 @@ internal object AssistantManager {
         userId: Int? = null,
         forceRefresh: Boolean = true,
         rebuildWhenVerified: Boolean = true,
+        explicitSelection: Boolean = false,
     ) {
+        val resolvedUserId = userId ?: resolveCurrentUserId()
         val target = Prefs.powerAssistantTarget()
         val autoConfigEnabled = Prefs.isEnabled(Prefs.Keys.ASSISTANT_AUTO_CONFIG)
-        when (assistantSelectionAction(autoConfigEnabled, target)) {
+        val selection = readSelectionRequest(context, resolvedUserId, explicitSelection)
+        if (!isSelectionCurrent(context, resolvedUserId, selection)) return
+        val owner = getSecureStringForUser(context.contentResolver, MANAGED_TARGET_SETTING, resolvedUserId)
+        when (assistantSelectionAction(autoConfigEnabled, target, selection.explicit, !owner.isNullOrEmpty())) {
             AssistantSelectionAction.RESTORE_OEM -> scheduleOemAssistantRestoration(
                 context = context,
-                userId = userId,
+                userId = resolvedUserId,
                 logger = logger,
                 handler = systemHandler,
+                selectionRequest = selection,
             )
             AssistantSelectionAction.CONFIGURE_MANAGED -> scheduleAssistantConfiguration(
                 context = context,
-                userId = userId,
+                userId = resolvedUserId,
                 logger = logger,
                 handler = systemHandler,
                 forceRefresh = forceRefresh,
                 rebuildWhenVerified = rebuildWhenVerified,
+                selectionRequest = selection,
             )
             AssistantSelectionAction.NONE -> Unit
         }
@@ -431,102 +465,87 @@ internal object AssistantManager {
         userId: Int?,
         logger: ModuleLogger,
         handler: Handler,
+        selectionRequest: SelectionRequest? = null,
     ): Boolean = handler.post {
         if (Prefs.powerAssistantTarget() != PowerAssistantTarget.OEM) return@post
-        restoreOemAssistantForUser(
+        val resolvedUserId = userId ?: resolveCurrentUserId()
+        val selection = selectionRequest ?: readSelectionRequest(context, resolvedUserId)
+        if (!isSelectionCurrent(context, resolvedUserId, selection)) return@post
+        if (!selection.explicit) {
+            if (!Prefs.isEnabled(Prefs.Keys.ASSISTANT_AUTO_CONFIG) ||
+                !hasOwnedAssistantState(context, resolvedUserId)) return@post
+        }
+        val binding = resolveOemAssistantBinding(context, logger) ?: return@post
+        configureAssistantForUser(
             context = context,
-            userId = userId ?: resolveCurrentUserId(),
+            userId = resolvedUserId,
+            binding = binding,
             logger = logger,
             handler = handler,
+            forceRefresh = false,
+            rebuildWhenVerified = true,
+            selectionRequest = selection,
         )
     }
 
-    private fun restoreOemAssistantForUser(
+    private fun readSelectionRequest(
         context: Context,
         userId: Int,
-        logger: ModuleLogger,
-        handler: Handler,
-    ) {
-        val configurationKey = ConfigurationKey(userId, PowerAssistantTarget.OEM)
-        if (!beginConfiguration(configurationKey)) return
-        try {
-            val managedSettings = hasManagedAssistantSettings(context, userId)
-            val managedRole = hasManagedAssistantRole(context, userId)
-            if (!managedSettings && !managedRole) {
-                finishConfiguration(configurationKey)
-                return
-            }
+        explicitSelection: Boolean = false,
+    ): SelectionRequest {
+        val request = Prefs.getString(SELECTION_REQUEST_KEY)
+        val scopedRequest = assistantSelectionRequestForUser(request, userId)
+        val consumed = getSecureStringForUser(context.contentResolver, CONSUMED_REQUEST_SETTING, userId)
+        return SelectionRequest(
+            target = Prefs.powerAssistantTarget(),
+            requestId = request,
+            explicit = (scopedRequest != null && scopedRequest != consumed) ||
+                (request.isBlank() && explicitSelection),
+        )
+    }
 
-            if (managedSettings) {
-                updateSecureString(
-                    resolver = context.contentResolver,
-                    key = ModuleConfig.SECURE_ASSISTANT,
-                    targetValue = null,
-                    userId = userId,
-                    forceRefresh = false,
-                )
-                updateSecureString(
-                    resolver = context.contentResolver,
-                    key = ModuleConfig.SECURE_VOICE_INTERACTION_SERVICE,
-                    targetValue = null,
-                    userId = userId,
-                    forceRefresh = false,
-                )
-            }
+    private fun isSelectionCurrent(context: Context, userId: Int, selection: SelectionRequest): Boolean {
+        if (selection.target != Prefs.powerAssistantTarget() ||
+            selection.requestId != Prefs.getString(SELECTION_REQUEST_KEY)) return false
+        if (selection.requestId.isNotBlank() &&
+            assistantSelectionRequestForUser(selection.requestId, userId) == null) return false
+        if (selection.explicit) return true
+        if (!Prefs.isEnabled(Prefs.Keys.ASSISTANT_AUTO_CONFIG)) return false
+        return selection.target != PowerAssistantTarget.OEM ||
+            !getSecureStringForUser(context.contentResolver, MANAGED_TARGET_SETTING, userId).isNullOrBlank()
+    }
 
-            if (!managedRole) {
-                completeOemAssistantRestoration(context, userId, logger, roleChanged = false)
-                return
-            }
-            clearAssistantRoleAsync(
-                context = context,
-                userId = userId,
-                logger = logger,
-                handler = handler,
-                configurationKey = configurationKey,
-            ) { roleChanged ->
-                completeOemAssistantRestoration(context, userId, logger, roleChanged)
-            }
-        } catch (exception: Exception) {
-            finishConfiguration(configurationKey)
-            logger.warnThrottled("assistant_oem_restoration_failed") {
-                "AssistantManager: 恢复系统默认助理失败，type=${exception.safeLogType()}"
-            }
+    private fun acknowledgeSelection(context: Context, userId: Int, selection: SelectionRequest) {
+        if (!isSelectionCurrent(context, userId, selection)) return
+        putSecureStringForUser(
+            context.contentResolver, MANAGED_TARGET_SETTING,
+            selection.target.persistedValue.takeUnless { selection.target == PowerAssistantTarget.OEM }, userId,
+        )
+        if (selection.requestId.isNotBlank()) {
+            putSecureStringForUser(context.contentResolver, CONSUMED_REQUEST_SETTING, selection.requestId, userId)
         }
     }
 
-    private fun completeOemAssistantRestoration(
-        context: Context,
-        userId: Int,
-        logger: ModuleLogger,
-        roleChanged: Boolean,
-    ) {
-        val configurationKey = ConfigurationKey(userId, PowerAssistantTarget.OEM)
-        try {
-            if (Prefs.powerAssistantTarget() != PowerAssistantTarget.OEM) {
-                invalidateVerificationCache()
-                systemContext?.let { schedulePreferenceSelection(it, logger) }
-                return
-            }
-            invalidateVerificationCache()
-            if (hasManagedAssistantRole(context, userId) ||
-                hasManagedAssistantSettings(context, userId)
-            ) {
-                logger.warnThrottled("assistant_oem_restoration_incomplete") {
-                    "AssistantManager: ColorOS 原生助理恢复后仍存在托管绑定"
-                }
-                return
-            }
-            rebuildVoiceInteractionImplementation(
-                logger = logger,
-                userId = userId,
-                force = roleChanged,
-                logFailures = false,
-            )
-            logger.debug { "AssistantManager: 已恢复 ColorOS 原生助理选择" }
-        } finally {
-            finishConfiguration(configurationKey)
+    private fun hasOwnedAssistantState(context: Context, userId: Int): Boolean {
+        val owner = getSecureStringForUser(context.contentResolver, MANAGED_TARGET_SETTING, userId)
+        val target = PowerAssistantTarget.entries.firstOrNull { it.persistedValue == owner } ?: return false
+        val binding = assistantBindingFor(target) ?: return false
+        return hasAssistantSettings(context, userId, binding) || hasAssistantRole(context, userId, binding)
+    }
+
+    private fun resolveOemAssistantBinding(context: Context, logger: ModuleLogger): AssistantBinding? {
+        // ColorOS exposes an ASSIST Activity, not a VoiceInteractionService. Never invent a VIS.
+        val component = runCatching {
+            context.packageManager.resolveActivity(
+                Intent(Intent.ACTION_ASSIST).setPackage(ModuleConfig.BREENO_PACKAGE),
+                android.content.pm.PackageManager.MATCH_DEFAULT_ONLY,
+            )?.activityInfo?.let { ComponentName(it.packageName, it.name) }
+        }.getOrNull()
+        if (component == null || component.packageName != ModuleConfig.BREENO_PACKAGE) {
+            logger.warnThrottled("assistant_oem_entry_missing") { "AssistantManager: 无法解析小布 ASSIST 入口，保留现有默认助理" }
+            return null
         }
+        return AssistantBinding(PowerAssistantTarget.OEM, component.packageName, component.flattenToString(), "小布")
     }
 
     private fun configureAssistantForUser(
@@ -537,7 +556,9 @@ internal object AssistantManager {
         handler: Handler,
         forceRefresh: Boolean,
         rebuildWhenVerified: Boolean,
+        selectionRequest: SelectionRequest,
     ) {
+        if (!isSelectionCurrent(context, userId, selectionRequest)) return
         val configurationKey = ConfigurationKey(userId, binding.target)
         if (!beginConfiguration(configurationKey)) {
             logger.debug { "AssistantManager: 已有校正任务，跳过重复请求" }
@@ -546,7 +567,7 @@ internal object AssistantManager {
 
         try {
             val now = SystemClock.uptimeMillis()
-            if (!forceRefresh &&
+            if (!selectionRequest.explicit && !forceRefresh &&
                 userId == lastVerifiedUserId &&
                 binding.target == lastVerifiedTarget &&
                 now - lastVerifiedUptime < CONFIG_VERIFY_COOLDOWN_MS
@@ -566,6 +587,7 @@ internal object AssistantManager {
             val roleOk = hasAssistantRole(context, userId, binding)
             val settingsOk = hasAssistantSettings(context, userId, binding)
             if (!forceRefresh && roleOk && settingsOk) {
+                acknowledgeSelection(context, userId, selectionRequest)
                 markVerified(userId, binding.target, now)
                 if (rebuildWhenVerified) {
                     rebuildVoiceInteractionImplementation(
@@ -579,7 +601,7 @@ internal object AssistantManager {
                 return
             }
 
-            if (forceRefresh &&
+            if (!selectionRequest.explicit && forceRefresh &&
                 userId == lastForcedRefreshUserId &&
                 binding.target == lastForcedRefreshTarget &&
                 now - lastForcedRefreshUptime < REFRESH_COOLDOWN_MS
@@ -621,10 +643,14 @@ internal object AssistantManager {
                     forceRefresh = forceRefresh,
                     rebuildWhenVerified = rebuildWhenVerified,
                     roleChanged = roleChanged,
+                    selectionRequest = selectionRequest,
                 )
             }
 
             if (!roleOk) {
+                if (binding.target != PowerAssistantTarget.OEM) {
+                    putSecureStringForUser(context.contentResolver, MANAGED_TARGET_SETTING, binding.target.persistedValue, userId)
+                }
                 addAssistantRoleAsync(
                     context = context,
                     userId = userId,
@@ -653,33 +679,17 @@ internal object AssistantManager {
         forceRefresh: Boolean,
         rebuildWhenVerified: Boolean,
         roleChanged: Boolean,
+        selectionRequest: SelectionRequest,
     ) {
         val configurationKey = ConfigurationKey(userId, binding.target)
         try {
             // RoleManager 请求无法取消；回调到达时必须确认目标和开关仍与入队时一致。
-            val autoConfigEnabled = Prefs.isEnabled(Prefs.Keys.ASSISTANT_AUTO_CONFIG)
-            val currentTarget = Prefs.powerAssistantTarget()
-            if (!isAssistantConfigurationCurrent(
-                    autoConfigEnabled = autoConfigEnabled,
-                    expectedTarget = binding.target,
-                    currentTarget = currentTarget,
-                )
-            ) {
+            if (!isSelectionCurrent(context, userId, selectionRequest)) {
                 invalidateVerificationCache()
-                if (currentTarget == PowerAssistantTarget.OEM) {
-                    scheduleOemAssistantRestoration(context, userId, logger, handler)
-                } else if (shouldConfigureAssistant(autoConfigEnabled, currentTarget)) {
-                    scheduleAssistantConfiguration(
-                        context = context,
-                        userId = userId,
-                        logger = logger,
-                        handler = handler,
-                        forceRefresh = false,
-                        rebuildWhenVerified = true,
-                    )
-                }
                 return
             }
+            // A denied role request must not overwrite a different assistant selected by the user.
+            if (!hasAssistantRole(context, userId, binding)) return
             val settingsChanged = updateAssistantSettings(
                 context = context,
                 userId = userId,
@@ -687,27 +697,8 @@ internal object AssistantManager {
                 forceRefresh = forceRefresh,
                 logger = logger
             )
-            val targetAfterWrite = Prefs.powerAssistantTarget()
-            val autoConfigAfterWrite = Prefs.isEnabled(Prefs.Keys.ASSISTANT_AUTO_CONFIG)
-            if (!isAssistantConfigurationCurrent(
-                    autoConfigEnabled = autoConfigAfterWrite,
-                    expectedTarget = binding.target,
-                    currentTarget = targetAfterWrite,
-                )
-            ) {
+            if (!isSelectionCurrent(context, userId, selectionRequest)) {
                 invalidateVerificationCache()
-                if (targetAfterWrite == PowerAssistantTarget.OEM) {
-                    scheduleOemAssistantRestoration(context, userId, logger, handler)
-                } else if (shouldConfigureAssistant(autoConfigAfterWrite, targetAfterWrite)) {
-                    scheduleAssistantConfiguration(
-                        context = context,
-                        userId = userId,
-                        logger = logger,
-                        handler = handler,
-                        forceRefresh = false,
-                        rebuildWhenVerified = true,
-                    )
-                }
                 return
             }
             val verified = hasAssistantRole(context, userId, binding) &&
@@ -719,6 +710,7 @@ internal object AssistantManager {
             }
 
             markVerified(userId, binding.target, SystemClock.uptimeMillis())
+            acknowledgeSelection(context, userId, selectionRequest)
             if (roleChanged || settingsChanged || forceRefresh || rebuildWhenVerified) {
                 rebuildVoiceInteractionImplementation(
                     logger = logger,
@@ -741,6 +733,10 @@ internal object AssistantManager {
             }
         } finally {
             finishConfiguration(configurationKey)
+            // Release in-flight ownership before reconciling a newer choice (especially OEM).
+            if (!isSelectionCurrent(context, userId, selectionRequest)) {
+                handler.post { schedulePreferenceSelection(context, logger, userId, forceRefresh = false) }
+            }
         }
     }
 
@@ -927,7 +923,9 @@ internal object AssistantManager {
         changed = updateSecureString(
             resolver,
             ModuleConfig.SECURE_VOICE_INTERACTION_SERVICE,
-            binding.componentName,
+            // Empty means the user explicitly chose an activity-based assistant.
+            // Null is uninitialized and initForUser may pick another installed VIS.
+            if (binding.target == PowerAssistantTarget.OEM) "" else binding.componentName,
             userId,
             forceRefresh
         ) || changed
@@ -1008,7 +1006,7 @@ internal object AssistantManager {
                 resolver,
                 ModuleConfig.SECURE_VOICE_INTERACTION_SERVICE,
                 userId
-            ) == binding.componentName
+            ).orEmpty() == if (binding.target == PowerAssistantTarget.OEM) "" else binding.componentName
     }
 
     private fun getSecureStringForUser(
@@ -1138,6 +1136,38 @@ internal object AssistantManager {
     private fun captureSystemContext(serviceInstance: Any) {
         val context = HookSupport.getFieldValue(serviceInstance, "mContext") as? Context ?: return
         systemContext = context
+        registerOwnPackageRecovery(context)
+    }
+
+    private fun registerOwnPackageRecovery(context: Context) {
+        if (packageReceiverRegistered) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(receiverContext: Context, intent: Intent) {
+                if (intent.action != Intent.ACTION_PACKAGE_REPLACED && intent.action != Intent.ACTION_PACKAGE_ADDED) return
+                if (intent.data?.scheme != "package" || intent.data?.schemeSpecificPart != ModuleConfig.ETA_PACKAGE) return
+                val uid = intent.getIntExtra(Intent.EXTRA_UID, -1)
+                if (uid < 0) return
+                val userId = android.os.UserHandle.getUserHandleForUid(uid).hashCode()
+                if (userId != resolveCurrentUserId()) return
+                // Updating the app never grants fresh consent or replays a completed manual choice.
+                if (Prefs.powerAssistantTarget() != PowerAssistantTarget.ETA ||
+                    !Prefs.isEnabled(Prefs.Keys.ASSISTANT_AUTO_CONFIG) ||
+                    getSecureStringForUser(context.contentResolver, MANAGED_TARGET_SETTING, userId) != PowerAssistantTarget.ETA.persistedValue) return
+                val logger = preferenceLogger ?: return
+                schedulePreferenceSelection(context, logger, userId, forceRefresh = true)
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_REPLACED)
+            addAction(Intent.ACTION_PACKAGE_ADDED)
+            addDataScheme("package")
+        }
+        runCatching {
+            context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+            packageReceiverRegistered = true
+        }.onFailure {
+            preferenceLogger?.warnThrottled("assistant_update_receiver_failed") { "AssistantManager: 无法注册本包更新恢复监听" }
+        }
     }
 
     private fun findSoftwareHotwordSession(impl: Any): Any? {

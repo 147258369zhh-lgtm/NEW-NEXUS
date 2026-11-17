@@ -77,8 +77,18 @@ internal class SpeechPcmOutput : SpeechAudioOutput {
     }
 
     @Synchronized override fun close() {
-        track?.let { it.pause(); it.flush(); it.release() }
+        val audio = track ?: return
         track = null
+        var failure: Throwable? = null
+        fun attempt(action: () -> Unit) {
+            try { action() } catch (error: Throwable) {
+                if (failure == null) failure = error else failure?.addSuppressed(error)
+            }
+        }
+        attempt { audio.pause() }
+        attempt { audio.flush() }
+        attempt { audio.release() }
+        failure?.let { throw it }
     }
 
     private companion object {

@@ -1,0 +1,2474 @@
+<!doctype html>
+<html lang="zh-CN" data-mode="light" data-skin="classic" data-type="system" data-motion="on">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>NEXA UI Foundation v1.4 · 双皮肤、连续曲率与动态语音基准</title>
+  <style>
+    :root {
+      --font-ui: "Segoe UI Variable", "HarmonyOS Sans SC", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+      --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+      --accent: #66b8ff;
+      --accent-2: #8f7dff;
+      --positive: #44d7a8;
+      --warning: #f3b84b;
+      --danger: #ff7584;
+      --info: #6eb8ff;
+      --plan: #9b83ff;
+      --goal: #53a9ff;
+      --auto: #3ed7a2;
+      --smart: #f3ad46;
+      --manual: #ff6f7d;
+      --canvas: #07111b;
+      --canvas-2: #101d2b;
+      --surface: rgba(19, 31, 45, .72);
+      --surface-strong: rgba(24, 38, 55, .88);
+      --surface-soft: rgba(255, 255, 255, .055);
+      --surface-solid: #152438;
+      --surface-hover: rgba(255, 255, 255, .08);
+      --field: rgba(7, 14, 24, .48);
+      --line: rgba(255, 255, 255, .10);
+      --line-strong: rgba(255, 255, 255, .16);
+      --highlight: rgba(255, 255, 255, .36);
+      --shadow: rgba(0, 0, 0, .36);
+      --text: #f4f8fc;
+      --text-2: #a9b7c7;
+      --text-3: #74869a;
+      --glass-alpha: .70;
+      --glass-blur: 22px;
+      --glass-saturation: 1.35;
+      --specular: .32;
+      --edge: .85;
+      --radius-xs: 8px;
+      --radius-sm: 12px;
+      --radius-md: 16px;
+      --radius-lg: 20px;
+      --radius-xl: 24px;
+      --radius-sheet: 28px;
+      --radius-hero: 36px;
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 20px;
+      --space-6: 24px;
+      --space-8: 32px;
+      --space-10: 40px;
+      --space-12: 48px;
+      --motion-press: 90ms;
+      --motion-state: 180ms;
+      --motion-enter: 240ms;
+      --motion-overlay: 300ms;
+      --motion-scene: 380ms;
+      --ease-standard: cubic-bezier(.2, 0, 0, 1);
+      --ease-decelerate: cubic-bezier(.05, .7, .1, 1);
+      --ease-accelerate: cubic-bezier(.3, 0, .8, .15);
+      --page-width: 1480px;
+      --rail-width: 252px;
+    }
+
+    html[data-skin="classic"] {
+      --accent: #2f80ed;
+      --accent-2: #5aa7ff;
+      --glass-alpha: .96;
+      --glass-blur: 0px;
+      --glass-saturation: 1;
+      --specular: .10;
+      --edge: .42;
+    }
+
+    html[data-skin="liquid"] {
+      --accent: #69bcff;
+      --accent-2: #9b82ff;
+      --glass-alpha: .70;
+      --glass-blur: 22px;
+      --glass-saturation: 1.35;
+      --specular: .46;
+      --edge: 1;
+    }
+
+    html[data-mode="light"] {
+      --canvas: #edf4fb;
+      --canvas-2: #dbe9f5;
+      --surface: rgba(255, 255, 255, .64);
+      --surface-strong: rgba(255, 255, 255, .86);
+      --surface-soft: rgba(20, 43, 68, .055);
+      --surface-solid: #f8fbff;
+      --surface-hover: rgba(15, 43, 70, .065);
+      --field: rgba(255, 255, 255, .52);
+      --line: rgba(28, 56, 84, .10);
+      --line-strong: rgba(28, 56, 84, .17);
+      --highlight: rgba(255, 255, 255, .92);
+      --shadow: rgba(35, 66, 100, .18);
+      --text: #102238;
+      --text-2: #4f6479;
+      --text-3: #71869a;
+      --positive: #068864;
+      --warning: #b27406;
+      --danger: #d23c50;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 8% 2%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 28rem),
+        radial-gradient(circle at 92% 22%, color-mix(in srgb, var(--accent-2) 21%, transparent), transparent 30rem),
+        linear-gradient(145deg, var(--canvas), var(--canvas-2));
+      font-family: var(--font-ui);
+      font-size: 15px;
+      line-height: 1.72;
+      letter-spacing: .006em;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      overflow-x: hidden;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -3;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(255,255,255,.027) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.027) 1px, transparent 1px);
+      background-size: 40px 40px;
+      mask-image: linear-gradient(to bottom, black, transparent 85%);
+    }
+
+    .ambient {
+      position: fixed;
+      inset: 0;
+      z-index: -2;
+      overflow: hidden;
+      pointer-events: none;
+      filter: blur(14px) saturate(1.2);
+      opacity: .72;
+    }
+    .ambient span {
+      position: absolute;
+      width: 34vw;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      opacity: .20;
+      animation: drift 18s ease-in-out infinite alternate;
+    }
+    .ambient span:nth-child(1) { left: -8vw; top: 16vh; background: var(--accent); }
+    .ambient span:nth-child(2) { right: -4vw; top: 48vh; background: var(--accent-2); animation-delay: -7s; }
+    .ambient span:nth-child(3) { left: 38vw; bottom: -18vw; background: var(--positive); animation-delay: -11s; }
+    @keyframes drift { to { transform: translate3d(7vw, -4vh, 0) scale(1.18); } }
+
+    a { color: inherit; }
+    button, input, select { font: inherit; }
+    button { color: inherit; }
+    ::selection { color: #07111b; background: var(--accent); }
+
+    .site-header {
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      height: 72px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-4);
+      padding: 10px max(var(--space-4), calc((100vw - var(--page-width)) / 2));
+      border-bottom: 1px solid var(--line);
+      background: color-mix(in srgb, var(--canvas) 70%, transparent);
+      backdrop-filter: blur(24px) saturate(1.3);
+      -webkit-backdrop-filter: blur(24px) saturate(1.3);
+    }
+
+    .brand { display: flex; align-items: center; gap: 12px; min-width: 190px; }
+    .brand-mark {
+      width: 38px;
+      height: 38px;
+      border-radius: 13px;
+      display: grid;
+      place-items: center;
+      font-weight: 700;
+      font-size: 18px;
+      letter-spacing: -.05em;
+      color: #07111b;
+      background: linear-gradient(145deg, #d9f1ff 0%, var(--accent) 48%, var(--accent-2));
+      border: 1px solid var(--highlight);
+      box-shadow: 0 8px 24px color-mix(in srgb, var(--accent) 24%, transparent), inset 0 1px 0 rgba(255,255,255,.75);
+    }
+    .brand-copy strong { display: block; line-height: 1.2; font-size: 15px; letter-spacing: .08em; }
+    .brand-copy small { display: block; color: var(--text-3); line-height: 1.4; font-size: 10px; letter-spacing: .13em; text-transform: uppercase; }
+
+    .header-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .control-group {
+      display: flex;
+      gap: 3px;
+      padding: 3px;
+      border-radius: 999px;
+      background: var(--surface-soft);
+      border: 1px solid var(--line);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, var(--highlight) 34%, transparent);
+    }
+    .control-btn {
+      border: 0;
+      min-width: 38px;
+      min-height: 34px;
+      padding: 5px 11px;
+      border-radius: 999px;
+      color: var(--text-2);
+      background: transparent;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      transition: color var(--motion-state) var(--ease-standard), background var(--motion-state) var(--ease-standard), transform var(--motion-press) var(--ease-standard);
+    }
+    .control-btn:hover { color: var(--text); background: var(--surface-hover); }
+    .control-btn:active { transform: scale(.96); }
+    .control-btn[aria-pressed="true"], .control-btn.is-active {
+      color: var(--text);
+      background: color-mix(in srgb, var(--accent) 22%, var(--surface-strong));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.20), 0 5px 12px color-mix(in srgb, var(--accent) 13%, transparent);
+    }
+
+    .layout {
+      width: min(var(--page-width), calc(100% - 40px));
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: var(--rail-width) minmax(0, 1fr);
+      gap: 36px;
+      padding: 32px 0 96px;
+    }
+    .rail { position: relative; }
+    .rail-inner { position: sticky; top: 104px; max-height: calc(100vh - 128px); overflow: auto; padding-right: 8px; }
+    .rail-label { margin: 0 12px 10px; color: var(--text-3); font-size: 10px; font-weight: 650; letter-spacing: .16em; text-transform: uppercase; }
+    .rail-nav { display: grid; gap: 4px; }
+    .rail-link {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 42px;
+      padding: 7px 12px;
+      text-decoration: none;
+      color: var(--text-2);
+      border-radius: var(--radius-sm);
+      transition: color var(--motion-state) var(--ease-standard), background var(--motion-state) var(--ease-standard), transform var(--motion-press) var(--ease-standard);
+    }
+    .rail-link:hover { color: var(--text); background: var(--surface-soft); }
+    .rail-link:active { transform: scale(.985); }
+    .rail-link.is-active { color: var(--text); background: color-mix(in srgb, var(--accent) 13%, var(--surface-soft)); }
+    .rail-link .num { width: 28px; color: var(--text-3); font-family: var(--font-mono); font-size: 10px; }
+    .rail-link.is-active .num { color: var(--accent); }
+    .rail-foot { margin: 24px 0 0; padding: 16px; border-radius: var(--radius-md); background: var(--surface-soft); border: 1px solid var(--line); color: var(--text-3); font-size: 12px; line-height: 1.65; }
+
+    main { min-width: 0; }
+    section { scroll-margin-top: 104px; margin-bottom: 88px; }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 14px;
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    .eyebrow::before { content: ""; width: 20px; height: 1px; background: currentColor; opacity: .8; }
+    h1, h2, h3, h4, p { margin-top: 0; }
+    h1 { margin-bottom: 22px; font-size: clamp(42px, 5.2vw, 78px); line-height: .98; letter-spacing: -.055em; font-weight: 650; max-width: 860px; }
+    h2 { margin-bottom: 14px; font-size: clamp(30px, 3vw, 46px); line-height: 1.12; letter-spacing: -.035em; font-weight: 620; }
+    h3 { margin-bottom: 10px; font-size: 21px; line-height: 1.35; letter-spacing: -.015em; font-weight: 620; }
+    h4 { margin-bottom: 8px; font-size: 15px; line-height: 1.45; font-weight: 620; }
+    .lead { max-width: 760px; margin-bottom: 28px; color: var(--text-2); font-size: 18px; line-height: 1.78; }
+    .section-head { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 28px; }
+    .section-head p { max-width: 560px; margin: 0 0 4px; color: var(--text-2); }
+    .muted { color: var(--text-2); }
+    .tiny { color: var(--text-3); font-size: 12px; }
+    .mono { font-family: var(--font-mono); }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.16fr) minmax(320px, .84fr);
+      gap: 54px;
+      align-items: center;
+      min-height: calc(100vh - 150px);
+      padding: 50px 0 66px;
+    }
+    .hero-copy { position: relative; z-index: 1; }
+    .hero-sub { max-width: 700px; color: var(--text-2); font-size: 18px; line-height: 1.8; }
+    .hero-actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 32px; }
+    .button {
+      min-height: 48px;
+      padding: 0 18px;
+      border-radius: var(--radius-md);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      border: 1px solid transparent;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 620;
+      cursor: pointer;
+      transition: transform var(--motion-press) var(--ease-standard), background var(--motion-state) var(--ease-standard), border-color var(--motion-state) var(--ease-standard), box-shadow var(--motion-state) var(--ease-standard), color var(--motion-state) var(--ease-standard);
+    }
+    .button:hover { transform: translateY(-1px); }
+    .button:active { transform: scale(.975); }
+    .button:focus-visible, .control-btn:focus-visible, .rail-link:focus-visible, .segmented button:focus-visible, .icon-button:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .button-primary {
+      color: #06101b;
+      background: linear-gradient(145deg, color-mix(in srgb, white 28%, var(--accent)), var(--accent));
+      box-shadow: 0 10px 30px color-mix(in srgb, var(--accent) 22%, transparent), inset 0 1px 0 rgba(255,255,255,.72), inset 0 -1px 0 rgba(0,0,0,.10);
+    }
+    .button-glass {
+      color: var(--text);
+      background:
+        linear-gradient(145deg, rgba(255,255,255,.13), transparent 42%),
+        color-mix(in srgb, var(--surface-strong) 80%, transparent);
+      border-color: var(--line-strong);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, var(--highlight) var(--edge), transparent), 0 8px 24px var(--shadow);
+      backdrop-filter: blur(18px) saturate(1.2);
+    }
+    .button-quiet { color: var(--text-2); background: transparent; }
+    .button-quiet:hover { color: var(--text); background: var(--surface-soft); }
+    .button-danger { color: #fff; background: color-mix(in srgb, var(--danger) 82%, #171a22); box-shadow: inset 0 1px 0 rgba(255,255,255,.26), 0 10px 22px color-mix(in srgb, var(--danger) 15%, transparent); }
+
+    .hero-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; max-width: 650px; margin-top: 36px; }
+    .stat { padding: 15px 16px; border-radius: var(--radius-md); background: var(--surface-soft); border: 1px solid var(--line); }
+    .stat strong { display: block; font-size: 21px; line-height: 1.15; font-weight: 650; }
+    .stat span { display: block; margin-top: 4px; color: var(--text-3); font-size: 11px; }
+
+    .phone {
+      position: relative;
+      width: min(100%, 390px);
+      margin: 0 auto;
+      padding: 18px;
+      overflow: hidden;
+      border-radius: 42px;
+      border: 1px solid var(--line-strong);
+      background:
+        linear-gradient(145deg, rgba(255,255,255,.17), transparent 30%),
+        rgba(4, 10, 17, .82);
+      box-shadow: 0 42px 100px rgba(0,0,0,.34), inset 0 1px 0 rgba(255,255,255,.38), inset 0 0 0 5px rgba(0,0,0,.18);
+      isolation: isolate;
+    }
+    html[data-mode="light"] .phone { background: linear-gradient(145deg,rgba(255,255,255,.9),rgba(220,234,245,.76)); color: #0b2036; }
+    .phone::before {
+      content: "";
+      position: absolute;
+      z-index: -1;
+      width: 220px;
+      aspect-ratio: 1;
+      right: -70px;
+      top: 90px;
+      border-radius: 50%;
+      background: var(--accent);
+      filter: blur(60px);
+      opacity: .28;
+    }
+    .phone::after {
+      content: "";
+      position: absolute;
+      z-index: -1;
+      width: 200px;
+      aspect-ratio: 1;
+      left: -80px;
+      bottom: 160px;
+      border-radius: 50%;
+      background: var(--accent-2);
+      filter: blur(62px);
+      opacity: .24;
+    }
+    .phone-status { display: flex; justify-content: space-between; padding: 3px 6px 13px; color: var(--text-3); font-size: 10px; font-weight: 650; }
+    .phone-top { display: grid; grid-template-columns: 40px 1fr 40px; align-items: center; gap: 8px; }
+    .phone-title { justify-self: center; min-width: 186px; padding: 4px; border-radius: 999px; background: rgba(255,255,255,.075); border: 1px solid var(--line); display: flex; }
+    .phone-title span { flex: 1; text-align: center; padding: 8px 13px; border-radius: 999px; font-size: 12px; color: var(--text-2); }
+    .phone-title span:first-child { color: var(--text); background: rgba(255,255,255,.08); box-shadow: inset 0 1px 0 rgba(255,255,255,.13); }
+    .icon-button {
+      width: 44px;
+      height: 44px;
+      min-width: 44px;
+      border-radius: var(--radius-sm);
+      border: 1px solid transparent;
+      display: inline-grid;
+      place-items: center;
+      color: var(--text-2);
+      background: transparent;
+      cursor: pointer;
+      transition: transform var(--motion-press) var(--ease-standard), color var(--motion-state) var(--ease-standard), background var(--motion-state) var(--ease-standard), border-color var(--motion-state) var(--ease-standard);
+    }
+    .icon-button:hover { color: var(--text); background: var(--surface-soft); border-color: var(--line); }
+    .icon-button:active { transform: scale(.93); }
+    .icon { width: 21px; height: 21px; display: block; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+    .chat-area { position: relative; min-height: 315px; padding: 24px 8px 16px; }
+    .topic-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 16px; }
+    .topic-chip { padding: 10px 12px; border-radius: 12px; font-size: 11px; color: var(--text-2); background: rgba(255,255,255,.045); border: 1px solid var(--line); }
+    .message { max-width: 88%; margin-left: auto; padding: 12px 14px; border-radius: 18px 18px 5px 18px; font-size: 13px; background: color-mix(in srgb, var(--accent) 18%, rgba(255,255,255,.06)); border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent); }
+    .message small { display: block; margin-top: 5px; color: var(--text-3); font-size: 9px; }
+    .composer-wrap { position: relative; z-index: 4; padding: 26px 0 10px; background: transparent; }
+    .new-chat-pill {
+      position: absolute;
+      right: 10px;
+      top: -5px;
+      min-height: 42px;
+      padding: 0 15px;
+      border-radius: 999px;
+      border: 1px solid var(--line-strong);
+      color: var(--text);
+      background: rgba(7, 14, 24, .10);
+      backdrop-filter: blur(16px) saturate(1.34);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.23), 0 8px 18px rgba(0,0,0,.12);
+      font-size: 12px;
+      font-weight: 620;
+    }
+    html[data-mode="light"] .new-chat-pill { background: rgba(255,255,255,.16); }
+    .composer {
+      position: relative;
+      padding: 15px 15px 11px;
+      border-radius: 22px;
+      border: 1px solid var(--line-strong);
+      background:
+        linear-gradient(155deg, rgba(255,255,255,.11), transparent 36%),
+        color-mix(in srgb, var(--surface-strong) calc(var(--glass-alpha) * 100%), transparent);
+      backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+      box-shadow: inset 0 1px 0 color-mix(in srgb, var(--highlight) var(--edge), transparent), inset 0 -1px 0 rgba(0,0,0,.14), 0 18px 36px rgba(0,0,0,.20);
+    }
+    .composer-copy { min-height: 42px; color: var(--text-3); font-size: 14px; }
+    .composer-meta { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; margin: 3px 0 9px; }
+    .mode-tag { display: inline-flex; align-items: center; gap: 5px; min-height: 26px; padding: 0 9px; border-radius: 999px; font-size: 9px; font-weight: 700; letter-spacing: .04em; border: 1px solid currentColor; }
+    .mode-tag.plan { color: var(--plan); background: color-mix(in srgb, var(--plan) 12%, transparent); }
+    .mode-tag.goal { color: var(--goal); background: color-mix(in srgb, var(--goal) 12%, transparent); }
+    .mode-tag.auto { color: var(--auto); background: color-mix(in srgb, var(--auto) 12%, transparent); }
+    .mode-tag.smart { color: var(--smart); background: color-mix(in srgb, var(--smart) 12%, transparent); }
+    .composer-bar { display: grid; grid-template-columns: 40px 40px 40px 1fr 40px 40px 46px; align-items: center; gap: 3px; }
+    .composer-icon { width: 40px; height: 40px; border: 0; border-radius: 13px; display: grid; place-items: center; background: transparent; color: var(--text-2); cursor: pointer; transition: background 160ms, transform 100ms, color 160ms; }
+    .composer-icon:hover { background: rgba(255,255,255,.07); color: var(--text); }
+    .composer-icon:active { transform: scale(.92); }
+    .context-meter { justify-self: center; width: 32px; height: 32px; padding: 3px; border-radius: 50%; background: conic-gradient(var(--positive) 0 57%, var(--warning) 62%, var(--danger) 68% 73%, rgba(255,255,255,.11) 73%); position: relative; }
+    .context-meter::after { content: ""; position: absolute; inset: 5px; border-radius: 50%; background: #101a26; }
+    html[data-mode="light"] .context-meter::after { background: #f3f8fc; }
+    .send-btn { width: 48px; height: 44px; border-radius: 15px; border: 1px solid rgba(255,255,255,.35); background: linear-gradient(145deg, #ccecff, var(--accent)); color: #07111b; display: grid; place-items: center; box-shadow: inset 0 1px 0 rgba(255,255,255,.7), 0 8px 20px color-mix(in srgb, var(--accent) 22%, transparent); }
+
+    .glass {
+      background:
+        linear-gradient(150deg, rgba(255,255,255,.12), transparent 38%),
+        color-mix(in srgb, var(--surface) calc(var(--glass-alpha) * 100%), transparent);
+      border: 1px solid var(--line);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, var(--highlight) var(--edge), transparent), 0 20px 60px var(--shadow);
+      backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+      -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
+    }
+    .panel { border-radius: var(--radius-xl); padding: var(--space-6); }
+    .card { border-radius: var(--radius-lg); padding: var(--space-5); background: var(--surface-soft); border: 1px solid var(--line); }
+    .card:hover { background: color-mix(in srgb, var(--surface-soft) 86%, var(--accent) 4%); }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: var(--space-4); }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: var(--space-4); }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: var(--space-3); }
+    .metric-card { padding: 22px; border-radius: var(--radius-lg); background: var(--surface-soft); border: 1px solid var(--line); }
+    .metric-card strong { display: block; font-size: 30px; letter-spacing: -.04em; line-height: 1.1; }
+    .metric-card span { color: var(--text-2); font-size: 12px; }
+    .metric-card.warn strong { color: var(--warning); }
+    .metric-card.accent strong { color: var(--accent); }
+
+    .problem-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .problem { min-height: 170px; padding: 20px; border-radius: var(--radius-lg); background: var(--surface-soft); border: 1px solid var(--line); }
+    .problem .index { color: var(--danger); font: 700 11px var(--font-mono); letter-spacing: .08em; }
+    .problem h3 { margin-top: 32px; font-size: 18px; }
+    .problem p { margin-bottom: 0; color: var(--text-2); font-size: 13px; }
+
+    .screenshot-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 24px; }
+    .screen-card { border-radius: var(--radius-lg); overflow: hidden; background: var(--surface-soft); border: 1px solid var(--line); }
+    .screen-card img { display: block; width: 100%; height: 420px; object-fit: cover; object-position: top; }
+    .screen-card figcaption { padding: 13px 14px 16px; color: var(--text-2); font-size: 11px; line-height: 1.55; }
+    .screen-card b { display: block; color: var(--text); font-size: 12px; }
+
+    .research-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 12px; }
+    .source-card { position: relative; min-height: 210px; padding: 20px; border-radius: var(--radius-lg); background: var(--surface-soft); border: 1px solid var(--line); text-decoration: none; transition: transform 180ms var(--ease-standard), background 180ms, border-color 180ms; }
+    .source-card:hover { transform: translateY(-2px); background: var(--surface-hover); border-color: var(--line-strong); }
+    .source-card .source-type { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 9px; text-transform: uppercase; letter-spacing: .1em; color: var(--accent); background: color-mix(in srgb, var(--accent) 11%, transparent); }
+    .source-card h3 { margin: 24px 0 8px; }
+    .source-card p { margin-bottom: 0; color: var(--text-2); font-size: 13px; }
+    .source-card .arrow { position: absolute; right: 18px; top: 18px; color: var(--text-3); }
+    .decision-note { margin-top: 16px; padding: 20px 22px; border-radius: var(--radius-lg); border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line)); background: color-mix(in srgb, var(--accent) 9%, var(--surface-soft)); display: grid; grid-template-columns: 44px 1fr; gap: 14px; }
+    .decision-note .badge { width: 44px; height: 44px; border-radius: 14px; display: grid; place-items: center; color: #06111b; background: var(--accent); font-weight: 800; }
+    .decision-note p { margin: 0; color: var(--text-2); }
+    .decision-note b { color: var(--text); }
+
+    .foundation-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; }
+    .foundation-card { padding: 24px; border-radius: var(--radius-xl); background: var(--surface-soft); border: 1px solid var(--line); }
+    .foundation-card h3 { display: flex; justify-content: space-between; gap: 12px; }
+    .foundation-card h3 code { color: var(--text-3); font: 600 10px var(--font-mono); }
+    .token-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .token-table th, .token-table td { padding: 9px 8px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+    .token-table th { color: var(--text-3); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; font-weight: 650; }
+    .token-table tr:last-child td { border-bottom: 0; }
+    .token-table code { color: var(--accent); font-family: var(--font-mono); font-size: 10px; }
+
+    .spacing-ruler { display: grid; gap: 10px; margin-top: 18px; }
+    .spacing-row { display: grid; grid-template-columns: 54px 1fr 48px; align-items: center; gap: 12px; font: 11px var(--font-mono); color: var(--text-3); }
+    .spacing-bar { height: 8px; border-radius: 99px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); width: calc(var(--n) * 1%); }
+    .type-spec { padding: 12px 0; border-bottom: 1px solid var(--line); }
+    .type-spec:last-child { border-bottom: 0; }
+    .type-spec strong { display: block; line-height: 1.1; }
+    .type-spec span { color: var(--text-3); font-size: 10px; }
+    .t-display { font-size: 34px; font-weight: 600; letter-spacing: -.04em; }
+    .t-title { font-size: 24px; font-weight: 600; letter-spacing: -.025em; }
+    .t-item { font-size: 16px; font-weight: 550; }
+    .t-body { font-size: 15px; font-weight: 400; }
+    .t-support { font-size: 12px; font-weight: 400; }
+    .swatch-grid { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 8px; margin-top: 18px; }
+    .swatch { border-radius: 14px; overflow: hidden; border: 1px solid var(--line); }
+    .swatch i { display: block; height: 54px; background: var(--sw); }
+    .swatch span { display: block; padding: 7px 9px; font-size: 9px; color: var(--text-2); background: rgba(0,0,0,.08); }
+
+    .material-stage { position: relative; min-height: 360px; margin: 22px 0; padding: 32px; overflow: hidden; border-radius: var(--radius-hero); border: 1px solid var(--line); background: var(--canvas); isolation: isolate; }
+    .material-stage .blob { position: absolute; border-radius: 50%; filter: blur(28px); opacity: .65; animation: drift 12s ease-in-out infinite alternate; }
+    .material-stage .b1 { width: 220px; height: 220px; left: 8%; top: 10%; background: var(--accent); }
+    .material-stage .b2 { width: 260px; height: 260px; right: 10%; bottom: -20%; background: var(--accent-2); animation-delay: -4s; }
+    .material-stage .b3 { width: 120px; height: 120px; left: 45%; top: 42%; background: var(--positive); animation-delay: -7s; }
+    .material-stack { position: relative; display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 18px; z-index: 2; }
+    .material-layer { min-height: 260px; padding: 22px; border-radius: var(--radius-xl); border: 1px solid var(--line); background: color-mix(in srgb, var(--surface) calc(var(--glass-alpha) * 100%), transparent); backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation)); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--highlight) var(--edge), transparent), 0 22px 60px rgba(0,0,0,.23); }
+    .material-layer:nth-child(2) { transform: translateY(28px); background: color-mix(in srgb, var(--surface-strong) calc((var(--glass-alpha) + .12) * 100%), transparent); }
+    .material-layer:nth-child(3) { transform: translateY(56px); }
+    .material-layer .level { display: flex; justify-content: space-between; color: var(--text-3); font: 10px var(--font-mono); }
+    .material-layer h4 { margin-top: 82px; }
+    .material-layer p { color: var(--text-2); font-size: 12px; }
+    .lab-controls { display: grid; grid-template-columns: 1fr auto; gap: 22px; align-items: center; padding: 18px 20px; border-radius: var(--radius-lg); background: var(--surface-soft); border: 1px solid var(--line); }
+    .lab-controls input[type="range"] { width: 100%; accent-color: var(--accent); }
+    .lab-value { min-width: 68px; text-align: right; font: 600 12px var(--font-mono); color: var(--accent); }
+    .material-rules { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin-top: 14px; }
+    .material-rule { padding: 14px; border-left: 2px solid var(--accent); border-radius: 0 12px 12px 0; background: var(--surface-soft); color: var(--text-2); font-size: 12px; }
+
+    .component-stage { padding: 26px; border-radius: var(--radius-hero); background: color-mix(in srgb, var(--canvas) 48%, transparent); border: 1px solid var(--line); }
+    .component-stage + .component-stage { margin-top: 14px; }
+    .stage-label { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 20px; color: var(--text-3); font: 10px var(--font-mono); letter-spacing: .08em; text-transform: uppercase; }
+    .button-gallery { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .segmented { display: inline-flex; padding: 4px; border-radius: 999px; background: var(--surface-soft); border: 1px solid var(--line); }
+    .segmented button { min-height: 38px; padding: 0 16px; border: 0; border-radius: 999px; color: var(--text-2); background: transparent; cursor: pointer; font-size: 12px; font-weight: 600; transition: background 180ms, color 180ms, transform 100ms; }
+    .segmented button:active { transform: scale(.97); }
+    .segmented button[aria-pressed="true"] { color: var(--text); background: color-mix(in srgb, var(--accent) 18%, rgba(255,255,255,.05)); box-shadow: inset 0 1px 0 rgba(255,255,255,.17); }
+    .demo-composer { display: grid; grid-template-columns: minmax(0,1fr) 260px; gap: 18px; align-items: start; }
+    .composer-large { padding: 18px; border-radius: var(--radius-xl); }
+    .composer-large .composer-copy { min-height: 74px; font-size: 16px; }
+    .composer-large .composer-bar { grid-template-columns: repeat(4, 44px) 1fr repeat(3, 44px); gap: 6px; }
+    .action-preview { position: relative; min-height: 278px; border-radius: var(--radius-xl); overflow: hidden; }
+    .action-preview .backdrop-copy { padding: 22px; color: var(--text-2); font-size: 12px; opacity: .42; }
+    .popover { position: absolute; right: 16px; bottom: 14px; width: min(300px, calc(100% - 32px)); padding: 8px; border-radius: var(--radius-lg); background: color-mix(in srgb, var(--surface-strong) calc(var(--glass-alpha) * 100%), transparent); border: 1px solid var(--line-strong); backdrop-filter: blur(24px) saturate(1.4); box-shadow: 0 24px 60px rgba(0,0,0,.34), inset 0 1px 0 rgba(255,255,255,.20); }
+    .popover-head { display: flex; align-items: center; justify-content: space-between; min-height: 42px; padding: 0 8px 4px; color: var(--text-2); font-size: 11px; font-weight: 620; }
+    .popover-item { width: 100%; min-height: 48px; display: grid; grid-template-columns: 32px 1fr auto; gap: 10px; align-items: center; padding: 7px 9px; border: 0; border-radius: 13px; background: transparent; color: var(--text); text-align: left; cursor: pointer; transition: background 160ms, transform 100ms; }
+    .popover-item:hover { background: var(--surface-soft); }
+    .popover-item:active { transform: scale(.985); }
+    .popover-item .icon-tile { width: 24px; height: 24px; border: 0; border-radius: 0; display: grid; place-items: center; background: transparent; color: var(--accent); }
+    .popover-item b { display: block; font-size: 12px; line-height: 1.25; }
+    .popover-item small { display: block; color: var(--text-3); font-size: 9px; }
+    .chev { color: var(--text-3); }
+
+    .overlay-showcase { display: grid; grid-template-columns: 1.12fr .88fr; gap: 14px; }
+    .selector-card, .voice-card { min-height: 360px; padding: 18px; border-radius: var(--radius-xl); border: 1px solid var(--line-strong); background: color-mix(in srgb, var(--surface-strong) calc(var(--glass-alpha) * 100%), transparent); backdrop-filter: blur(24px) saturate(1.35); box-shadow: inset 0 1px 0 rgba(255,255,255,.18), 0 22px 54px var(--shadow); }
+    .selector-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+    .selector-head h4 { margin: 0; }
+    .selector-tools { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-bottom: 12px; }
+    .selector-search { min-height: 42px; padding: 0 13px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--field); color: var(--text); }
+    .filter-pill { min-width: 92px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-soft); color: var(--text-2); font-size: 11px; }
+    .model-row { display: grid; grid-template-columns: 36px 1fr auto; align-items: center; gap: 10px; min-height: 56px; padding: 8px 10px; margin-top: 6px; border-radius: 16px; border: 1px solid var(--line); background: color-mix(in srgb, var(--surface-soft) 72%, transparent); }
+    .model-row.selected { border-color: color-mix(in srgb, var(--accent) 48%, var(--line)); background: color-mix(in srgb, var(--accent) 12%, var(--surface-soft)); box-shadow: inset 0 1px 0 rgba(255,255,255,.14); }
+    .model-logo { width: 36px; height: 36px; border-radius: 12px; display: grid; place-items: center; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); font-size: 12px; font-weight: 700; }
+    .model-row b { display: block; font-size: 12px; }
+    .model-row small { display: block; color: var(--text-3); font-size: 9px; }
+    .select-check { color: var(--positive); }
+    .voice-stage { min-height: 360px; display: grid; place-items: center; position: relative; overflow: hidden; border-radius: var(--radius-xl); background: radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--accent) 20%, transparent), transparent 42%), var(--surface-strong); border: 1px solid var(--line-strong); box-shadow: inset 0 1px 0 rgba(255,255,255,.18), 0 22px 54px var(--shadow); }
+    .voice-stage::before, .voice-stage::after { content: ""; position: absolute; border-radius: 50%; border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); animation: pulse 2.8s ease-out infinite; }
+    .voice-stage::before { width: 170px; height: 170px; }
+    .voice-stage::after { width: 250px; height: 250px; animation-delay: -1.3s; }
+    .voice-orb { position: relative; z-index: 2; width: 112px; height: 112px; border-radius: 38px; display: grid; place-items: center; color: #07111b; background: linear-gradient(145deg, #dff6ff, var(--accent) 46%, var(--accent-2)); box-shadow: inset 0 2px 0 rgba(255,255,255,.75), 0 0 56px color-mix(in srgb, var(--accent) 34%, transparent); }
+    .voice-orb svg { width: 42px; height: 42px; }
+    .voice-copy { position: absolute; bottom: 24px; left: 0; right: 0; text-align: center; color: var(--text-2); font-size: 11px; }
+    .wave-bars { display: flex; align-items: center; justify-content: center; gap: 4px; height: 22px; margin-bottom: 8px; }
+    .wave-bars i { width: 3px; height: var(--h); border-radius: 5px; background: var(--accent); animation: wave 900ms ease-in-out infinite alternate; animation-delay: var(--d); }
+    @keyframes pulse { 0% { transform: scale(.72); opacity: .0; } 30% { opacity: .5; } 100% { transform: scale(1.2); opacity: 0; } }
+    @keyframes wave { to { transform: scaleY(.35); opacity: .45; } }
+
+    .settings-shell { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .settings-window { padding: 20px; border-radius: var(--radius-xl); background: var(--canvas); border: 1px solid var(--line); }
+    .settings-title { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+    .settings-title h4 { margin: 0; }
+    .settings-kicker { color: var(--text-3); font-size: 10px; }
+    .settings-search { width: 100%; min-height: 44px; padding: 0 14px; color: var(--text); background: var(--field); border: 1px solid var(--line); border-radius: var(--radius-md); }
+    .settings-search::placeholder { color: var(--text-3); }
+    .settings-section-label { margin: 18px 4px 8px; color: var(--text-3); font-size: 10px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; }
+    .settings-group { overflow: hidden; border-radius: var(--radius-xl); background: color-mix(in srgb, var(--surface) 82%, transparent); border: 1px solid var(--line); box-shadow: inset 0 1px 0 rgba(255,255,255,.10); }
+    .setting-row { width: 100%; min-height: 60px; display: grid; grid-template-columns: 38px 1fr auto; gap: 12px; align-items: center; padding: 10px 14px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+    .setting-row:last-child { border-bottom: 0; }
+    .setting-row:hover { background: var(--surface-soft); }
+    .setting-row .icon-tile { width: 24px; height: 24px; border: 0; border-radius: 0; display: grid; place-items: center; background: transparent; color: var(--accent); }
+    .setting-row b { display: block; font-size: 13px; line-height: 1.3; }
+    .setting-row small { display: block; margin-top: 2px; color: var(--text-3); font-size: 10px; }
+    .tab-strip { display: flex; gap: 4px; padding: 4px; margin-bottom: 16px; overflow: auto; border-radius: 999px; background: var(--surface-soft); border: 1px solid var(--line); }
+    .tab-strip button { flex: 1 0 auto; min-height: 38px; padding: 0 14px; border: 0; border-radius: 999px; color: var(--text-2); background: transparent; font-size: 11px; font-weight: 600; }
+    .tab-strip button[aria-selected="true"] { color: var(--text); background: color-mix(in srgb, var(--accent) 18%, rgba(255,255,255,.05)); }
+
+    .wrong-right { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .comparison { min-height: 255px; padding: 24px; border-radius: var(--radius-xl); border: 1px solid var(--line); background: var(--surface-soft); }
+    .comparison h4 { display: flex; align-items: center; gap: 8px; }
+    .comparison.bad h4 { color: var(--danger); }
+    .comparison.good h4 { color: var(--positive); }
+    .broken-outline { height: 100px; margin-top: 34px; display: grid; place-items: center; color: var(--text-2); border-radius: 20px; background-image: repeating-linear-gradient(90deg, rgba(255,255,255,.24) 0 11px, transparent 11px 19px); border: 3px solid rgba(255,255,255,.24); }
+    .clean-surface { height: 100px; margin-top: 34px; display: grid; place-items: center; border-radius: 20px; background: linear-gradient(150deg, rgba(255,255,255,.13), transparent 42%), color-mix(in srgb, var(--accent) 8%, var(--surface-strong)); box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 16px 38px rgba(0,0,0,.18); border: 1px solid var(--line); }
+    .wrong-buttons, .right-buttons { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 34px; }
+    .fake-btn-a { min-height: 32px; padding: 0 12px; border-radius: 6px; border: 2px solid #727272; background: #343434; }
+    .fake-btn-b { min-height: 52px; padding: 0 24px; border-radius: 18px; border: 0; background: #232323; }
+    .fake-btn-c { width: 52px; height: 52px; border-radius: 50%; border: 1px solid #565656; background: #313131; }
+
+    .navigation-sample { display: grid; gap: 8px; }
+    .nav-row { display: grid; grid-template-columns: 36px 1fr auto; align-items: center; gap: 12px; min-height: 58px; padding: 8px 12px; border-radius: 18px; background: color-mix(in srgb, var(--surface) 68%, transparent); border: 1px solid var(--line); }
+    .nav-row .avatar { width: 36px; height: 36px; border-radius: 12px; background: color-mix(in srgb, var(--accent) 18%, transparent); display: grid; place-items: center; color: var(--accent); font-weight: 700; }
+    .nav-row.running { border-left: 2px solid var(--positive); box-shadow: inset 0 0 24px color-mix(in srgb, var(--positive) 7%, transparent); }
+    .nav-row.old { opacity: .56; filter: saturate(.2); }
+    .group-row { display: flex; justify-content: space-between; align-items: center; margin: 14px 4px 5px; color: var(--text-3); font-size: 10px; letter-spacing: .06em; }
+    .group-row button { border: 0; background: transparent; color: inherit; }
+
+    .motion-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 10px; }
+    .motion-card { padding: 16px; border-radius: var(--radius-lg); background: var(--surface-soft); border: 1px solid var(--line); }
+    .motion-card .motion-duration { color: var(--accent); font: 600 18px var(--font-mono); }
+    .motion-card h4 { margin: 12px 0 4px; }
+    .motion-card p { min-height: 54px; margin: 0; color: var(--text-3); font-size: 11px; }
+    .motion-track { height: 5px; margin-top: 15px; border-radius: 99px; background: var(--line); overflow: hidden; }
+    .motion-track span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), var(--accent-2)); width: var(--w); }
+    .motion-demo { margin-top: 14px; padding: 18px; display: flex; justify-content: space-between; align-items: center; gap: 18px; border-radius: var(--radius-lg); background: var(--surface-soft); border: 1px solid var(--line); }
+    .motion-orb { width: 52px; height: 52px; border-radius: 18px; background: linear-gradient(145deg, var(--accent), var(--accent-2)); box-shadow: inset 0 1px 0 rgba(255,255,255,.45), 0 12px 28px color-mix(in srgb, var(--accent) 18%, transparent); transition: transform 360ms var(--ease-accelerate); }
+    .motion-demo.is-playing .motion-orb { transform: translateX(240px) rotate(90deg) scale(.84); transition: transform 360ms var(--ease-decelerate); }
+    .timeline { display: grid; grid-template-columns: 72px 1fr; gap: 10px 12px; margin-top: 20px; font: 10px var(--font-mono); color: var(--text-3); }
+    .timeline-line { height: 18px; border-radius: 5px; background: linear-gradient(90deg, var(--accent) var(--fill), var(--line) var(--fill)); }
+
+    .skin-grid { display: grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap: 10px; }
+    .skin-grid-two { grid-template-columns: repeat(2, minmax(0,1fr)); }
+    .skin-card { border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 15px; background: var(--surface-soft); cursor: pointer; text-align: left; transition: transform 180ms, border-color 180ms, background 180ms; }
+    .skin-card:hover { transform: translateY(-2px); border-color: var(--line-strong); background: var(--surface-hover); }
+    .skin-card[aria-pressed="true"] { border-color: color-mix(in srgb, var(--accent) 48%, var(--line)); background: color-mix(in srgb, var(--accent) 10%, var(--surface-soft)); }
+    .skin-preview { height: 104px; margin: 18px 0 14px; border-radius: 16px; border: 1px solid var(--line); background: linear-gradient(150deg, rgba(255,255,255,.15), transparent 44%), color-mix(in srgb, var(--surface-strong) 74%, transparent); position: relative; overflow: hidden; }
+    .skin-preview::before { content: ""; position: absolute; width: 82px; height: 82px; border-radius: 50%; left: -22px; top: 34px; background: var(--accent); filter: blur(20px); opacity: .45; }
+    .skin-card.classic .skin-preview { backdrop-filter: none; }
+    .skin-card.liquid .skin-preview { backdrop-filter: blur(22px); }
+    .skin-card b { display: block; font-size: 13px; }
+    .skin-card span { color: var(--text-3); font-size: 10px; }
+    .degrade-table { margin-top: 14px; }
+
+    .a11y-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; }
+    .a11y-item { min-height: 130px; padding: 18px; border-radius: var(--radius-lg); border: 1px solid var(--line); background: var(--surface-soft); }
+    .a11y-item strong { display: block; margin-bottom: 8px; }
+    .a11y-item span { color: var(--text-2); font-size: 12px; }
+
+    .code-block { position: relative; margin: 16px 0 0; padding: 20px; overflow: auto; border-radius: var(--radius-lg); background: rgba(2,8,14,.64); border: 1px solid var(--line); color: #c7d8e9; font: 11px/1.8 var(--font-mono); }
+    html[data-mode="light"] .code-block { background: #0c1722; color: #d5e4f2; }
+    .code-block .key { color: #78c6ff; }
+    .code-block .value { color: #a4e3c5; }
+    .copy-btn { position: absolute; right: 10px; top: 10px; min-height: 32px; padding: 0 10px; border-radius: 10px; border: 1px solid rgba(255,255,255,.13); color: #d8e7f4; background: rgba(255,255,255,.07); cursor: pointer; font-size: 10px; }
+    .migration-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; }
+    .migration-step { display: grid; grid-template-columns: 34px 1fr; gap: 12px; padding: 15px; border-radius: var(--radius-md); background: var(--surface-soft); border: 1px solid var(--line); }
+    .migration-step .step-no { width: 34px; height: 34px; border-radius: 11px; display: grid; place-items: center; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); font: 650 11px var(--font-mono); }
+    .migration-step b { display: block; margin-bottom: 3px; }
+    .migration-step span { color: var(--text-2); font-size: 12px; }
+
+    .acceptance-list { display: grid; gap: 9px; counter-reset: accept; }
+    .acceptance-item { counter-increment: accept; display: grid; grid-template-columns: 34px 1fr auto; gap: 12px; align-items: center; min-height: 58px; padding: 10px 14px; border-radius: var(--radius-md); background: var(--surface-soft); border: 1px solid var(--line); }
+    .acceptance-item::before { content: counter(accept, decimal-leading-zero); color: var(--text-3); font: 10px var(--font-mono); }
+    .acceptance-item span { font-size: 13px; }
+    .acceptance-item em { color: var(--positive); font-style: normal; font-size: 10px; }
+    .review-box { padding: 28px; border-radius: var(--radius-hero); background:
+      radial-gradient(circle at 80% 10%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 24rem),
+      color-mix(in srgb, var(--surface-strong) 82%, transparent); border: 1px solid var(--line-strong); box-shadow: inset 0 1px 0 rgba(255,255,255,.17), 0 30px 70px var(--shadow); }
+    .review-box h2 { max-width: 780px; }
+    .review-list { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin: 24px 0 0; padding: 0; list-style: none; }
+    .review-list li { padding: 15px; border-radius: var(--radius-md); background: var(--surface-soft); border: 1px solid var(--line); }
+    .review-list b { display: block; margin-bottom: 4px; font-size: 13px; }
+    .review-list span { color: var(--text-2); font-size: 11px; }
+    .footnote { margin-top: 18px; color: var(--text-3); font-size: 11px; }
+
+    .census-strip { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; margin: 18px 0; }
+    .census-card { min-height: 152px; padding: 18px; border-radius: var(--radius-lg); background: color-mix(in srgb, var(--surface) 74%, transparent); border: 1px solid color-mix(in srgb, var(--line) 78%, transparent); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--highlight) 10%, transparent); }
+    .census-card strong { display: block; font: 650 clamp(28px,3vw,42px)/1 var(--font-mono); letter-spacing: -.055em; }
+    .census-card b { display: block; margin-top: 13px; font-size: 13px; }
+    .census-card span { display: block; margin-top: 3px; color: var(--text-3); font-size: 11px; }
+    .scan-note { margin: 0 0 18px; padding: 14px 16px; border-radius: var(--radius-md); background: var(--surface-soft); border-left: 2px solid var(--accent); color: var(--text-2); font-size: 12px; }
+    .scan-note code { color: var(--accent); font-family: var(--font-mono); font-size: 10px; }
+    .route-list { margin: 0; padding: 0; list-style: none; counter-reset: route; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .route-list li { counter-increment: route; min-height: 39px; display: grid; grid-template-columns: 27px 1fr; gap: 7px; align-items: center; padding: 7px 10px; border-radius: 10px; background: var(--surface-soft); color: var(--text-2); font-size: 11px; }
+    .route-list li::before { content: counter(route, decimal-leading-zero); color: var(--accent); font: 9px var(--font-mono); }
+    .route-list b { color: var(--text); font-weight: 600; }
+    .table-scroll { width: 100%; overflow-x: auto; border-radius: var(--radius-lg); }
+    .taxonomy-table { min-width: 780px; }
+    .taxonomy-table th:first-child, .taxonomy-table td:first-child { width: 13%; }
+    .taxonomy-table td { color: var(--text-2); }
+    .taxonomy-table td:first-child { color: var(--text); font-weight: 620; }
+    .role-code { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; border-radius: 8px; background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); font: 9px var(--font-mono); }
+    .role-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; margin-top: 14px; }
+    .role-card { min-height: 142px; padding: 17px; border-radius: var(--radius-lg); background: var(--surface-soft); border: 1px solid color-mix(in srgb, var(--line) 74%, transparent); }
+    .role-card .role-top { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+    .role-card h4 { margin: 7px 0 4px; }
+    .role-card p { margin: 0; color: var(--text-3); font-size: 11px; }
+    .role-card .measurements { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 5px; }
+    .measurements span { padding: 3px 7px; border-radius: 7px; background: color-mix(in srgb, var(--surface-soft) 86%, transparent); color: var(--text-2); font: 9px var(--font-mono); }
+    .input-lab { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+    .input-sample { padding: 18px; border-radius: var(--radius-lg); background: var(--canvas); border: 1px solid var(--line); }
+    .input-sample > span { display: block; margin-bottom: 12px; color: var(--text-3); font: 10px var(--font-mono); text-transform: uppercase; letter-spacing: .08em; }
+    .visual-input { min-height: 50px; display: flex; align-items: center; gap: 10px; padding: 0 14px; border-radius: 16px; background: color-mix(in srgb, var(--field) 82%, transparent); border: 1px solid color-mix(in srgb, var(--line) 65%, transparent); box-shadow: inset 0 1px 2px rgba(0,0,0,.10); color: var(--text-3); }
+    .visual-input svg { width: 20px; height: 20px; }
+    .visual-input.focused { border-color: color-mix(in srgb, var(--accent) 62%, var(--line)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 16%, transparent), inset 0 1px 2px rgba(0,0,0,.08); }
+    .visual-textarea { min-height: 98px; align-items: flex-start; padding-top: 14px; }
+    .visual-secret { letter-spacing: .14em; }
+    .state-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .state-chip { min-height: 25px; display: inline-flex; align-items: center; padding: 0 8px; border-radius: 8px; border: 1px solid var(--line); color: var(--text-3); font-size: 9px; }
+    .state-chip.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+    .state-chip.error { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 42%, var(--line)); }
+
+    .icon-format-flow { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 10px; align-items: stretch; margin-top: 16px; }
+    .format-node { padding: 18px; border-radius: var(--radius-lg); background: var(--surface-soft); border: 1px solid var(--line); }
+    .format-node b { display: block; margin-bottom: 5px; }
+    .format-node span { color: var(--text-3); font-size: 11px; }
+    .format-arrow { display: grid; place-items: center; color: var(--accent); font-size: 18px; }
+    .icon-size-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; margin-top: 14px; }
+    .icon-size-cell { min-height: 104px; display: grid; place-items: center; align-content: center; gap: 10px; border-radius: var(--radius-md); background: var(--surface-soft); border: 1px solid var(--line); }
+    .icon-size-cell svg { width: var(--icon-px); height: var(--icon-px); fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .icon-size-cell span { color: var(--text-3); font: 10px var(--font-mono); }
+    .icon-rules { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+    .icon-rule { padding: 17px; border-radius: var(--radius-lg); border: 1px solid var(--line); }
+    .icon-rule.good { background: color-mix(in srgb, var(--positive) 5%, var(--surface-soft)); }
+    .icon-rule.bad { background: color-mix(in srgb, var(--danger) 5%, var(--surface-soft)); }
+    .icon-rule h4 { margin-bottom: 6px; }
+    .icon-rule.good h4 { color: var(--positive); }
+    .icon-rule.bad h4 { color: var(--danger); }
+    .icon-rule p { margin: 0; color: var(--text-2); font-size: 11px; }
+    .bare-icon-row { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+    .bare-icon { width: 44px; height: 44px; display: grid; place-items: center; border: 0; border-radius: 12px; background: transparent; color: var(--text-2); }
+    .bare-icon:hover, .bare-icon:focus-visible { color: var(--text); background: var(--surface-soft); }
+    .bare-icon svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .forbidden-circle { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 50%; background: var(--surface-soft); border: 1px solid var(--line); color: var(--text-2); }
+    .format-table code { white-space: nowrap; }
+
+    .coloros-grid { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 9px; margin-top: 16px; }
+    .coloros-shot { margin: 0; padding: 7px; border-radius: var(--radius-lg); background: color-mix(in srgb, var(--surface) 72%, transparent); border: 1px solid var(--line); }
+    .coloros-shot img { display: block; width: 100%; max-height: 290px; object-fit: cover; object-position: top; border-radius: 14px; }
+    .coloros-shot figcaption { padding: 9px 4px 3px; color: var(--text-3); font-size: 10px; line-height: 1.45; }
+    .coloros-findings { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; margin-top: 14px; }
+    .coloros-finding { padding: 17px; border-radius: var(--radius-lg); background: var(--surface-soft); border: 1px solid var(--line); }
+    .coloros-finding b { display: block; margin-bottom: 5px; font-size: 13px; }
+    .coloros-finding p { margin: 0; color: var(--text-2); font-size: 11px; }
+    .coloros-contact { margin-top: 14px; padding: 10px; border-radius: var(--radius-lg); background: var(--canvas); border: 1px solid var(--line); }
+    .coloros-contact img { display: block; width: 100%; height: 500px; object-fit: cover; object-position: top; border-radius: 14px; }
+
+    .material-refined { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 8px; margin-top: 14px; }
+    .material-refined-card { min-height: 180px; padding: 15px; border-radius: var(--radius-lg); border: 1px solid var(--line); }
+    .material-refined-card:nth-child(1) { background: var(--canvas); }
+    .material-refined-card:nth-child(2) { background: color-mix(in srgb, var(--surface) 78%, transparent); }
+    .material-refined-card:nth-child(3) { background: color-mix(in srgb, var(--field) 84%, transparent); box-shadow: inset 0 1px 2px rgba(0,0,0,.10); }
+    .material-refined-card:nth-child(4) { background: linear-gradient(150deg, rgba(255,255,255,.12), transparent 38%), color-mix(in srgb, var(--surface-strong) 72%, transparent); backdrop-filter: blur(18px) saturate(1.2); box-shadow: inset 0 1px 0 rgba(255,255,255,.24), 0 18px 42px rgba(0,0,0,.18); }
+    .material-refined-card:nth-child(5) { background: color-mix(in srgb, var(--surface-strong) 92%, transparent); }
+    .material-refined-card .level { color: var(--text-3); font: 9px var(--font-mono); }
+    .material-refined-card b { display: block; margin: 54px 0 5px; font-size: 13px; }
+    .material-refined-card span { color: var(--text-3); font-size: 10px; }
+
+    .setting-row, .popover-item { grid-template-columns: 28px 1fr auto; }
+    .setting-row .icon-tile, .popover-item .icon-tile {
+      width: 24px; height: 24px; border: 0; border-radius: 0; display: grid; place-items: center;
+      background: transparent; box-shadow: none; color: var(--accent); font-size: 16px;
+    }
+
+    .status-chip { display: inline-flex; align-items: center; gap: 7px; min-height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid currentColor; font-size: 10px; font-weight: 650; }
+    .status-chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 10px currentColor; }
+    .status-chip.live { color: var(--positive); background: color-mix(in srgb, var(--positive) 10%, transparent); }
+    .status-chip.wait { color: var(--warning); background: color-mix(in srgb, var(--warning) 10%, transparent); }
+    .status-chip.stop { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+
+    .modal-layer { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 20px; opacity: 0; pointer-events: none; background: rgba(1,7,13,.54); backdrop-filter: blur(7px); transition: opacity var(--motion-overlay) var(--ease-standard); }
+    .modal-layer.is-open { opacity: 1; pointer-events: auto; }
+    .modal-card { width: min(480px,100%); padding: 24px; border-radius: var(--radius-sheet); background: var(--surface-strong); border: 1px solid var(--line-strong); box-shadow: 0 30px 100px rgba(0,0,0,.46), inset 0 1px 0 rgba(255,255,255,.20); transform: translateY(12px) scale(.985); transition: transform var(--motion-overlay) var(--ease-decelerate); }
+    .modal-layer.is-open .modal-card { transform: translateY(0) scale(1); }
+    .modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+    .modal-head h3 { margin: 0; }
+    .field-demo { min-height: 48px; margin: 16px 0; padding: 0 14px; display: flex; align-items: center; color: var(--text-2); background: var(--field); border: 1px solid var(--line); border-radius: var(--radius-md); }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
+
+    .toast { position: fixed; left: 50%; bottom: 26px; z-index: 130; transform: translate(-50%, 20px); opacity: 0; pointer-events: none; padding: 11px 16px; border-radius: 14px; color: var(--text); background: var(--surface-strong); border: 1px solid var(--line-strong); box-shadow: 0 16px 40px var(--shadow); transition: opacity var(--motion-state), transform var(--motion-state) var(--ease-decelerate); }
+    .toast.show { opacity: 1; transform: translate(-50%,0); }
+
+    html[data-motion="off"] *, html[data-motion="off"] *::before, html[data-motion="off"] *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .001ms !important; }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .001ms !important; }
+    }
+
+    @media (max-width: 1180px) {
+      :root { --rail-width: 210px; }
+      .layout { gap: 24px; }
+      .hero { grid-template-columns: 1fr; min-height: auto; }
+      .phone { max-width: 410px; }
+      .screenshot-grid { grid-template-columns: repeat(2,1fr); }
+      .skin-grid { grid-template-columns: repeat(3,1fr); }
+      .census-strip, .material-refined { grid-template-columns: repeat(2,1fr); }
+      .coloros-grid { grid-template-columns: repeat(3,1fr); }
+    }
+    @media (max-width: 900px) {
+      .site-header { height: auto; min-height: 72px; align-items: flex-start; padding: 12px 16px; }
+      .brand { min-width: 150px; }
+      .control-group.skins { display: none; }
+      .layout { display: block; width: min(100% - 24px, 760px); padding-top: 20px; }
+      .rail { position: sticky; top: 64px; z-index: 20; margin-bottom: 28px; padding: 5px; overflow: auto; background: color-mix(in srgb, var(--canvas) 84%, transparent); backdrop-filter: blur(20px); border-radius: 16px; border: 1px solid var(--line); }
+      .rail-inner { position: static; max-height: none; padding: 0; }
+      .rail-label, .rail-foot { display: none; }
+      .rail-nav { display: flex; gap: 4px; width: max-content; }
+      .rail-link { min-height: 38px; padding: 5px 11px; white-space: nowrap; }
+      .rail-link .num { display: none; }
+      section { scroll-margin-top: 126px; margin-bottom: 68px; }
+      .grid-3, .research-grid, .motion-grid { grid-template-columns: repeat(2,1fr); }
+      .problem-grid { grid-template-columns: 1fr; }
+      .problem { min-height: 130px; }
+      .problem h3 { margin-top: 18px; }
+      .settings-shell, .demo-composer, .migration-grid { grid-template-columns: 1fr; }
+      .overlay-showcase { grid-template-columns: 1fr; }
+      .review-list { grid-template-columns: 1fr; }
+      .role-grid, .input-lab, .icon-rules, .coloros-findings { grid-template-columns: 1fr; }
+      .icon-format-flow { grid-template-columns: 1fr; }
+      .format-arrow { transform: rotate(90deg); }
+    }
+    @media (max-width: 620px) {
+      body { font-size: 14px; }
+      .site-header { display: block; }
+      .brand { margin-bottom: 10px; }
+      .header-controls { justify-content: flex-start; }
+      .rail { top: 112px; }
+      section { scroll-margin-top: 174px; }
+      h1 { font-size: 43px; }
+      h2 { font-size: 32px; }
+      .lead, .hero-sub { font-size: 16px; }
+      .hero-stats, .grid-2, .grid-3, .grid-4, .foundation-grid, .material-stack, .material-rules, .a11y-grid, .motion-grid, .wrong-right, .review-list, .census-strip, .material-refined, .icon-size-grid, .coloros-grid { grid-template-columns: 1fr; }
+      .route-list { grid-template-columns: 1fr; }
+      .screenshot-grid { grid-template-columns: 1fr 1fr; }
+      .screen-card img { height: 320px; }
+      .skin-grid { grid-template-columns: repeat(2,1fr); }
+      .skin-grid-two { grid-template-columns: 1fr; }
+      .material-layer:nth-child(2), .material-layer:nth-child(3) { transform: none; }
+      .component-stage { padding: 16px; }
+      .composer-bar { grid-template-columns: repeat(3, 40px) 1fr 40px 40px 48px; }
+      .motion-demo.is-playing .motion-orb { transform: translateX(130px) rotate(90deg) scale(.84); }
+      .section-head { display: block; }
+      .section-head p { margin-top: 10px; }
+      .coloros-contact img { height: 360px; }
+    }
+
+    @media print {
+      @page { size: A4; margin: 14mm; }
+      body { background: #07111b !important; color: #f4f8fc !important; font-size: 10pt; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      body::before, .ambient, .site-header, .rail, .hero-actions, .lab-controls, .modal-layer, .toast { display: none !important; }
+      .layout { display: block; width: 100%; padding: 0; }
+      section { break-inside: auto; margin-bottom: 36px; }
+      .hero { min-height: 0; grid-template-columns: 1fr; }
+      .phone { max-width: 340px; }
+      img, .phone, .modal-card, .material-stage, .review-box { break-inside: avoid; }
+      .panel, .card, .foundation-card, .component-stage, .review-box { box-shadow: none !important; }
+      .component-stage { break-inside: auto; }
+      .section-head, .eyebrow { break-inside: avoid; break-after: avoid; }
+      h1, h2, h3, h4 { break-after: avoid; }
+      .table-scroll { overflow: visible !important; width: 100% !important; }
+      .taxonomy-table { width: 100% !important; min-width: 0 !important; table-layout: fixed; font-size: 7.5pt; }
+      .taxonomy-table th, .taxonomy-table td { padding: 5px 4px !important; white-space: normal !important; overflow-wrap: anywhere; }
+      .taxonomy-table tr { break-inside: avoid; }
+      .census-strip { grid-template-columns: repeat(2, minmax(0,1fr)) !important; }
+      .coloros-grid { grid-template-columns: repeat(3, minmax(0,1fr)) !important; }
+      .coloros-shot img { max-height: 230px !important; }
+      .coloros-contact img { height: 360px !important; }
+    }
+    /* v1.4 appearance calibration: vivid semantics, continuous curvature, physical controls. */
+    @font-face {
+      font-family: "NexaManrope";
+      src: url("assets/Manrope-Variable.ttf") format("truetype");
+      font-weight: 200 800;
+      font-style: normal;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: "NexaNewsreader";
+      src: url("assets/Newsreader-Variable.ttf") format("truetype");
+      font-weight: 200 800;
+      font-style: normal;
+      font-display: swap;
+    }
+    :root {
+      --font-system: "Segoe UI Variable Text", "Roboto Flex", "Roboto", "Noto Sans SC", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+      --font-humanist: "NexaManrope", "MiSans", "HarmonyOS Sans SC", "OPPO Sans", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+      --font-editorial: "NexaNewsreader", "Iowan Old Style", "New York", "Songti SC", "STSong", "Noto Serif CJK SC", serif;
+      --font-ui: var(--font-system);
+      --font-display: var(--font-system);
+      --canvas-pearl: #f0f1f3;
+      --canvas-pearl-2: #f5f6f7;
+      --paper: #ffffff;
+      --ink: #171b21;
+      --accent: #3c8cff;
+      --accent-2: #8b6cff;
+      --positive: #27c47b;
+      --warning: #ffb13b;
+      --danger: #ff5470;
+      --info: #24bfd4;
+      --plan: #8b6cff;
+      --goal: #4a7dff;
+      --auto: #27c47b;
+      --smart: #ffb13b;
+      --manual: #ff607c;
+      --radius-xs: 12px;
+      --radius-sm: 16px;
+      --radius-md: 22px;
+      --radius-lg: 26px;
+      --radius-xl: 32px;
+      --radius-sheet: 36px;
+      --radius-hero: 44px;
+      --motion-press: 90ms;
+      --motion-state: 180ms;
+      --motion-enter: 240ms;
+      --motion-overlay: 300ms;
+      --motion-scene: 380ms;
+      --spring-soft: cubic-bezier(.22, 1.18, .34, 1);
+    }
+
+    html[data-type="system"] { --font-ui: var(--font-system); --font-display: var(--font-system); }
+    html[data-type="humanist"] { --font-ui: var(--font-humanist); --font-display: var(--font-humanist); }
+    html[data-type="editorial"] { --font-ui: var(--font-system); --font-display: var(--font-editorial); }
+    h1, h2, h3, h4, .brand-copy strong { font-family: var(--font-display); }
+    html[data-type="editorial"] h1,
+    html[data-type="editorial"] h2 { letter-spacing: -.018em; font-weight: 600; }
+    html[data-type="editorial"] .hero-sub,
+    html[data-type="editorial"] .lead { font-family: var(--font-system); }
+
+    html[data-mode="light"] {
+      --canvas: var(--canvas-pearl);
+      --canvas-2: var(--canvas-pearl-2);
+      --surface: rgba(255, 255, 255, .82);
+      --surface-strong: rgba(255, 255, 255, .96);
+      --surface-soft: #ffffff;
+      --surface-solid: #ffffff;
+      --surface-hover: #f6f7f8;
+      --field: rgba(255, 255, 255, .72);
+      --line: rgba(25, 32, 40, .075);
+      --line-strong: rgba(25, 32, 40, .13);
+      --highlight: rgba(255, 255, 255, 1);
+      --shadow: rgba(30, 41, 52, .11);
+      --text: #171b21;
+      --text-2: #59636f;
+      --text-3: #7d8691;
+      --positive: #1fae6b;
+      --warning: #e99a18;
+      --danger: #ef4563;
+      --info: #159fb4;
+    }
+
+    html[data-mode="light"][data-skin="classic"] {
+      --accent: #3c8cff;
+      --accent-2: #8b6cff;
+      --glass-alpha: .94;
+      --glass-blur: 0px;
+      --glass-saturation: 1;
+      --specular: .12;
+      --edge: .7;
+    }
+
+    html[data-mode="light"][data-skin="liquid"] {
+      --accent: #2f8fff;
+      --accent-2: #7f7896;
+      --surface: rgba(255, 255, 255, .48);
+      --surface-strong: rgba(255, 255, 255, .74);
+      --surface-soft: rgba(255, 255, 255, .64);
+      --field: rgba(255, 255, 255, .34);
+      --glass-alpha: .58;
+      --glass-blur: 24px;
+      --glass-saturation: 1.55;
+      --specular: .58;
+      --edge: .94;
+    }
+
+    html[data-mode="light"] body {
+      background:
+        radial-gradient(ellipse 58% 44% at 3% 0%, rgba(194, 220, 236, .48) 0%, rgba(194, 220, 236, 0) 72%),
+        radial-gradient(ellipse 42% 34% at 96% 8%, rgba(238, 218, 220, .38) 0%, rgba(238, 218, 220, 0) 70%),
+        linear-gradient(180deg, #f4f5f6 0%, var(--canvas-pearl) 48%, #f5f6f7 100%);
+    }
+    html[data-mode="light"][data-skin="liquid"] body {
+      background:
+        radial-gradient(ellipse 52% 42% at 8% 4%, rgba(164, 207, 225, .58) 0%, transparent 70%),
+        radial-gradient(ellipse 48% 38% at 93% 9%, rgba(226, 196, 211, .46) 0%, transparent 70%),
+        radial-gradient(ellipse 46% 30% at 55% 80%, rgba(194, 218, 206, .34) 0%, transparent 72%),
+        linear-gradient(165deg, #eef2f4, #f4f2f4 56%, #edf1f3);
+    }
+    html[data-mode="light"] body::before {
+      background-image:
+        radial-gradient(rgba(255,255,255,.36) .55px, transparent .55px),
+        radial-gradient(rgba(37,47,58,.05) .45px, transparent .45px);
+      background-position: 0 0, 4px 4px;
+      background-size: 8px 8px, 8px 8px;
+      opacity: .30;
+      mask-image: none;
+    }
+    html[data-mode="light"] .ambient { filter: blur(52px) saturate(1.15); opacity: .52; }
+    html[data-mode="light"] .ambient span { opacity: .07; }
+    html[data-mode="light"] .ambient span:nth-child(1) { background: #85b9d4; }
+    html[data-mode="light"] .ambient span:nth-child(2) { background: #e7b8c2; }
+    html[data-mode="light"] .ambient span:nth-child(3) { background: #9fcbb9; }
+
+    .site-header {
+      border-bottom-color: rgba(25, 32, 40, .07);
+      background: rgba(249, 250, 250, .76);
+      box-shadow: 0 1px 2px rgba(25, 32, 40, .025), 0 12px 34px rgba(25, 32, 40, .035);
+    }
+    .brand-mark {
+      color: #fff;
+      background: linear-gradient(160deg, #3b4650, #1b2229 64%, #252d34);
+      border: 1px solid rgba(255, 255, 255, .20);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.28), inset 0 -1px 0 rgba(0,0,0,.24), 0 8px 18px rgba(30,39,48,.17);
+    }
+    .control-group {
+      background: rgba(255,255,255,.82);
+      border-color: rgba(25,32,40,.07);
+      box-shadow: inset 0 1px 0 #fff, 0 1px 2px rgba(25,32,40,.035);
+    }
+    .control-btn[aria-pressed="true"] {
+      color: #fff;
+      background: linear-gradient(180deg, #38434d, #20272e);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.20), 0 3px 8px rgba(23,31,38,.15);
+    }
+
+    html[data-mode="light"] .card,
+    html[data-mode="light"] .foundation-card,
+    html[data-mode="light"] .stat,
+    html[data-mode="light"] .metric-card,
+    html[data-mode="light"] .problem,
+    html[data-mode="light"] .source-card,
+    html[data-mode="light"] .role-card,
+    html[data-mode="light"] .format-node,
+    html[data-mode="light"] .coloros-finding,
+    html[data-mode="light"] .settings-window,
+    html[data-mode="light"] .migration-step,
+    html[data-mode="light"] .acceptance-item,
+    html[data-mode="light"] .review-list li {
+      background: #fff;
+      border-color: rgba(25,32,40,.065);
+      box-shadow: inset 0 1px 0 #fff, 0 1px 1px rgba(29,39,48,.025), 0 8px 24px rgba(29,39,48,.035);
+    }
+    html[data-mode="light"] .card:hover,
+    html[data-mode="light"] .source-card:hover { background: #fcfcfd; }
+    html[data-mode="light"] .rail,
+    html[data-mode="light"] .rail-foot,
+    html[data-mode="light"] .coloros-shot,
+    html[data-mode="light"] .census-card,
+    html[data-mode="light"] .lab-controls {
+      background: rgba(255,255,255,.78);
+      border-color: rgba(25,32,40,.06);
+      box-shadow: inset 0 1px 0 #fff, 0 6px 20px rgba(29,39,48,.025);
+    }
+    html[data-mode="light"] .rail-link:hover { background: #fff; }
+    html[data-mode="light"] .rail-link.is-active {
+      background: #20272e;
+      color: #fff;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.16), 0 5px 12px rgba(23,31,38,.12);
+    }
+    html[data-mode="light"] .rail-link.is-active .num { color: #b9d9e8; }
+
+    .button,
+    .control-btn,
+    .icon-button,
+    .composer-icon,
+    .setting-row,
+    .popover-item,
+    .model-row,
+    .status-chip,
+    .mode-tag {
+      corner-shape: superellipse(3.2);
+    }
+    .control-group,
+    .phone-title,
+    .new-chat-pill,
+    .segmented,
+    .tab-strip { corner-shape: superellipse(2.45); }
+    .button {
+      border-color: rgba(25,32,40,.08);
+      background: linear-gradient(180deg, #fff, #f7f8f9);
+      box-shadow: inset 0 1px 0 #fff, inset 0 -1px 0 rgba(25,32,40,.035), 0 1px 2px rgba(29,39,48,.06), 0 5px 12px rgba(29,39,48,.035);
+    }
+    .button:hover { box-shadow: inset 0 1px 0 #fff, inset 0 -1px 0 rgba(25,32,40,.035), 0 2px 3px rgba(29,39,48,.07), 0 8px 18px rgba(29,39,48,.05); }
+    .button:active { transform: translateY(1px) scale(.975); box-shadow: inset 0 1px 2px rgba(25,32,40,.09), 0 1px 2px rgba(29,39,48,.05); }
+    .button-primary {
+      color: #fff;
+      border-color: rgba(0,0,0,.3);
+      background: linear-gradient(180deg, #394650, #20282f 72%, #1b2228);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.22), inset 0 -1px 0 rgba(0,0,0,.36), 0 2px 3px rgba(23,31,38,.16), 0 9px 22px rgba(23,31,38,.14);
+    }
+    .button-primary:hover { background: linear-gradient(180deg, #414e59, #252e36 72%, #1b2228); }
+    .button-glass {
+      color: var(--text);
+      border-color: rgba(255,255,255,.82);
+      background: linear-gradient(180deg, rgba(255,255,255,.94), rgba(248,249,250,.78));
+      box-shadow: inset 0 1px 0 #fff, inset 0 -1px 0 rgba(25,32,40,.035), 0 1px 2px rgba(29,39,48,.06), 0 8px 20px rgba(29,39,48,.055);
+      backdrop-filter: blur(18px) saturate(1.2);
+    }
+    .button-quiet { border-color: transparent; background: transparent; box-shadow: none; }
+    .button-quiet:hover { background: rgba(255,255,255,.7); border-color: rgba(25,32,40,.06); }
+
+    html[data-mode="light"] .phone {
+      color: var(--text);
+      border-color: rgba(28,36,45,.13);
+      background:
+        radial-gradient(circle at 92% 13%, rgba(193,222,236,.30), transparent 34%),
+        radial-gradient(circle at 8% 70%, rgba(233,209,215,.18), transparent 38%),
+        #fdfdfe;
+      box-shadow: 0 2px 4px rgba(24,33,42,.08), 0 32px 80px rgba(24,33,42,.18), inset 0 1px 0 #fff, inset 0 0 0 5px rgba(255,255,255,.34);
+    }
+    html[data-mode="light"] .phone::before { background: #a6d1df; opacity: .23; }
+    html[data-mode="light"] .phone::after { background: #e6c5cd; opacity: .18; }
+    html[data-mode="light"] .phone-title { background: rgba(235,238,240,.70); border-color: rgba(25,32,40,.055); }
+    html[data-mode="light"] .phone-title span:first-child { color: #fff; background: #252d34; box-shadow: inset 0 1px 0 rgba(255,255,255,.18), 0 3px 7px rgba(24,33,42,.12); }
+    html[data-mode="light"] .topic-chip { background: rgba(255,255,255,.76); border-color: rgba(25,32,40,.07); box-shadow: inset 0 1px 0 #fff; }
+    html[data-mode="light"] .message { color: #27313a; background: rgba(230,238,242,.72); border-color: rgba(68,94,111,.09); box-shadow: inset 0 1px 0 rgba(255,255,255,.7); }
+    .new-chat-pill {
+      border-color: rgba(255,255,255,.9);
+      background: linear-gradient(180deg, rgba(255,255,255,.92), rgba(246,247,248,.72));
+      box-shadow: inset 0 1px 0 #fff, inset 0 -1px 0 rgba(25,32,40,.04), 0 1px 2px rgba(29,39,48,.07), 0 8px 18px rgba(29,39,48,.07);
+    }
+    .composer {
+      border-radius: 24px;
+      border-color: rgba(255,255,255,.84);
+      background:
+        linear-gradient(155deg, rgba(255,255,255,.88), rgba(255,255,255,.58) 42%, rgba(248,249,250,.76)),
+        color-mix(in srgb, var(--surface-strong) calc(var(--glass-alpha) * 100%), transparent);
+      box-shadow: inset 0 1px 0 #fff, inset 0 -1px 0 rgba(25,32,40,.055), 0 1px 2px rgba(29,39,48,.07), 0 16px 40px rgba(29,39,48,.10);
+      corner-shape: superellipse(3.25);
+    }
+    .composer-icon { border-radius: 14px; }
+    .composer-icon:hover { background: rgba(31,42,51,.055); }
+    .mode-tag { border: 0; box-shadow: inset 0 1px 0 rgba(255,255,255,.54), 0 1px 1px rgba(25,32,40,.035); }
+    .context-meter::after { background: #fdfefe; }
+    .send-btn {
+      width: 48px;
+      height: 44px;
+      border-radius: 16px;
+      border: 1px solid rgba(0,0,0,.28);
+      color: #fff;
+      background: linear-gradient(180deg, #3d4a54, #20282f 72%, #1b2228);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.22), inset 0 -1px 0 rgba(0,0,0,.34), 0 2px 3px rgba(23,31,38,.16), 0 8px 17px rgba(23,31,38,.14);
+      corner-shape: superellipse(3.2);
+      transition: transform var(--motion-press) var(--spring-soft), filter var(--motion-state), box-shadow var(--motion-state);
+    }
+    .send-btn:active { transform: translateY(1px) scale(.93); filter: brightness(.96); }
+
+    /* v1.4 · continuous radius and physical controls */
+    .composer {
+      margin-bottom: 4px;
+      padding: 13px 13px 10px;
+      border-radius: 32px;
+      border-color: rgba(255,255,255,.82);
+      background:
+        linear-gradient(155deg, rgba(255,255,255,.97), rgba(255,255,255,.90) 40%, rgba(249,250,251,.94)),
+        color-mix(in srgb, var(--surface-strong) calc(var(--glass-alpha) * 100%), transparent);
+      box-shadow: inset 0 1px 0 #fff, inset 1px 0 0 rgba(255,255,255,.65), inset 0 -1px 0 rgba(25,32,40,.055), 0 1px 2px rgba(29,39,48,.07), 0 12px 30px rgba(29,39,48,.075);
+      corner-shape: superellipse(4);
+    }
+    .composer::before {
+      content: "";
+      position: absolute;
+      inset: 1px 18px auto;
+      height: 1px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.95), transparent);
+      pointer-events: none;
+    }
+    .composer-icon,
+    .send-btn,
+    .voice-action,
+    .new-chat-pill { border-radius: 999px; corner-shape: superellipse(3.4); }
+    .composer-icon { border: 1px solid transparent; }
+    .composer-icon:hover { border-color: rgba(25,32,40,.06); background: rgba(255,255,255,.64); }
+    .send-btn {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      border: 1px solid rgba(0,0,0,.36);
+      color: #fff;
+      background: linear-gradient(180deg, #485865 0%, #27333d 58%, #19232b 100%);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.30), inset 0 -2px 2px rgba(0,0,0,.34), 0 2px 3px rgba(23,31,38,.18), 0 8px 18px rgba(23,31,38,.15);
+    }
+    html[data-skin="liquid"] .send-btn {
+      color: #fff;
+      border-color: rgba(255,255,255,.55);
+      background: linear-gradient(145deg, #8ed8ff, #3c8cff 52%, #806bff);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.72), inset 0 -1px 0 rgba(25,45,80,.16), 0 3px 8px rgba(31,105,220,.22), 0 10px 24px rgba(59,104,220,.18);
+    }
+    .context-meter { background: conic-gradient(from -90deg, #27c47b 0 34%, #a7df5a 42%, #ffb13b 52%, #ff7d46 61%, #ff5470 70%, rgba(25,32,40,.10) 70%); }
+
+    /* v1.4 · crisp multicolour bare icons, no decorative containers */
+    .icon-atlas-item { position: relative; }
+    .icon-atlas-item::before {
+      content: "";
+      position: absolute;
+      width: 54px;
+      height: 54px;
+      border-radius: 50%;
+      background: radial-gradient(circle, color-mix(in srgb, var(--icon-color) 13%, transparent), transparent 68%);
+      opacity: .72;
+      pointer-events: none;
+    }
+    .icon-atlas-item svg { position: relative; z-index: 1; stroke-width: 1.62; filter: drop-shadow(0 1px 0 rgba(255,255,255,.72)) drop-shadow(0 2px 4px color-mix(in srgb, var(--icon-color) 12%, transparent)); }
+    .icon-atlas-item:nth-child(8n+1) svg { stroke: #3c8cff !important; }
+    .icon-atlas-item:nth-child(8n+2) svg { stroke: #8b6cff !important; }
+    .icon-atlas-item:nth-child(8n+3) svg { stroke: #24bfd4 !important; }
+    .icon-atlas-item:nth-child(8n+4) svg { stroke: #27c47b !important; }
+    .icon-atlas-item:nth-child(8n+5) svg { stroke: #ffb13b !important; }
+    .icon-atlas-item:nth-child(8n+6) svg { stroke: #ff607c !important; }
+    .icon-atlas-item:nth-child(8n+7) svg { stroke: #ff60a8 !important; }
+    .icon-atlas-item:nth-child(8n) svg { stroke: #4a7dff !important; }
+
+    /* v1.4 · VoiceOrbs #13 Waveform Ring and #1 Plasma Orb */
+    .voice-stage { overflow: hidden; }
+    html[data-skin="classic"] .voice-stage {
+      background:
+        radial-gradient(circle at 50% 43%, rgba(91,218,255,.34), transparent 31%),
+        radial-gradient(circle at 28% 25%, rgba(255,174,222,.22), transparent 36%),
+        radial-gradient(circle at 72% 72%, rgba(126,227,176,.22), transparent 38%),
+        linear-gradient(165deg, #f7fbfd, #edf2f6);
+    }
+    html[data-skin="classic"] .voice-orb {
+      background:
+        radial-gradient(circle at 30% 22%, #ffffff 0 4%, rgba(255,255,255,.68) 10%, transparent 27%),
+        radial-gradient(circle at 34% 30%, #a8ffff 0%, #56ddff 24%, #557cff 52%, #8d5cff 77%, #384778 100%);
+      box-shadow: inset -14px -18px 28px rgba(33,44,73,.28), inset 10px 11px 24px rgba(255,255,255,.42), 0 22px 44px rgba(68,94,170,.24), 0 0 62px rgba(79,196,255,.38);
+    }
+    html[data-skin="classic"] .voice-orb::before {
+      content: "";
+      position: absolute;
+      inset: 18% -4%;
+      border-radius: 50%;
+      border: 1px solid rgba(255,255,255,.34);
+      background: repeating-radial-gradient(ellipse at center, transparent 0 11px, rgba(255,255,255,.23) 12px, transparent 14px 22px);
+      transform: rotate(-18deg);
+      filter: blur(.2px);
+    }
+    html[data-skin="liquid"] .voice-orb {
+      background:
+        radial-gradient(circle at 34% 28%, rgba(255,255,255,.34), transparent 24%),
+        radial-gradient(circle at 50% 50%, rgba(116,216,255,.10), rgba(255,255,255,.09) 48%, rgba(78,97,255,.10) 68%, transparent 70%);
+      border: 1px solid rgba(255,255,255,.58);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.88), inset 8px 0 20px rgba(123,224,255,.12), inset -10px 0 22px rgba(139,108,255,.14), 0 18px 44px rgba(61,98,180,.18), 0 0 54px rgba(98,215,255,.24);
+      backdrop-filter: blur(18px) saturate(155%);
+    }
+    html[data-skin="liquid"] .voice-orb::before {
+      content: "";
+      position: absolute;
+      inset: -24%;
+      border-radius: 50%;
+      background: repeating-conic-gradient(from 0deg, rgba(92,208,255,.86) 0 1.2deg, transparent 1.9deg 4.4deg, rgba(143,111,255,.72) 5.1deg 6.1deg, transparent 6.7deg 8.6deg);
+      mask: radial-gradient(circle, transparent 0 54%, #000 55% 67%, transparent 68%);
+      -webkit-mask: radial-gradient(circle, transparent 0 54%, #000 55% 67%, transparent 68%);
+      animation: waveform-ring 5.5s linear infinite;
+      filter: drop-shadow(0 0 5px rgba(69,204,255,.34));
+    }
+    .voice-orb::after {
+      content: "";
+      position: absolute;
+      width: 44%;
+      height: 24%;
+      left: 17%;
+      top: 12%;
+      border-radius: 50%;
+      background: rgba(255,255,255,.54);
+      filter: blur(9px);
+      transform: rotate(-24deg);
+      pointer-events: none;
+    }
+    @keyframes waveform-ring { to { transform: rotate(360deg); } }
+
+    .visual-input,
+    .selector-search,
+    .settings-search,
+    .field-demo {
+      border-radius: 17px;
+      border-color: rgba(25,32,40,.075);
+      background: rgba(255,255,255,.78);
+      box-shadow: inset 0 1px 2px rgba(25,32,40,.055), inset 0 -1px 0 rgba(255,255,255,.8), 0 1px 0 rgba(255,255,255,.66);
+      corner-shape: superellipse(3.15);
+    }
+    .visual-input.focused,
+    .settings-search:focus,
+    .selector-search:focus { outline: none; border-color: rgba(49,95,127,.40); box-shadow: inset 0 1px 2px rgba(25,32,40,.045), 0 0 0 3px rgba(49,95,127,.09); }
+    .input-sample { background: var(--canvas-pearl); }
+
+    .state-chip,
+    .status-chip {
+      border: 0;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.58), inset 0 -1px 0 rgba(25,32,40,.04), 0 1px 1px rgba(25,32,40,.045);
+    }
+    .status-chip::before { box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 9%, transparent); }
+    .status-chip.live { background: rgba(47,116,102,.10); }
+    .status-chip.wait { background: rgba(155,108,45,.10); }
+    .status-chip.stop { background: rgba(173,86,97,.10); }
+    .mode-tag.plan { background: rgba(110,99,134,.10); }
+    .mode-tag.goal { background: rgba(71,119,159,.10); }
+    .mode-tag.auto { background: rgba(57,120,101,.10); }
+    .mode-tag.smart { background: rgba(154,113,56,.10); }
+
+    .swatch {
+      border-radius: 16px;
+      border-color: rgba(25,32,40,.07);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.18), 0 3px 9px rgba(30,41,52,.04);
+    }
+    .swatch i { background: linear-gradient(145deg, color-mix(in srgb, var(--sw) 82%, white), var(--sw)); }
+    .swatch span { background: #fff; color: #59636f; }
+    .type-system-stage { margin-top: 14px; padding: 24px; border-radius: var(--radius-xl); border: 1px solid rgba(25,32,40,.065); background: #fff; box-shadow: 0 12px 34px rgba(29,39,48,.045); }
+    .type-system-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 18px; }
+    .type-system-head p { max-width: 650px; margin-bottom: 0; color: var(--text-2); font-size: 12px; }
+    .type-system-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; }
+    .type-system-card { min-height: 190px; padding: 18px; border-radius: 20px; border: 1px solid rgba(25,32,40,.07); background: linear-gradient(180deg,#fff,#fbfbfc); box-shadow: inset 0 1px 0 #fff, 0 1px 2px rgba(26,35,44,.035); }
+    .type-system-card.is-active { border-color: rgba(49,95,127,.35); box-shadow: inset 0 1px 0 #fff, 0 0 0 3px rgba(49,95,127,.07), 0 8px 22px rgba(29,39,48,.045); }
+    .type-system-card small { color: var(--text-3); font: 10px var(--font-mono); letter-spacing: .06em; }
+    .type-system-card strong { display: block; margin: 24px 0 7px; font-size: 28px; line-height: 1.1; letter-spacing: -.035em; }
+    .type-system-card p { margin: 0; color: var(--text-2); font-size: 12px; line-height: 1.7; }
+    .type-system-card .type-caption { margin-top: 14px; color: var(--text-3); font-size: 10px; }
+    .type-system-card[data-sample="system"] strong { font-family: var(--font-system); }
+    .type-system-card[data-sample="humanist"] strong { font-family: var(--font-humanist); font-weight: 600; }
+    .type-system-card[data-sample="editorial"] strong { font-family: var(--font-editorial); font-weight: 600; letter-spacing: -.01em; }
+
+    .pearl-palette { display: grid; grid-template-columns: 1.05fr 1fr 1fr; gap: 10px; margin: 16px 0; }
+    .pearl-sample { min-height: 128px; padding: 16px; border-radius: 20px; border: 1px solid rgba(25,32,40,.06); box-shadow: inset 0 1px 0 rgba(255,255,255,.6); }
+    .pearl-sample canvas { display: block; width: 100%; height: 44px; border-radius: 12px; }
+    .pearl-sample b { display: block; margin-top: 12px; font-size: 12px; }
+    .pearl-sample span { color: var(--text-3); font: 10px var(--font-mono); }
+    .pearl-canvas { background: linear-gradient(145deg, #e9eff2, #f0f1f3 48%, #f4f2f3); }
+    .pearl-card { background: #fff; }
+    .pearl-light { background: linear-gradient(145deg, rgba(178,215,230,.50), rgba(255,255,255,.94) 45%, rgba(239,217,222,.42)); }
+
+    .glass-lab {
+      position: relative;
+      min-height: 430px;
+      margin: 20px 0 14px;
+      padding: 36px;
+      overflow: hidden;
+      border-radius: 38px;
+      border: 1px solid rgba(255,255,255,.42);
+      background:
+        radial-gradient(circle at 18% 28%, rgba(121,189,210,.92) 0 7%, transparent 31%),
+        radial-gradient(circle at 76% 22%, rgba(231,179,198,.88) 0 6%, transparent 30%),
+        radial-gradient(circle at 56% 82%, rgba(177,207,151,.78) 0 8%, transparent 34%),
+        linear-gradient(128deg, #263e50 0%, #668aa0 31%, #d3b7c7 64%, #779c89 100%);
+      isolation: isolate;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.46), 0 24px 64px rgba(30,41,52,.14);
+    }
+    .glass-lab::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      background:
+        repeating-linear-gradient(112deg, transparent 0 46px, rgba(255,255,255,.12) 47px, transparent 49px 94px),
+        radial-gradient(circle at 48% 46%, rgba(255,255,255,.34), transparent 22%);
+      opacity: .72;
+    }
+    .glass-lab::after {
+      content: "BACKDROP SAMPLE";
+      position: absolute;
+      right: 30px;
+      top: 24px;
+      color: rgba(255,255,255,.72);
+      font: 9px var(--font-mono);
+      letter-spacing: .16em;
+    }
+    .glass-showcase { position: relative; z-index: 1; display: grid; grid-template-columns: 1.10fr .90fr; gap: 18px; align-items: center; }
+    .glass-specimen {
+      position: relative;
+      min-height: 300px;
+      padding: 24px;
+      overflow: hidden;
+      border-radius: 30px;
+      color: #16212a;
+      border: 1px solid rgba(255,255,255,.62);
+      background:
+        linear-gradient(142deg, rgba(255,255,255,.44), rgba(255,255,255,.15) 40%, rgba(255,255,255,.26)),
+        rgba(255,255,255,.12);
+      backdrop-filter: blur(26px) saturate(165%);
+      -webkit-backdrop-filter: blur(26px) saturate(165%);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.90), inset 1px 0 0 rgba(255,255,255,.32), inset 0 -1px 0 rgba(10,25,34,.12), 0 22px 48px rgba(10,25,34,.18);
+      corner-shape: superellipse(4.25);
+    }
+    .glass-specimen::before {
+      content: "";
+      position: absolute;
+      width: 68%;
+      height: 44%;
+      left: -10%;
+      top: -28%;
+      border-radius: 50%;
+      background: rgba(255,255,255,.48);
+      filter: blur(28px);
+      transform: rotate(-18deg);
+      pointer-events: none;
+    }
+    .glass-specimen::after {
+      content: "";
+      position: absolute;
+      inset: 1px;
+      border-radius: inherit;
+      border: 1px solid rgba(255,255,255,.16);
+      pointer-events: none;
+    }
+    .glass-specimen.frosted {
+      min-height: 236px;
+      background: rgba(248,250,251,.28);
+      backdrop-filter: blur(18px) saturate(135%);
+      -webkit-backdrop-filter: blur(18px) saturate(135%);
+      opacity: .94;
+    }
+    .glass-specimen .glass-kicker { position: relative; z-index: 1; font: 10px var(--font-mono); letter-spacing: .10em; color: rgba(22,33,42,.56); }
+    .glass-specimen h4 { position: relative; z-index: 1; margin: 58px 0 10px; font-size: 25px; letter-spacing: -.03em; }
+    .glass-specimen p { position: relative; z-index: 1; max-width: 370px; margin: 0; color: rgba(22,33,42,.68); font-size: 12px; }
+    .glass-specimen .glass-controls { position: relative; z-index: 1; display: flex; gap: 8px; margin-top: 24px; }
+    .glass-specimen .glass-controls span { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 14px; background: rgba(255,255,255,.30); border: 1px solid rgba(255,255,255,.42); box-shadow: inset 0 1px 0 rgba(255,255,255,.70); }
+    .glass-tech-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 8px; margin-top: 14px; }
+    .glass-tech { padding: 14px; border-radius: 18px; background: #fff; border: 1px solid rgba(25,32,40,.065); box-shadow: 0 6px 18px rgba(29,39,48,.03); }
+    .glass-tech b { display: block; color: var(--text); font-size: 12px; }
+    .glass-tech span { color: var(--text-3); font-size: 10px; line-height: 1.6; }
+
+    .clean-surface {
+      min-height: 76px;
+      display: flex;
+      align-items: center;
+      padding: 0 20px;
+      border-radius: 22px;
+      border: 1px solid rgba(255,255,255,.9);
+      background: linear-gradient(160deg, #ffffff, #f7f8f9 60%, #f1f3f4);
+      box-shadow: inset 0 1px 0 #fff, inset 0 -1px 0 rgba(25,32,40,.055), 0 2px 3px rgba(23,31,38,.07), 0 12px 28px rgba(23,31,38,.08);
+      corner-shape: superellipse(3.2);
+    }
+
+    .voice-card { padding: 14px; }
+    .voice-stage {
+      min-height: 400px;
+      padding: 22px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      align-items: center;
+      border-radius: 28px;
+      background:
+        radial-gradient(circle at 50% 44%, rgba(159,207,225,.52), transparent 26%),
+        radial-gradient(circle at 50% 45%, rgba(238,206,219,.22), transparent 42%),
+        linear-gradient(165deg, #eef5f7, #e9edf0);
+      border: 1px solid rgba(25,32,40,.06);
+      box-shadow: inset 0 1px 0 #fff, 0 18px 40px rgba(30,41,52,.08);
+      corner-shape: superellipse(3.7);
+    }
+    .voice-stage::before {
+      width: 220px;
+      height: 220px;
+      left: 50%;
+      top: 42%;
+      transform: translate(-50%,-50%);
+      border: 1px solid rgba(108,163,187,.14);
+      animation: voice-ripple 3.4s cubic-bezier(.2,.7,.2,1) infinite;
+    }
+    .voice-stage::after {
+      width: 158px;
+      height: 158px;
+      left: 50%;
+      top: 42%;
+      transform: translate(-50%,-50%);
+      border: 1px solid rgba(108,163,187,.20);
+      animation-delay: -1.15s;
+    }
+    .voice-head { position: relative; z-index: 2; width: 100%; display: flex; justify-content: space-between; align-items: center; color: var(--text-3); font-size: 10px; }
+    .voice-head strong { color: var(--text); font-size: 12px; }
+    .voice-orb {
+      position: absolute;
+      left: 50%;
+      top: 42%;
+      width: 132px;
+      height: 132px;
+      border-radius: 50%;
+      transform: translate(-50%,-50%);
+      color: #fff;
+      background:
+        radial-gradient(circle at 34% 25%, rgba(255,255,255,.95) 0 4%, rgba(255,255,255,.45) 10%, transparent 27%),
+        radial-gradient(circle at 35% 34%, #95d5e3 0%, #5b9fba 29%, #607aa2 56%, #75658e 78%, #3f4c6c 100%);
+      box-shadow: inset -14px -18px 28px rgba(33,44,73,.30), inset 9px 10px 22px rgba(255,255,255,.36), 0 22px 42px rgba(52,83,108,.25), 0 0 48px rgba(121,186,205,.32);
+      animation: voice-breathe 2.5s var(--spring-soft) infinite alternate;
+      overflow: hidden;
+    }
+    .voice-orb::after { content: ""; position: absolute; width: 82%; height: 42%; left: 10%; bottom: -15%; border-radius: 50%; background: rgba(255,255,255,.16); filter: blur(12px); }
+    .voice-wave-label { position: relative; z-index: 3; margin-top: 214px; text-align: center; }
+    .voice-wave-label strong { display: block; font-size: 15px; letter-spacing: -.01em; }
+    .voice-wave-label span { display: block; margin-top: 2px; color: var(--text-3); font-size: 10px; }
+    .wave-bars { height: 24px; margin: 0 0 7px; }
+    .wave-bars i { width: 3px; background: #4f7e98; box-shadow: 0 0 8px rgba(79,126,152,.24); animation-timing-function: cubic-bezier(.22,1,.36,1); }
+    .voice-actions { position: relative; z-index: 3; display: flex; gap: 10px; align-items: center; padding: 6px; border-radius: 999px; background: rgba(255,255,255,.50); border: 1px solid rgba(255,255,255,.72); box-shadow: inset 0 1px 0 #fff, 0 8px 20px rgba(29,39,48,.07); backdrop-filter: blur(16px); }
+    .voice-action { width: 44px; height: 44px; display: grid; place-items: center; border: 0; border-radius: 50%; color: var(--text-2); background: transparent; }
+    .voice-action svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .voice-action.end { color: #fff; background: #20282f; box-shadow: inset 0 1px 0 rgba(255,255,255,.20), 0 4px 10px rgba(23,31,38,.14); }
+    @keyframes voice-ripple { 0% { opacity: .55; transform: translate(-50%,-50%) scale(.72); } 72% { opacity: 0; } 100% { opacity: 0; transform: translate(-50%,-50%) scale(1.30); } }
+    @keyframes voice-breathe { from { transform: translate(-50%,-50%) scale(.97); filter: saturate(.95); } to { transform: translate(-50%,-50%) scale(1.04); filter: saturate(1.12); } }
+
+    .icon-atlas { display: grid; grid-template-columns: repeat(6,minmax(0,1fr)); margin-top: 14px; overflow: hidden; border-radius: 24px; border: 1px solid rgba(25,32,40,.065); background: #fff; box-shadow: 0 10px 26px rgba(29,39,48,.035); }
+    .icon-atlas-item { min-height: 112px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; border-right: 1px solid rgba(25,32,40,.055); border-bottom: 1px solid rgba(25,32,40,.055); background: transparent; }
+    .icon-atlas-item:nth-child(6n) { border-right: 0; }
+    .icon-atlas-item:nth-last-child(-n+6) { border-bottom: 0; }
+    .icon-atlas-item svg { width: 28px; height: 28px; fill: none; stroke: var(--icon-color, #52616d); stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+    .icon-atlas-item span { color: var(--text-3); font-size: 10px; letter-spacing: .02em; }
+    .icon-atlas-item:hover svg { stroke: var(--text); }
+    .icon-group-title { margin: 22px 0 0; color: var(--text-3); font: 10px var(--font-mono); letter-spacing: .12em; text-transform: uppercase; }
+    .setting-row:nth-of-type(4n+1) .icon-tile,
+    .popover-item:nth-of-type(4n+1) .icon-tile { color: #477b9d; }
+    .setting-row:nth-of-type(4n+2) .icon-tile,
+    .popover-item:nth-of-type(4n+2) .icon-tile { color: #7c6d8a; }
+    .setting-row:nth-of-type(4n+3) .icon-tile,
+    .popover-item:nth-of-type(4n+3) .icon-tile { color: #65816a; }
+    .setting-row:nth-of-type(4n) .icon-tile,
+    .popover-item:nth-of-type(4n) .icon-tile { color: #9a7138; }
+
+    @media (max-width: 1180px) {
+      .type-system-grid, .glass-tech-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+      .icon-atlas { grid-template-columns: repeat(4,minmax(0,1fr)); }
+      .icon-atlas-item:nth-child(6n) { border-right: 1px solid rgba(25,32,40,.055); }
+      .icon-atlas-item:nth-child(4n) { border-right: 0; }
+      .icon-atlas-item:nth-last-child(-n+6) { border-bottom: 1px solid rgba(25,32,40,.055); }
+      .icon-atlas-item:nth-last-child(-n+4) { border-bottom: 0; }
+    }
+    @media (max-width: 900px) {
+      .header-controls { gap: 5px; }
+      .control-group.type-controls { display: flex; }
+      .type-system-grid, .glass-tech-grid, .pearl-palette { grid-template-columns: 1fr; }
+      .glass-showcase { grid-template-columns: 1fr; }
+      .glass-lab { padding: 22px; }
+      .glass-specimen.frosted { min-height: 180px; }
+      .icon-atlas { grid-template-columns: repeat(3,minmax(0,1fr)); }
+      .icon-atlas-item:nth-child(4n) { border-right: 1px solid rgba(25,32,40,.055); }
+      .icon-atlas-item:nth-child(3n) { border-right: 0; }
+      .icon-atlas-item:nth-last-child(-n+4) { border-bottom: 1px solid rgba(25,32,40,.055); }
+      .icon-atlas-item:nth-last-child(-n+3) { border-bottom: 0; }
+      .voice-stage { min-height: 380px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="ambient" aria-hidden="true"><span></span><span></span><span></span></div>
+  <header class="site-header">
+    <div class="brand">
+      <div class="brand-mark">N</div>
+      <div class="brand-copy"><strong>NEXA UI FOUNDATION</strong><small>v1.4 · 连续曲率、双语音球与高质感控件</small></div>
+    </div>
+    <div class="header-controls">
+      <div class="control-group skins" aria-label="界面皮肤">
+        <button class="control-btn skin-trigger" data-skin="classic">经典</button>
+        <button class="control-btn skin-trigger" data-skin="liquid">液晶玻璃</button>
+      </div>
+      <div class="control-group" aria-label="预览模式">
+        <button class="control-btn mode-trigger" data-mode="dark" aria-label="深色预览">深色</button>
+        <button class="control-btn mode-trigger" data-mode="light" aria-label="浅色预览">浅色</button>
+      </div>
+      <div class="control-group type-controls" aria-label="经典字体预设">
+        <button class="control-btn type-trigger" data-type="system">原生</button>
+        <button class="control-btn type-trigger" data-type="humanist">清润</button>
+        <button class="control-btn type-trigger" data-type="editorial">书刊</button>
+      </div>
+      <div class="control-group">
+        <button class="control-btn" id="motionToggle" aria-pressed="true">动效开</button>
+      </div>
+    </div>
+  </header>
+  <div class="layout">
+    <aside class="rail">
+      <div class="rail-inner">
+        <p class="rail-label">Foundation map</p>
+        <nav class="rail-nav" aria-label="规范目录">
+          <a class="rail-link" href="#overview"><span class="num">00</span>定位与结论</a>
+          <a class="rail-link" href="#audit"><span class="num">01</span>现状审计</a>
+          <a class="rail-link" href="#research"><span class="num">02</span>设计依据</a>
+          <a class="rail-link" href="#tokens"><span class="num">03</span>基础令牌</a>
+          <a class="rail-link" href="#materials"><span class="num">04</span>材质系统</a>
+          <a class="rail-link" href="#inventory"><span class="num">05</span>组件盘点</a>
+          <a class="rail-link" href="#components"><span class="num">06</span>组件语言</a>
+          <a class="rail-link" href="#icons"><span class="num">07</span>图标与格式</a>
+          <a class="rail-link" href="#reference"><span class="num">08</span>ColorOS 参考</a>
+          <a class="rail-link" href="#settings"><span class="num">09</span>设置与导航</a>
+          <a class="rail-link" href="#motion"><span class="num">10</span>动效规范</a>
+          <a class="rail-link" href="#skins"><span class="num">11</span>皮肤与降级</a>
+          <a class="rail-link" href="#accessibility"><span class="num">12</span>无障碍与适配</a>
+          <a class="rail-link" href="#implementation"><span class="num">13</span>落地路径</a>
+          <a class="rail-link" href="#review"><span class="num">14</span>明日评审</a>
+        </nav>
+        <div class="rail-foot">本页只定义视觉与交互基础，不修改应用源码。最终只保留“经典”和“液晶玻璃”两套皮肤，页面顶部可直接切换对比。</div>
+      </div>
+    </aside>
+    <main>
+      <section id="overview" class="hero">
+        <div class="hero-copy">
+          <span class="eyebrow">Review build 04 · 2026-11-14</span>
+          <h1>珍珠雾白画布<br>真正纯白内容</h1>
+          <p class="hero-sub">这一版把反馈落到可执行规则：输入面板和发送键使用连续曲率；语义色改为鲜亮明快的一组；图标改为无底圈的彩色裸图标。语音主视觉按皮肤使用 VoiceOrbs 的 <b>13 · Waveform Ring</b> 与 <b>1 · Plasma Orb</b>。</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="#inventory">查看组件盘点 <span aria-hidden="true">↓</span></a>
+            <button class="button button-glass" data-open-modal>打开弹层样张</button>
+            <button class="button button-quiet" id="downloadTokens">下载令牌 JSON</button>
+          </div>
+          <div class="hero-stats">
+            <div class="stat"><strong>2 + 3</strong><span>两套皮肤；经典内保留三套字体气质</span></div>
+            <div class="stat"><strong>30</strong><span>个可直接识别的裸图标能力图谱</span></div>
+            <div class="stat"><strong>0</strong><span>装饰性图标底圈与灰化普通内容卡</span></div>
+          </div>
+        </div>
+        <div class="phone" aria-label="目标会话界面预览">
+          <div class="phone-status"><span>9:41</span><span>NEXA · 设计预览</span></div>
+          <div class="phone-top">
+            <button class="icon-button" aria-label="打开统一列表"><svg class="icon" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h11"/></svg></button>
+            <div class="phone-title"><span>会 话</span><span>会议室</span></div>
+            <button class="icon-button" aria-label="更多"><svg class="icon" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></button>
+          </div>
+          <div class="chat-area">
+            <div class="topic-row"><div class="topic-chip">mimo-planner</div><div class="topic-chip">方案规划</div></div>
+            <div class="topic-chip" style="margin-bottom:12px">先检查流程，再给出最小改动。</div>
+            <div class="message">已定位材质、间距和状态组件的三处不一致。我会用同一套令牌重绘，不改变业务能力。<small>运行完成 · 22:48</small></div>
+            <div class="composer-wrap">
+              <button class="new-chat-pill"><span aria-hidden="true">＋</span> 新建会话</button>
+              <div class="composer">
+                <div class="composer-copy">交给 NEXA 去完成</div>
+                <div class="composer-meta"><span class="mode-tag plan">P · 计划</span><span class="mode-tag auto">A · 自动授权</span><span class="mode-tag goal">G · 目标开启</span></div>
+                <div class="composer-bar">
+                  <button class="composer-icon" aria-label="添加能力"><svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+                  <button class="composer-icon" aria-label="设置"><svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg></button>
+                  <button class="composer-icon" aria-label="思考强度"><svg class="icon" viewBox="0 0 24 24"><path d="m12 3 1.6 5.4L19 10l-5.4 1.6L12 17l-1.6-5.4L5 10l5.4-1.6L12 3Z"/><path d="m18.5 16 .7 2.3 2.3.7-2.3.7-.7 2.3-.7-2.3-2.3-.7 2.3-.7.7-2.3Z"/></svg></button>
+                  <div class="context-meter" aria-label="上下文用量 57%"></div>
+                  <button class="composer-icon" aria-label="语音"><svg class="icon" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11v1a7 7 0 0 0 14 0v-1M12 19v3M8 22h8"/></svg></button>
+                  <button class="composer-icon" aria-label="选择模型"><svg class="icon" viewBox="0 0 24 24"><path d="m12 3 8 4.5-8 4.5-8-4.5L12 3Z"/><path d="m4 12 8 4.5 8-4.5M4 16.5l8 4.5 8-4.5"/></svg></button>
+                  <button class="send-btn" aria-label="发送"><svg class="icon" viewBox="0 0 24 24" style="width:20px;height:20px"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="audit">
+        <div class="section-head">
+          <div><span class="eyebrow">01 · Current state</span><h2>现状审计：不是审美争议，是规则缺失</h2></div>
+          <p>源码里已有玻璃表面、字体和动效开关，但页面仍各自决定间隔、圆角、描边和明暗。结果就是同一层级在不同页面像不同产品。</p>
+        </div>
+        <div class="grid-4" style="margin-bottom:14px">
+          <div class="metric-card accent"><strong>740</strong><span>直接写出的 12dp</span></div>
+          <div class="metric-card warn"><strong>101</strong><span>页内直接声明的圆角形状</span></div>
+          <div class="metric-card warn"><strong>148</strong><span>直接写出的十六进制颜色</span></div>
+          <div class="metric-card"><strong>7</strong><span>不同描边宽度：0.5 / 0.65 / 0.7 / 0.75 / 1 / 1.2 / 1.5dp</span></div>
+        </div>
+        <div class="problem-grid">
+          <article class="problem"><span class="index">ISSUE 01 · MATERIAL</span><h3>材质的体积感靠边框硬撑</h3><p>新建会话有明显外轮廓，会话列表却像断线；输入框与设置搜索框又像两种不同材质。组件需要统一的填充、镜面高光、边缘折射与阴影层级。</p></article>
+          <article class="problem"><span class="index">ISSUE 02 · GEOMETRY</span><h3>尺寸和圆角没有角色</h3><p>10、14、18、22dp 圆角混用，按钮也随页面改变高宽。今后只允许角色令牌，视觉尺寸和 48dp 点击范围分开。</p></article>
+          <article class="problem"><span class="index">ISSUE 03 · RHYTHM</span><h3>间距不是“差一点”，而是节奏断裂</h3><p>6、10、14、18、22dp 大量出现，相邻页面使用不同间距。统一到 4dp 基础网格，并让列表、分组、页面和弹层各有固定语义。</p></article>
+        </div>
+        <div class="screenshot-grid">
+          <figure class="screen-card"><img src="assets/current-dark-mcp.webp" alt="当前深色添加与调用面板"><figcaption><b>MCP 能力调用</b>单列已改善，但弹层的高光、条目高度和图标底座仍需共用同一套角色令牌。</figcaption></figure>
+          <figure class="screen-card"><img src="assets/current-dark-thinking.webp" alt="当前思考强度面板"><figcaption><b>思考强度</b>条目多、面板宽；应限制最大宽度与高度，首项和末项保持同一内边距。</figcaption></figure>
+          <figure class="screen-card"><img src="assets/current-light-composer.webp" alt="当前浅色输入区"><figcaption><b>浅色输入区</b>输入框轮廓、浮动按钮和键盘上方的材质叠了两层。规范要求只有一层可见承载面。</figcaption></figure>
+          <figure class="screen-card"><img src="assets/current-old-sheet.webp" alt="旧的添加与调用栅格面板"><figcaption><b>历史对照</b>旧版把六个能力做成大卡片，层级比动作本身更突出。现已改成单列，但这是统一语言的起点。</figcaption></figure>
+        </div>
+      </section>
+
+      <section id="research">
+        <div class="section-head">
+          <div><span class="eyebrow">02 · Evidence</span><h2>依据来自系统级规范，但不伪造私有 token</h2></div>
+          <p>Apple、Material 与 Android 提供官方原则；ColorOS、HarmonyOS、HyperOS 用于对照主流手机系统的完成度。数值统一由 NEXA 自建，并明确标注为派生规则。</p>
+        </div>
+        <div class="research-grid">
+          <a class="source-card" href="https://developer.apple.com/design/human-interface-guidelines/materials" target="_blank" rel="noreferrer"><span class="source-type">Official</span><span class="arrow">↗</span><h3>Apple HIG · Materials</h3><p>材质用于建立信息层级、可读性与纵深感。玻璃不能只是装饰，必须服务内容结构和交互状态。</p></a>
+          <a class="source-card" href="https://developer.apple.com/design/human-interface-guidelines/motion" target="_blank" rel="noreferrer"><span class="source-type">Official</span><span class="arrow">↗</span><h3>Apple HIG · Motion</h3><p>动效帮助理解位置和状态变化，并且必须尊重 Reduce Motion。NEXA 不把持续漂浮作为核心交互反馈。</p></a>
+          <a class="source-card" href="https://m3.material.io/styles/motion/easing-and-duration/tokens-specs" target="_blank" rel="noreferrer"><span class="source-type">Official</span><span class="arrow">↗</span><h3>Material 3 · Easing &amp; duration</h3><p>使用语义时长与标准/加速/减速曲线。本文的数值区间是按设备任务重新收敛，而不是宣称它们是 Material 原值。</p></a>
+          <a class="source-card" href="https://support.google.com/accessibility/android/answer/7101858?hl=zh-Hans" target="_blank" rel="noreferrer"><span class="source-type">Official</span><span class="arrow">↗</span><h3>Android Accessibility</h3><p>点击区域至少 48×48dp；状态不能只靠颜色传达；字体缩放后结构仍需可用。</p></a>
+          <a class="source-card" href="https://github.com/Kyant0/AndroidLiquidGlass" target="_blank" rel="noreferrer"><span class="source-type">Reference</span><span class="arrow">↗</span><h3>AndroidLiquidGlass</h3><p>参考背景采样、模糊与边缘折射的分层方式，以及能力不支持时的回退思路；不直接复制其外观。</p></a>
+          <a class="source-card" href="https://github.com/styropyr0/PrismalAGSL" target="_blank" rel="noreferrer"><span class="source-type">Reference</span><span class="arrow">↗</span><h3>PrismalAGSL</h3><p>参考镜面高光、边缘折射和自动降级；NEXA 的材质等级与几何仍由自身令牌控制。</p></a>
+          <a class="source-card" href="https://github.com/NEORUAA/Glasmio" target="_blank" rel="noreferrer"><span class="source-type">Reference</span><span class="arrow">↗</span><h3>Glasmio</h3><p>参考玻璃控件的布局与交互组织，不把整个 iOS 组件体系搬进 NEXA。</p></a>
+          <a class="source-card" href="https://developer.huawei.com/consumer/cn/design/" target="_blank" rel="noreferrer"><span class="source-type">System study</span><span class="arrow">↗</span><h3>HarmonyOS Design</h3><p>对照系统级页面节奏、圆润几何与跨设备一致性。公开页面未提供的私有数值不会写成“官方标准”。</p></a>
+          <a class="source-card" href="https://hyperos.mi.com/" target="_blank" rel="noreferrer"><span class="source-type">System study</span><span class="arrow">↗</span><h3>HyperOS / ColorOS</h3><p>用于对照动效克制、材质连贯和设置信息密度。NEXA 以自身可维护性为准，不伪装成任一厂商组件。</p></a>
+        </div>
+        <div class="decision-note"><div class="badge">✓</div><div><p><b>结论：不需要再安装一套第三方 UI Skill 或插件。</b> 当前的问题是仓库内缺少强制令牌与组件映射。现有 Figma / 视觉能力和 Compose 源码已足够；直接建立 NEXA 自有基础，才能让每次改动都可检查、可回退，也避免引入第三套互相冲突的标准。</p></div></div>
+      </section>
+
+      <section id="tokens">
+        <div class="section-head">
+          <div><span class="eyebrow">03 · Foundations</span><h2>一张表定义尺寸，一张表约束语义</h2></div>
+          <p>基础值只出现一次。页面不能写 6、10、14、18、22dp 这样的局部“感觉值”；应当选择角色令牌。</p>
+        </div>
+        <div class="foundation-grid">
+          <article class="foundation-card">
+            <h3>间距与布局 <code>space.*</code></h3>
+            <div class="spacing-ruler">
+              <div class="spacing-row"><span>04</span><div class="spacing-bar" style="--n:8"></div><span>4dp</span></div>
+              <div class="spacing-row"><span>08</span><div class="spacing-bar" style="--n:16"></div><span>8dp</span></div>
+              <div class="spacing-row"><span>12</span><div class="spacing-bar" style="--n:24"></div><span>12dp</span></div>
+              <div class="spacing-row"><span>16</span><div class="spacing-bar" style="--n:32"></div><span>16dp</span></div>
+              <div class="spacing-row"><span>20</span><div class="spacing-bar" style="--n:40"></div><span>20dp</span></div>
+              <div class="spacing-row"><span>24</span><div class="spacing-bar" style="--n:48"></div><span>24dp</span></div>
+              <div class="spacing-row"><span>32</span><div class="spacing-bar" style="--n:64"></div><span>32dp</span></div>
+              <div class="spacing-row"><span>48</span><div class="spacing-bar" style="--n:96"></div><span>48dp</span></div>
+            </div>
+            <table class="token-table" style="margin-top:18px">
+              <thead><tr><th>角色</th><th>手机</th><th>规则</th></tr></thead>
+              <tbody>
+                <tr><td>页面边距</td><td><code>16</code></td><td>设置、会话、列表统一</td></tr>
+                <tr><td>卡片内边距</td><td><code>16</code></td><td>最小上下 12，长文 20</td></tr>
+                <tr><td>同级卡片</td><td><code>8</code></td><td>同组行不重复套卡</td></tr>
+                <tr><td>分组间距</td><td><code>24</code></td><td>标题到内容 8</td></tr>
+                <tr><td>列表行高</td><td><code>56</code></td><td>双行最高 72</td></tr>
+                <tr><td>弹层内边距</td><td><code>20</code></td><td>标题和正文 16</td></tr>
+              </tbody>
+            </table>
+          </article>
+          <article class="foundation-card">
+            <h3>字号与层级 <code>type.*</code></h3>
+            <div class="type-spec"><strong class="t-display">Display 34 / 40</strong><span>仅页面主标题，600 字重</span></div>
+            <div class="type-spec"><strong class="t-title">Title 24 / 32</strong><span>分区标题或关键值，600</span></div>
+            <div class="type-spec"><strong class="t-item">Item 16 / 24</strong><span>列表主标题、输入文字，500–600</span></div>
+            <div class="type-spec"><strong class="t-body">Body 15 / 23</strong><span>正文与对话，400；长文本不强制 16</span></div>
+            <div class="type-spec"><strong class="t-support">Support 12 / 18</strong><span>说明、时间、次级信息，400</span></div>
+            <p class="tiny" style="margin-top:16px">中文字号不强制固定宽度；设置行不再按页面局部使用 13/14/15 混排。字重只用 400 / 500 / 600。</p>
+          </article>
+          <article class="foundation-card">
+            <h3>圆角与描边 <code>shape.* / stroke.*</code></h3>
+            <table class="token-table">
+              <thead><tr><th>角色</th><th>圆角</th><th>用途</th></tr></thead>
+              <tbody>
+                <tr><td>Micro</td><td><code>8</code></td><td>小标签、微型图标</td></tr>
+                <tr><td>Control</td><td><code>14 / 18</code></td><td>图标按钮 / 输入与选择；连续曲率</td></tr>
+                <tr><td>Card</td><td><code>22 / 28</code></td><td>普通卡 / 分区卡；连续曲率</td></tr>
+                <tr><td>Overlay</td><td><code>32</code></td><td>弹窗与底部面板；连续曲率</td></tr>
+                <tr><td>Capsule</td><td><code>999</code></td><td>模式切换、标签、浮动动作</td></tr>
+              </tbody>
+            </table>
+            <p class="tiny" style="margin-top:14px">经典皮肤采用连续曲率：曲率从直边逐渐加速进入转角，再由同一条曲率离开，不用“半圆 + 直边”的普通圆角。常态描边只保留 <span class="mono">0.5dp</span> 发丝和 <span class="mono">1dp</span> 聚焦；边界优先由明度差和镜面高光表达。</p>
+          </article>
+          <article class="foundation-card">
+            <h3>语义色 <code>color.*</code></h3>
+            <p class="muted">v1.4 使用鲜亮、明快、活泼的语义色：蓝、青、薄荷绿、黄橙、珊瑚红、紫与粉。状态文字仍采用略深版本保证 4.5:1 对比；皮肤只更换主色与材质，不改变含义。</p>
+            <div class="swatch-grid">
+              <div class="swatch" style="--sw:var(--positive)"><i></i><span>运行 · Positive</span></div>
+              <div class="swatch" style="--sw:var(--warning)"><i></i><span>等待 · Warning</span></div>
+              <div class="swatch" style="--sw:var(--danger)"><i></i><span>危险 · Danger</span></div>
+              <div class="swatch" style="--sw:var(--info)"><i></i><span>信息 · Info</span></div>
+              <div class="swatch" style="--sw:var(--plan)"><i></i><span>计划 · Plan</span></div>
+              <div class="swatch" style="--sw:var(--goal)"><i></i><span>目标 · Goal</span></div>
+              <div class="swatch" style="--sw:var(--auto)"><i></i><span>自动审批</span></div>
+              <div class="swatch" style="--sw:var(--smart)"><i></i><span>智能审批</span></div>
+            </div>
+            <p class="tiny" style="margin-top:16px">运行模式与审批权限必须用不同颜色与不同首字；不能只改一处状态点。红色只用于危险与需要人工确认的动作。</p>
+          </article>
+        </div>
+        <div class="type-system-stage" id="typeSystem">
+          <div class="type-system-head">
+            <div><span class="eyebrow">Type presets</span><h3>经典皮肤保留三套字体气质，不改变字号层级</h3></div>
+            <p>页面顶部可直接切换。Android 首包优先使用系统字体和合法可分发字体；不内嵌 SF。三套方案只改变字形与字重节奏，行高、字号、触控和信息密度保持同一套令牌。</p>
+          </div>
+          <div class="type-system-grid">
+            <button class="type-system-card type-trigger is-active" data-type="system" data-sample="system" aria-pressed="true"><small>01 · SYSTEM / SF-INSPIRED</small><strong>清楚，恰到好处</strong><p>优先系统原生字形：Windows 使用 Segoe UI Variable，Android 使用 Roboto；中文按系统字体回退。中性、克制、适合高频操作。</p><span class="type-caption">Roboto · Segoe UI Variable · 系统中文字体</span></button>
+            <button class="type-system-card type-trigger" data-type="humanist" data-sample="humanist" aria-pressed="false"><small>02 · HUMANIST / MANROPE</small><strong>轻一点，也更亲近</strong><p>随包使用 OFL 授权的 Manrope 处理英文与数字，中文由系统合法字体回退。比系统字形更轻、更开阔，适合设置说明和长文案。</p><span class="type-caption">Manrope · 系统中文字体 fallback</span></button>
+            <button class="type-system-card type-trigger" data-type="editorial" data-sample="editorial" aria-pressed="false"><small>03 · EDITORIAL / NEWSREADER</small><strong>让内容自然呼吸</strong><p>标题随包使用 OFL 授权的 Newsreader，中文标题回落到 Songti 一类书刊气质；正文仍使用系统无衬线，不牺牲控制区可读性。</p><span class="type-caption">Newsreader · Songti · 系统正文</span></button>
+          </div>
+        </div>
+      </section>
+
+      <section id="materials">
+        <div class="section-head">
+          <div><span class="eyebrow">04 · Material hierarchy</span><h2>高级感来自克制，不来自每层玻璃</h2></div>
+          <p>ColorOS 17 不是“灰底 + 灰卡”。真实像素是近冷白雾蓝画布、真正纯白卡片，再用少量冷光与暖光打破单调。NEXA 会保留这层很轻的珍珠差，不让底色、卡片和阴影同时灰化。</p>
+        </div>
+        <div class="pearl-palette" aria-label="OPPO 参考色重校">
+          <div class="pearl-sample pearl-canvas"><canvas aria-hidden="true"></canvas><b>画布 · 珍珠雾白</b><span>#F0F1F3 · 只在页面底层出现</span></div>
+          <div class="pearl-sample pearl-card"><canvas aria-hidden="true"></canvas><b>内容卡 · 真正纯白</b><span>#FFFFFF · 不继承画布灰度</span></div>
+          <div class="pearl-sample pearl-light"><canvas aria-hidden="true"></canvas><b>局部光 · 冷暖极轻</b><span>0–8% · 只在边缘改变气质</span></div>
+        </div>
+        <div class="glass-lab">
+          <div class="glass-showcase">
+            <div class="glass-specimen">
+              <div class="glass-kicker">M3 · LIVE FOCAL GLASS</div>
+              <h4>背景透出来，文字仍清楚</h4>
+              <p>玻璃层只对主输入区、临时浮层采样背景。可辨认的颜色来自背后，晶面高光和局部折射只落在边缘；正文与图标不进入折射层。</p>
+              <div class="glass-controls"><span>＋</span><span>✦</span><span>◉</span><span>↑</span></div>
+            </div>
+            <div class="glass-specimen frosted">
+              <div class="glass-kicker">M4 · FROSTED OVERLAY</div>
+              <h4>磨砂仍要有深度</h4>
+              <p>菜单和弹层提高遮蔽度、降低折射；顶部内高光与底边暗面形成 1dp 左右的实体感。</p>
+            </div>
+          </div>
+        </div>
+        <div class="glass-tech-grid">
+          <div class="glass-tech"><b>01 · 背景采样</b><span>只读取玻璃后方可滚动内容；每个可见区域最多一层实时采样。</span></div>
+          <div class="glass-tech"><b>02 · 模糊与降采样</b><span>先缩小再模糊，正文层保持独立；中低端设备限制采样尺寸。</span></div>
+          <div class="glass-tech"><b>03 · 亮度与色相</b><span>regular 材质调整背景明度；clear 材质只在视觉丰富的背景上使用。</span></div>
+          <div class="glass-tech"><b>04 · 受光与降级</b><span>镜面高光、局部边缘折射和静态玻璃回退；关闭模糊时仍保留层级。</span></div>
+        </div>
+        <div class="material-stage">
+          <i class="blob b1"></i><i class="blob b2"></i><i class="blob b3"></i>
+          <div class="material-refined">
+            <div class="material-refined-card"><div class="level">M0 · CANVAS</div><b>画布</b><span>100% · 静态柔雾渐变</span></div>
+            <div class="material-refined-card"><div class="level">M1 · GROUP</div><b>纯白内容组</b><span>经典 100% · 玻璃 58–76%</span></div>
+            <div class="material-refined-card"><div class="level">M2 · FIELD</div><b>输入凹面</b><span>48–70% · 轻微内阴影</span></div>
+            <div class="material-refined-card"><div class="level">M3 · FOCAL</div><b>唯一主玻璃</b><span>58–76% · 16–22dp 模糊</span></div>
+            <div class="material-refined-card"><div class="level">M4 · OVERLAY</div><b>浮层</b><span>84–94% · 单向柔影</span></div>
+          </div>
+        </div>
+        <div class="lab-controls">
+          <div><label for="blurRange" style="display:block;font-size:12px;font-weight:600">背景模糊强度（仅预览）</label><input id="blurRange" type="range" min="0" max="40" value="22"></div>
+          <div class="lab-value" id="blurValue">22 px</div>
+        </div>
+        <div class="material-rules">
+          <div class="material-rule"><b>分组先于玻璃</b><br>同一组设置只共用一个柔雾面，组内用 0.5dp、8–12% 对比的发丝线分隔；每行不再套独立卡片。</div>
+          <div class="material-rule"><b>边缘改为受光</b><br>取消一圈高亮外描边。只允许局部顶部反光、底边 1–8% 暗影和聚焦时的 2dp 语义环。</div>
+          <div class="material-rule"><b>玻璃有预算</b><br>每屏最多一个持续采样主输入区；菜单打开时叠加一个临时浮层。普通卡片零实时模糊。</div>
+        </div>
+        <table class="token-table component-stage" style="margin-top:14px">
+          <thead><tr><th>材质级</th><th>填充</th><th>Blur</th><th>边界</th><th>仅用于</th></tr></thead>
+          <tbody>
+            <tr><td>M0 Canvas</td><td>珍珠雾白 100%</td><td>0</td><td>无</td><td>页面背景；不进入内容卡</td></tr>
+            <tr><td>M1 Group</td><td>纯白；玻璃 58–76%</td><td>0</td><td>0.5dp / 6–10%</td><td>设置组、列表组、普通卡片</td></tr>
+            <tr><td>M2 Field</td><td>48–70%</td><td>0</td><td>内阴影 + 聚焦环</td><td>普通输入、搜索、单行字段</td></tr>
+            <tr><td>M3 Focal</td><td>58–76%</td><td>16–22</td><td>局部受光，无闭合亮边</td><td>每屏一个主输入区或主浮动控制</td></tr>
+            <tr><td>M4 Overlay</td><td>84–94%</td><td>24–30</td><td>轻渐变边</td><td>菜单、底部面板、弹窗</td></tr>
+            <tr><td>M4 Scrim</td><td>38–58%</td><td>4–8</td><td>无</td><td>模态遮罩</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="inventory">
+        <div class="section-head">
+          <div><span class="eyebrow">05 · Component census</span><h2>先把“到底有多少种”数清楚</h2></div>
+          <p>旧规范只说“统一按钮和输入框”，还不够。这里把源码调用量、用户可见搜索入口和最终设计角色分开记录，避免把 146 个调用误理解成 146 种输入框。</p>
+        </div>
+        <div class="census-strip">
+          <div class="census-card"><strong>146</strong><b>输入 API 调用</b><span>TextField 125 · Basic 8 · InputField 10 · SearchBar 3</span></div>
+          <div class="census-card"><strong>23</strong><b>用户可见搜索入口</b><span>人工去重后覆盖设置、模型、能力、知识、文件与浏览器</span></div>
+          <div class="census-card"><strong>401</strong><b>直接按钮调用</b><span>TextButton 257 · IconButton 144；另有 58 个自定义动作 Composable</span></div>
+          <div class="census-card"><strong>916</strong><b>图标引用</b><span>Rounded 842 · Outlined 36 · AutoMirrored 38</span></div>
+        </div>
+        <p class="scan-note"><b>口径：</b>只读扫描 <code>app/src/main/kotlin</code> 与 <code>app/src/main/res/drawable</code>。调用数用于识别碎片化，不等于功能数；自定义动作名称扫描包含少量非按钮语义的命中，因此只作为“二次分叉”信号。最终视觉角色按职责归并，不按文件或页面归并。</p>
+        <div class="table-scroll component-stage">
+          <table class="token-table taxonomy-table">
+            <thead><tr><th>源码信号</th><th>当前数量</th><th>发现</th><th>设计决策</th></tr></thead>
+            <tbody>
+              <tr><td>文本与搜索 API</td><td>146 次 / 覆盖多种页面</td><td>多行、单行、密码、数字、地址、搜索、标签混用同一基础 API</td><td>保留 1 套底层行为，投影为 10 个视觉角色</td></tr>
+              <tr><td>搜索入口</td><td>23 个</td><td>部分使用 SearchBar，部分使用 InputField 或普通 TextField，结构不同</td><td>全部使用 InlineSearch 或 SearchableSelect，不再逐页画搜索框</td></tr>
+              <tr><td>直接按钮</td><td>401 次</td><td>TextButton 与 IconButton 大量直接写尺寸、圆角、底材和颜色</td><td>10 个按钮角色；页面只传语义，不传视觉尺寸</td></tr>
+              <tr><td>自定义动作组件</td><td>58 个名称命中</td><td>Chip、Pill、Action、MiniButton 等各有局部实现</td><td>选项使用 ChoiceChip；状态使用 StatusPill；其余归入 ActionRow 或标准按钮</td></tr>
+              <tr><td>功能图标</td><td>916 次引用 / 13 个 XML</td><td>Material 图标占主导，本地矢量只覆盖少数原生入口与品牌资源</td><td>Material Symbols Rounded SVG 为唯一功能图标源，Android 转 ImageVector/XML</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="component-stage" style="margin-top:14px">
+          <div class="stage-label"><span>Input dictionary / 146 calls → 10 roles</span><span>One behavior base, ten visual jobs</span></div>
+          <div class="table-scroll">
+            <table class="token-table taxonomy-table">
+              <thead><tr><th>视觉角色</th><th>高度 / 圆角</th><th>结构与规则</th><th>使用位置</th><th>强制状态</th></tr></thead>
+              <tbody>
+                <tr><td>ComposerInput</td><td>48–144 / 20–24</td><td>多行、唯一主玻璃；附件/语音/模型/发送放在稳定底座；无第二层白条</td><td>会话、会议室、控制台主输入</td><td>空、聚焦、输入、生成、停止、只读</td></tr>
+                <tr><td>InlineSearch</td><td>44–48 / 12–16</td><td>左侧裸搜索图标、单行、尾部清除；高度固定，不显示浮动 label</td><td>列表顶部、目录、筛选器</td><td>空查询、有查询、聚焦、无结果、加载</td></tr>
+                <tr><td>TextFieldSingle</td><td>48–56 / 12–16</td><td>标签固定在字段上方；错误文案占独立行，不把布局挤跳</td><td>名称、标题、备注、普通设置</td><td>空、聚焦、已填、错误、禁用</td></tr>
+                <tr><td>TextFieldMultiline</td><td>64–180 / 16</td><td>最少 3 行，超过上限内部滚动；不随内容无限长高</td><td>提示词、世界书、消息、描述</td><td>空、聚焦、草稿、超限、只读</td></tr>
+                <tr><td>SecretField</td><td>48–56 / 12–16</td><td>默认遮蔽；一键显示；粘贴、清除、验证分离；不得在辅助文字中回显密钥</td><td>API Key、Token、密码</td><td>已保存、未保存、显示、验证中、失败</td></tr>
+                <tr><td>NumberField</td><td>48–56 / 12–16</td><td>数字键盘、单位后缀；步进器仅用于小范围明确数值；错误说明范围</td><td>Context、CPU、价格、超时、次数</td><td>空、合法、越界、禁用</td></tr>
+                <tr><td>LocatorField</td><td>48–56 / 12–16</td><td>URL、主机或路径共用；等宽显示可辨字符；粘贴规范化和测试连接分开</td><td>Provider、MCP、远程主机、共享目录</td><td>待验证、验证中、可连接、不可达</td></tr>
+                <tr><td>CodeField</td><td>120–360 / 16</td><td>等宽字体、可滚动、可复制；JSON/代码不自动格式化到用户视线跳动</td><td>JSON、请求头、脚本、变量</td><td>有效、语法错误、只读、格式化中</td></tr>
+                <tr><td>SelectField</td><td>48–56 / 12–16</td><td>只展示当前值；选择器可选带 InlineSearch；单选/多选计数在触发器内表达</td><td>提供商、模型、模式、语言、权限</td><td>未选、已选、打开、无结果、禁用</td></tr>
+                <tr><td>TagEditor</td><td>48+ / 16</td><td>标签自动换行；输入与删除可键盘操作；重复项即时提示</td><td>标签、关键词、能力白名单、请求头作用域</td><td>空、已添加、重复、格式错误</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="input-lab">
+            <div class="input-sample"><span>InlineSearch · default / focus</span><div class="visual-input"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><span>搜索模型、提供商或能力</span></div><div class="visual-input focused" style="margin-top:8px"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><span>deepseek</span><span style="margin-left:auto">×</span></div></div>
+            <div class="input-sample"><span>TextFieldMultiline · stable frame</span><div class="visual-input visual-textarea"><span>在这里输入提示词、世界书或长文本。</span></div><div class="state-row"><span class="state-chip active">聚焦</span><span class="state-chip">草稿</span><span class="state-chip">字数 128 / 16,000</span></div></div>
+          </div>
+        </div>
+
+        <div class="component-stage" style="margin-top:14px">
+          <div class="stage-label"><span>Search routes / same anatomy</span><span>23 user-visible entries</span></div>
+          <ol class="route-list">
+            <li><b>设置首页</b>搜索设置项</li>
+            <li><b>统一列表</b>会话与文件夹</li>
+            <li><b>会议室</b>房间与主持人</li>
+            <li><b>角色库</b>名称或标签</li>
+            <li><b>模型选择器</b>模型名称</li>
+            <li><b>社区提供商</b>目录搜索</li>
+            <li><b>社区模型</b>模型名称或 ID</li>
+            <li><b>提供商列表</b>服务商搜索</li>
+            <li><b>提供商详情</b>模型搜索</li>
+            <li><b>远程模型导入</b>可导入模型</li>
+            <li><b>能力中心</b>Skill 搜索</li>
+            <li><b>会话分支</b>历史节点</li>
+            <li><b>学习经验</b>主题与内容</li>
+            <li><b>MCP 目录</b>服务与工具</li>
+            <li><b>记忆库</b>主题、内容、项目</li>
+            <li><b>Token 价格</b>模型与计价</li>
+            <li><b>项目对象</b>项目与对象</li>
+            <li><b>提示词模板</b>模板搜索</li>
+            <li><b>提示词目标</b>注入目标</li>
+            <li><b>工具边界</b>工具与风险</li>
+            <li><b>子 Agent</b>模型或服务商</li>
+            <li><b>工作区</b>文件名或正文</li>
+            <li><b>浏览器</b>地址与搜索</li>
+          </ol>
+          <p class="tiny" style="margin:14px 0 0">统一的是搜索的视觉解剖、清空行为、无结果和键盘提交语义。工作区全文检索、浏览器地址栏仍保留其业务专有能力，不强行伪装成普通列表搜索。</p>
+        </div>
+      </section>
+
+      <section id="components">
+        <div class="section-head">
+          <div><span class="eyebrow">06 · Action language</span><h2>401 个按钮调用，只保留 10 个角色</h2></div>
+          <p>按钮按动作权重选择，不按所在页面选择。页面只传“主操作、轻操作、危险、选择或行操作”，材质、圆角、按压和禁用状态由基础组件决定。</p>
+        </div>
+        <div class="component-stage">
+          <div class="stage-label"><span>Button family / complete specimen</span><span>2 skins × 8 states, one geometry</span></div>
+          <div class="button-gallery">
+            <button class="button button-primary">主要操作</button>
+            <button class="button button-glass">次操作</button>
+            <button class="button button-quiet">安静操作</button>
+            <button class="button button-danger">危险操作</button>
+            <button class="bare-icon" aria-label="添加"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+            <span class="status-chip live">运行中</span>
+          </div>
+          <div class="button-gallery" style="margin-top:12px">
+            <div class="segmented" role="group" aria-label="分段选择"><button aria-pressed="true">会话</button><button>会议室</button></div>
+            <span class="state-chip active">全部提供商</span><span class="state-chip">快速模型</span>
+            <button class="button button-glass" disabled style="opacity:.38;cursor:not-allowed">不可用</button>
+          </div>
+          <table class="token-table" style="margin-top:20px">
+            <thead><tr><th>角色</th><th>视觉尺寸 / 圆角</th><th>触控区</th><th>默认材质</th><th>使用规则</th><th>必要状态</th></tr></thead>
+            <tbody>
+              <tr><td>Primary</td><td>48 / 16</td><td>48+</td><td>强调色实心 + 柔和顶部受光</td><td>每屏一个主动作；加载时文案保留</td><td>默认、按下、聚焦、禁用、加载</td></tr>
+              <tr><td>Secondary</td><td>48 / 16</td><td>48+</td><td>安静表面</td><td>次动作；不与 Primary 等宽争抢</td><td>默认、按下、聚焦、选中、禁用</td></tr>
+              <tr><td>Quiet</td><td>44 / 12</td><td>48</td><td>透明</td><td>取消、展开、低频辅助</td><td>默认、按下、聚焦、禁用</td></tr>
+              <tr><td>Destructive</td><td>48 / 16</td><td>48+</td><td>危险色，仅确认时实心</td><td>明确对象与影响范围；不在行内直接执行</td><td>默认、聚焦、禁用、确认中</td></tr>
+              <tr><td>IconAction</td><td>40 / 12</td><td>48</td><td>默认裸图标，无底圈</td><td>背景只在按下、焦点或明确浮动场景出现</td><td>默认、按下、聚焦、选中、禁用</td></tr>
+              <tr><td>FloatingPill</td><td>44 / 999</td><td>48</td><td>单层玻璃或安静胶囊</td><td>新建会话、录音等附着主区；不可出现白色遮罩底条</td><td>默认、按下、聚焦、加载、录音中</td></tr>
+              <tr><td>Segmented</td><td>38 / 999</td><td>48</td><td>共享轨道 + 单一选中面</td><td>仅 2–4 个互斥视图；选中项不靠颜色单独表达</td><td>默认、选中、聚焦、禁用</td></tr>
+              <tr><td>ChoiceChip</td><td>32 / 999</td><td>48</td><td>透明或轻表面</td><td>筛选与多选；支持勾选和清除，不和状态标签混用</td><td>未选、选中、聚焦、禁用</td></tr>
+              <tr><td>StatusPill</td><td>26 / 999</td><td>不可点击</td><td>语义色低透明底</td><td>只读状态；必须有文字/图标，不能只显示颜色圆点</td><td>运行、等待、成功、失败、已停</td></tr>
+              <tr><td>ActionRow</td><td>56 / 组内直角</td><td>56×整行</td><td>属于共享分组面</td><td>菜单与设置行操作；发丝线分隔，不把每行做成胶囊按钮</td><td>默认、按下、聚焦、选中、禁用</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="role-grid">
+          <div class="role-card"><div class="role-top"><span class="role-code">PRESS</span><span class="tiny">90ms</span></div><h4>按压不移动布局</h4><p>按下 0.93–0.975，松开用单次轻回弹回位；阻尼 0.78–0.88、刚度 360–540。列表整行只改变表面，不缩放文字。</p><div class="measurements"><span>scale .96</span><span>spring once</span><span>no reflow</span></div></div>
+          <div class="role-card"><div class="role-top"><span class="role-code">FOCUS</span><span class="tiny">always visible</span></div><h4>聚焦环在视觉边界外</h4><p>键盘与 TalkBack 焦点使用 2dp 外部环，不改变控件宽高。激活态与聚焦态可以同时存在。</p><div class="measurements"><span>2dp ring</span><span>2dp offset</span><span>AA</span></div></div>
+          <div class="role-card"><div class="role-top"><span class="role-code">SELECTED</span><span class="tiny">non-color cue</span></div><h4>选中需要第二信号</h4><p>除语义色外必须有勾选、形状、文字或持续表面。多选项和当前视图项使用不同语义，不共用一个“蓝底”。</p><div class="measurements"><span>check</span><span>surface</span><span>semantic</span></div></div>
+          <div class="role-card"><div class="role-top"><span class="role-code">DISABLED</span><span class="tiny">8 states</span></div><h4>禁用、加载、错误三点分开</h4><p>禁用拒绝交互；加载保留文案并显示固定尺寸进度；错误在字段下方说明原因。三者不能都用降低透明度表达。</p><div class="measurements"><span>disabled</span><span>loading</span><span>error</span></div></div>
+        </div>
+        <div class="component-stage">
+          <div class="stage-label"><span>Composer / one surface, one rhythm</span><span>Target standard</span></div>
+          <div class="demo-composer">
+            <div class="composer composer-large">
+              <div class="composer-copy">交给 NEXA 去完成</div>
+              <div class="composer-meta"><span class="mode-tag plan">P · 计划</span><span class="mode-tag auto">A · 自动</span><span class="mode-tag goal">G · 目标</span></div>
+              <div class="composer-bar">
+                <button class="composer-icon" aria-label="添加能力"><svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+                <button class="composer-icon" aria-label="设置"><svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg></button>
+                <button class="composer-icon" aria-label="思考强度"><svg class="icon" viewBox="0 0 24 24"><path d="m12 3 1.6 5.4L19 10l-5.4 1.6L12 17l-1.6-5.4L5 10l5.4-1.6L12 3Z"/></svg></button>
+                <div class="context-meter"></div>
+                <button class="composer-icon" aria-label="语音"><svg class="icon" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11v1a7 7 0 0 0 14 0v-1M12 19v3M8 22h8"/></svg></button>
+                <button class="composer-icon" aria-label="选择模型"><svg class="icon" viewBox="0 0 24 24"><path d="m12 3 8 4.5-8 4.5-8-4.5L12 3Z"/><path d="m4 12 8 4.5 8-4.5M4 16.5l8 4.5 8-4.5"/></svg></button>
+                <button class="send-btn" aria-label="发送"><svg class="icon" viewBox="0 0 24 24" style="width:20px;height:20px"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>
+              </div>
+            </div>
+            <div class="action-preview glass" id="actionPreview">
+              <div class="backdrop-copy">能力、运行模式与审批权限都从同一锚点打开；面板宽度统一，单列展开，不再和输入框争抢焦点。</div>
+              <div class="popover">
+                <div class="popover-head"><span>添加与调用</span><span>✕</span></div>
+                <button class="popover-item"><span class="icon-tile">▧</span><span><b>图片</b><small>从相册添加</small></span><span class="chev">›</span></button>
+                <button class="popover-item"><span class="icon-tile">⌘</span><span><b>MCP</b><small>选择外部能力</small></span><span class="chev">⌄</span></button>
+                <button class="popover-item"><span class="icon-tile">✦</span><span><b>技能</b><small>选择当前技能</small></span><span class="chev">›</span></button>
+              </div>
+            </div>
+          </div>
+          <p class="tiny" style="margin:16px 0 0">输入框、浮动“新建会话”与各选择面板属于同一控件族：同圆角梯度、同高光方向、同状态动效。白色遮罩只能在画布层出现，不能再叠到输入区。</p>
+        </div>
+        <div class="component-stage">
+          <div class="stage-label"><span>Selection overlays / model and voice</span><span>Shared Overlay Surface</span></div>
+          <div class="overlay-showcase">
+            <div class="selector-card">
+              <div class="selector-head"><h4>选择模型</h4><span class="tiny">12 个可用</span></div>
+              <div class="selector-tools"><input class="selector-search" aria-label="搜索模型" placeholder="搜索模型"><button class="filter-pill">全部提供商 ⌄</button></div>
+              <div class="model-row selected"><span class="model-logo">DS</span><span><b>DeepSeek Flash</b><small>DeepSeek · 128K · 快速</small></span><span class="select-check">✓</span></div>
+              <div class="model-row"><span class="model-logo">GP</span><span><b>GPT 高速模型</b><small>OpenAI · 128K · 通用</small></span><span class="chev">›</span></div>
+              <div class="model-row"><span class="model-logo">Q</span><span><b>Qwen Max</b><small>DashScope · 256K · 推理</small></span><span class="chev">›</span></div>
+              <div class="model-row"><span class="model-logo">M</span><span><b>本地 MoE</b><small>本地 · 32K · 离线</small></span><span class="chev">›</span></div>
+            </div>
+            <div class="voice-stage">
+              <div class="voice-head"><strong>NEXA 语音</strong><span>实时 · 低延迟</span></div>
+              <div class="voice-orb" aria-hidden="true"></div>
+              <div class="voice-wave-label">
+                <div class="wave-bars"><i style="--h:7px;--d:0ms"></i><i style="--h:17px;--d:80ms"></i><i style="--h:11px;--d:160ms"></i><i style="--h:21px;--d:240ms"></i><i style="--h:9px;--d:320ms"></i><i style="--h:15px;--d:400ms"></i><i style="--h:19px;--d:480ms"></i></div>
+                <strong>正在聆听</strong><span>说完后停顿片刻即可发送</span>
+              </div>
+              <div class="voice-actions">
+                <button class="voice-action" aria-label="静音"><svg viewBox="0 0 24 24"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z"/><path d="M5 11v1a7 7 0 0 0 14 0v-1M12 19v3M8 22h8M4 4l16 16"/></svg></button>
+                <button class="voice-action end" aria-label="结束语音"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+                <button class="voice-action" aria-label="关闭语音"><svg viewBox="0 0 24 24"><path d="M5 8h14M8 8V6h8v2M9 12v5M12 12v5M15 12v5M7 8l1 13h8l1-13"/></svg></button>
+              </div>
+            </div>
+          </div>
+          <p class="tiny" style="margin:14px 0 0">语音主视觉采用 VoiceOrbs 选型：经典皮肤使用 <b>#1 Plasma Orb</b>，液晶玻璃使用 <b>#13 Waveform Ring</b>。环上的起伏必须来自最近一段真实 PCM 时域波形；静音、识别、朗读与错误状态只改变运动幅度、颜色和速度，不伪造音频内容。三类控制始终可见，并保持 48dp 触控范围。</p>
+        </div>
+        <div class="wrong-right" style="margin-top:14px">
+          <div class="comparison bad"><h4>✕ 当前反例</h4><div class="broken-outline">断断续续的明显外轮廓</div><p class="tiny">边线粗细随手指定，阴影和描边同时争夺层级；按钮各有尺寸，点击后只有颜色轻微变化。</p></div>
+          <div class="comparison good"><h4>✓ 统一结果</h4><div class="clean-surface">填充 + 内高光 + 柔影</div><p class="tiny">同一角色在所有页面沿用相同高度、圆角、内边距和按压反馈；皮肤只改变明暗、饱和度与折射强度。</p></div>
+        </div>
+      </section>
+
+      <section id="icons">
+        <div class="section-head">
+          <div><span class="eyebrow">07 · Iconography</span><h2>功能图标统一为可见的线条，不加装饰底圈</h2></div>
+          <p>NEXA 的界面图标源格式定为 Material Symbols Rounded SVG；Android 落地为 ImageVector 或 Vector Drawable。v1.4 把每个能力映射为一个鲜亮语义色，使用更细的 1.55–1.85 线宽、发丝阴影与极淡径向受光；默认仍直接放在页面上，只有按下、焦点、状态徽标和真正的独立入口可以出现容器。</p>
+        </div>
+        <div class="icon-format-flow">
+          <div class="format-node"><b>设计源文件</b><span>Material Symbols Rounded SVG；品牌 Logo 使用原始 SVG</span></div>
+          <div class="format-arrow">→</div>
+          <div class="format-node"><b>Android 资源</b><span>普通功能图标转 Compose ImageVector；原生入口用 Vector Drawable XML</span></div>
+          <div class="format-arrow">→</div>
+          <div class="format-node"><b>运行时</b><span>currentColor 着色；按下/选中只改变语义色与反馈层</span></div>
+        </div>
+        <div class="component-stage" style="margin-top:14px">
+          <div class="stage-label"><span>Rounded glyph / native optical sizes</span><span>Stroke 1.75–2dp</span></div>
+          <div class="icon-size-grid">
+            <div class="icon-size-cell" style="--icon-px:16px"><svg viewBox="0 0 24 24"><path d="M4 12h16M12 4v16"/></svg><span>16dp · 行内</span></div>
+            <div class="icon-size-cell" style="--icon-px:20px"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg><span>20dp · 导航</span></div>
+            <div class="icon-size-cell" style="--icon-px:24px"><svg viewBox="0 0 24 24"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z"/><path d="M5 11v1a7 7 0 0 0 14 0v-1M12 19v3M8 22h8"/></svg><span>24dp · 默认</span></div>
+            <div class="icon-size-cell" style="--icon-px:28px"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v8M8 12h8"/></svg><span>28dp · 空态</span></div>
+          </div>
+          <div class="icon-rules">
+            <div class="icon-rule good"><h4>✓ 正确：裸图标</h4><p>图标与文字共享同一基线，靠 44–48dp 透明触控区扩大可点击范围。设置行使用裸字形与语义色，不出现圆底或方块底。</p><div class="bare-icon-row"><button class="bare-icon" aria-label="设置"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.1A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.1A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.87l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.1A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.87-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.1.4.3.7.6 1 .3.3.7.4 1.1.4h.1v4h-.1a1.7 1.7 0 0 0-1.7.6Z"/></svg></button><span class="tiny">默认透明<br>按下才出现底</span></div></div>
+            <div class="icon-rule bad"><h4>× 淘汰：无意义底圈</h4><p>设置、菜单、能力入口和普通工具图标不再默认套彩色圆底或方块。只有状态徽标、品牌标识、独立浮动入口和可见触控反馈例外。</p><div class="bare-icon-row"><span class="forbidden-circle">☰</span><span class="tiny">图标被底圈吞掉，<br>视觉重量与层级失衡</span></div></div>
+          </div>
+        </div>
+        <p class="icon-group-title">NEXA capability glyph atlas · 每个图形都能直接对应到一个动作</p>
+        <div class="icon-atlas" aria-label="NEXA 功能图标能力图谱">
+          <div class="icon-atlas-item" style="--icon-color:#477b9d" role="img" aria-label="会话"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 5.5h16v11H9l-5 3v-14Z"/><path d="M8 9h8M8 13h5"/></svg><span>会话</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#75668a" role="img" aria-label="会议室"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="6" width="13" height="12" rx="3"/><path d="m16 10 5-3v10l-5-3"/></svg><span>会议室</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#3f796c" role="img" aria-label="新建会话"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 6h16v12H4zM12 9v6M9 12h6"/></svg><span>新建会话</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#637585" role="img" aria-label="统一列表"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h11"/></svg><span>统一列表</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#65717c" role="img" aria-label="设置"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg><span>设置</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#4d7d99" role="img" aria-label="添加能力"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span>添加能力</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#826e91" role="img" aria-label="外观"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18h1.5a1.8 1.8 0 0 0 1.4-3l-.4-.5a2 2 0 0 1 1.5-3.3H18A3 3 0 0 0 21 11a8 8 0 0 0-9-8Z"/><circle cx="7.5" cy="10" r=".8"/><circle cx="10" cy="7" r=".8"/><circle cx="14" cy="7" r=".8"/></svg><span>外观</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#7e668a" role="img" aria-label="思考强度"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m12 3 1.6 5.4L19 10l-5.4 1.6L12 17l-1.6-5.4L5 10l5.4-1.6L12 3Z"/><path d="m18.5 16 .7 2.3 2.3.7-2.3.7-.7 2.3-.7-2.3-2.3-.7 2.3-.7.7-2.3Z"/></svg><span>思考强度</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#3f796c" role="img" aria-label="上下文用量"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4v8h8"/><path d="M12 12 7 17"/></svg><span>上下文用量</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#4d7d99" role="img" aria-label="语音"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11v1a7 7 0 0 0 14 0v-1M12 19v3M8 22h8"/></svg><span>语音</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#75668a" role="img" aria-label="选择模型"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m12 3 8 4.5-8 4.5-8-4.5L12 3Z"/><path d="m4 12 8 4.5 8-4.5M4 16.5l8 4.5 8-4.5"/></svg><span>选择模型</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#26343e" role="img" aria-label="发送"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></svg><span>发送</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#ad5661" role="img" aria-label="停止"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><span>停止</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#647784" role="img" aria-label="搜索"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg><span>搜索</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#4d7d99" role="img" aria-label="文件"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h4M9 13h6M9 17h6"/></svg><span>文件</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#9a7138" role="img" aria-label="文件夹"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 6h7l2 2h9v11H3z"/></svg><span>文件夹</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#3f796c" role="img" aria-label="图片"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="8" cy="9" r="1.5"/><path d="m4 17 5-5 4 4 2-2 5 5"/></svg><span>图片</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#4d7d99" role="img" aria-label="MCP 工具"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="6" cy="12" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path d="M8 11.2 16 6.8M8 12.8l8 4.4"/></svg><span>MCP</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#75668a" role="img" aria-label="Skill"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m12 3 2.5 5.1 5.6.8-4.1 4 1 5.6-5-2.6-5 2.6 1-5.6-4.1-4 5.6-.8L12 3Z"/></svg><span>Skill</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#647784" role="img" aria-label="工具"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m14.5 6.5 3-3a5 5 0 0 0-6.3 6.3L4 17a2.1 2.1 0 0 0 3 3l7.2-7.2a5 5 0 0 0 6.3-6.3l-3 3-2.1-2.1Z"/></svg><span>工具</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#2f7466" role="img" aria-label="运行"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7V5Z"/></svg><span>运行</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#9b6c2d" role="img" aria-label="审批"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.7 2.8 8.4 7 10 4.2-1.6 7-5.3 7-10V6l-7-3Z"/><path d="m9 12 2 2 4-5"/></svg><span>审批</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#4d7d99" role="img" aria-label="刷新"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 8a7 7 0 0 1 11.8-1L20 12M4 12l2.1 5a7 7 0 0 0 11.8-1"/></svg><span>刷新</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#9a7138" role="img" aria-label="置顶"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 4h8l-1 5 3 3H6l3-3-1-5ZM12 12v8"/></svg><span>置顶</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#647784" role="img" aria-label="归档"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16v13H4zM3 4h18v3H3zM9 12h6"/></svg><span>归档</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#647784" role="img" aria-label="更多"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg><span>更多</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#ad5661" role="img" aria-label="删除"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 7h14M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6"/></svg><span>删除</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#ad5661" role="img" aria-label="警告"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3 2.5 20h19L12 3Z"/><path d="M12 9v5M12 17h.01"/></svg><span>警告</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#4d7d99" role="img" aria-label="复制"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2"/></svg><span>复制</span></div>
+          <div class="icon-atlas-item" style="--icon-color:#65717c" role="img" aria-label="编辑"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m4 20 4.5-1 10-10-3.5-3.5-10 10L4 20ZM13.5 7l3.5 3.5"/></svg><span>编辑</span></div>
+        </div>
+        <div class="table-scroll component-stage format-table" style="margin-top:14px">
+          <table class="token-table taxonomy-table">
+            <thead><tr><th>资产类型</th><th>允许格式</th><th>Android 表示</th><th>禁止 / 边界</th></tr></thead>
+            <tbody>
+              <tr><td>普通功能图标</td><td>Material Symbols Rounded SVG</td><td>Compose ImageVector；少量原生入口用 Vector Drawable XML</td><td>不用 PNG；不复刻 Material 以外的混搭图标库</td></tr>
+              <tr><td>品牌、模型 Logo</td><td>SVG 优先，必要时 WebP/PNG 多倍图</td><td>BrandLogo 组件，固定保持比例</td><td>不把品牌 Logo 做 currentColor；不强行套统一底圈</td></tr>
+              <tr><td>复杂状态动画</td><td>Lottie JSON / AnimatedVectorDrawable</td><td>受 Reduce Motion 和性能档控制</td><td>不用 GIF；不在列表滚动时持续播放</td></tr>
+              <tr><td>图表与数据符号</td><td>代码生成矢量或 Compose Canvas</td><td>Canvas / Path</td><td>不用截图充当图表；文本不进入折射层</td></tr>
+              <tr><td>启动器与通知</td><td>Adaptive Icon XML、通知矢量 XML</td><td>保留 Android 系统约束</td><td>不套界面 IconAction 规则</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="role-grid">
+          <div class="role-card"><div class="role-top"><span class="role-code">STROKE</span><span class="tiny">optical</span></div><h4>线宽固定，不随按钮放大</h4><p>16–28dp 均使用 1.75–2dp 视觉线宽，圆角端点；填充型只在明确选中态使用。</p><div class="measurements"><span>1.75dp</span><span>2dp</span><span>round cap</span></div></div>
+          <div class="role-card"><div class="role-top"><span class="role-code">COLOR</span><span class="tiny">vivid semantic</span></div><h4>一个能力一个鲜亮语义色</h4><p>蓝、紫、青、绿、橙、珊瑚、粉都由全局语义令牌控制。图标只带极淡无边界径向光，不出现底圈、小方块或霓虹描边。</p><div class="measurements"><span>one vivid tint</span><span>hairline depth</span><span>no container</span></div></div>
+          <div class="role-card"><div class="role-top"><span class="role-code">TOUCH</span><span class="tiny">separate</span></div><h4>图形 20–24，触控 48</h4><p>视觉尺寸与点击尺寸分离。相邻图标中心至少相隔 48dp；紧凑排列通过透明触控区补足。</p><div class="measurements"><span>24dp glyph</span><span>48dp hit</span><span>8dp gap</span></div></div>
+          <div class="role-card"><div class="role-top"><span class="role-code">RTL / A11Y</span><span class="tiny">mirror when meaning changes</span></div><h4>方向图标自动镜像</h4><p>返回、前进、缩进与发送等方向语义使用 AutoMirrored；播放、音量、设置等不镜像。每个 IconAction 有可读名称。</p><div class="measurements"><span>AutoMirrored</span><span>contentDescription</span><span>decorative null</span></div></div>
+        </div>
+      </section>
+
+      <section id="reference">
+        <div class="section-head">
+          <div><span class="eyebrow">08 · ColorOS 17 study</span><h2>从真实 OPPO 截图提炼“高级而不堆效果”</h2></div>
+          <p>参考只用于提炼完成度：低对比分组、充分留白、裸彩色图标、细发丝线、克制字号层级和少量强主操作。这里特别区分“近白雾蓝画布”和“纯白内容卡”：两者只差 4–6% 明度，但绝不能混成同一块灰。NEXA 不复制 OPPO 组件，也不虚构其私有 token。</p>
+        </div>
+        <div class="coloros-grid">
+          <figure class="coloros-shot"><img src="assets/coloros17-settings.webp" alt="ColorOS 17 设置首页"><figcaption><b>设置首页</b>连续分组与极细分隔；彩色裸图标直接承载语义。</figcaption></figure>
+          <figure class="coloros-shot"><img src="assets/coloros17-privacy.webp" alt="ColorOS 17 隐私与安全"><figcaption><b>隐私与安全</b>页码、统计卡和列表共享同一柔雾底，重点数字被放大。</figcaption></figure>
+          <figure class="coloros-shot"><img src="assets/coloros17-home.webp" alt="ColorOS 17 桌面"><figcaption><b>桌面</b>玻璃由系统背景与图标质量共同形成，不靠粗描边。</figcaption></figure>
+          <figure class="coloros-shot"><img src="assets/coloros17-translator.webp" alt="ColorOS 17 翻译"><figcaption><b>翻译</b>输入面、语言选择与底部控制保持大留白，局部形态可随任务变化。</figcaption></figure>
+          <figure class="coloros-shot"><img src="assets/coloros17-calculator.webp" alt="ColorOS 17 计算器"><figcaption><b>计算器</b>唯一高饱和橙色给主动作；其余数字键靠柔雾面与字号区分。</figcaption></figure>
+        </div>
+        <div class="coloros-findings">
+          <div class="coloros-finding"><b>01 · 层级靠近白差和留白</b><p>画布是偏冷的近白珍珠雾，内容卡维持真正纯白；页面几乎不用粗外框。灰只出现在发丝线和次级文字，卡片本身不发灰。</p></div>
+          <div class="coloros-finding"><b>02 · 图标直接裸露</b><p>设置图标是裸彩色或灰色字形，没有统一底圈。点击权重由行高、文字与间距承担，不靠圆底制造“可点”。</p></div>
+          <div class="coloros-finding"><b>03 · 主操作色极少</b><p>大量页面只保留一个强色动作。NEXA 的主按钮、发送、危险确认才使用实心高饱和色，其他控件回到中性表面。</p></div>
+          <div class="coloros-finding"><b>04 · 字体克制而准确</b><p>标题、行标题、说明和数字依靠字号、字重和灰阶分层，不靠字距、全大写或过多发光制造层级。</p></div>
+          <div class="coloros-finding"><b>05 · 局部形态允许不同</b><p>翻译、计算器、录音的控件形状不同，但图标语言、留白节奏、行高和字号一致。统一是规则一致，不是把每个控件做成同一胶囊。</p></div>
+          <div class="coloros-finding"><b>06 · 高级感来自光学秩序</b><p>珍珠画布只负责托起内容，不参与卡片填充；纯白卡片再靠极轻接触阴影、局部受光和高质量字形形成体积。所有边缘都亮、所有卡片都模糊，反而更廉价。</p></div>
+        </div>
+        <div class="coloros-contact"><img src="assets/coloros17-contact-sheet.webp" alt="ColorOS 17 九张参考截图总览"><p class="tiny" style="margin:10px 4px 0">原始素材：<code>C:\Users\29136\Desktop\OPPO</code>，共 9 张手机截图。本节缩略图仅作设计对照，不进入应用资源。</p></div>
+      </section>
+
+      <section id="settings">
+        <div class="section-head">
+          <div><span class="eyebrow">09 · Navigation &amp; settings</span><h2>复杂页面分组，简单页面直接呈现</h2></div>
+          <p>设置页的基础单位是“分组”，不是“每行一张卡”。顶部分类导航只用于确有多个任务的长页，短页不加装饰性分栏。</p>
+        </div>
+        <div class="settings-shell">
+          <div class="settings-window">
+            <div class="settings-title"><button class="icon-button" aria-label="返回">←</button><div><div class="settings-kicker">SETTINGS</div><h4>模型与推理</h4></div></div>
+            <input class="settings-search" aria-label="搜索设置" placeholder="搜索模型、提供商或能力">
+            <div class="settings-section-label">连接与模型</div>
+            <div class="settings-group">
+              <button class="setting-row"><span class="icon-tile">☁</span><span><b>模型提供商</b><small>DeepSeek / DeepSeek Flash</small></span><span class="chev">›</span></button>
+              <button class="setting-row"><span class="icon-tile">◎</span><span><b>候选路由</b><small>3 个提供商，自动回退已开启</small></span><span class="chev">›</span></button>
+              <button class="setting-row"><span class="icon-tile">⌁</span><span><b>推理偏好</b><small>平衡 · 上下文预算 128K</small></span><span class="chev">›</span></button>
+            </div>
+            <div class="settings-section-label">高级</div>
+            <div class="settings-group"><button class="setting-row"><span class="icon-tile">≡</span><span><b>运行统计</b><small>本日 18 次请求</small></span><span class="chev">›</span></button></div>
+          </div>
+          <div class="settings-window">
+            <div class="settings-title"><div><div class="settings-kicker">COMPLEX DETAIL</div><h4>模型提供商</h4></div></div>
+            <div class="tab-strip" role="tablist"><button role="tab" aria-selected="true">连接</button><button role="tab">模型</button><button role="tab">行为</button><button role="tab">请求头</button></div>
+            <div class="settings-group">
+              <button class="setting-row"><span class="icon-tile">●</span><span><b>连接状态</b><small>延迟 84 ms · 最近验证 2 分钟前</small></span><span class="status-chip live">正常</span></button>
+              <button class="setting-row"><span class="icon-tile">↻</span><span><b>默认模型</b><small>DeepSeek Flash</small></span><span class="chev">›</span></button>
+              <button class="setting-row"><span class="icon-tile">⌘</span><span><b>最大上下文</b><small>由模型能力自动协商</small></span><span class="chev">›</span></button>
+            </div>
+            <div class="settings-section-label">快捷动作</div>
+            <div class="button-gallery"><button class="button button-glass">测试连接</button><button class="button button-quiet">复制配置</button><button class="button button-danger">删除</button></div>
+          </div>
+        </div>
+        <div class="grid-3" style="margin-top:14px">
+          <div class="card"><h4>长页</h4><p class="tiny">最多 4 个固定分类；切换分类保留滚动位置、草稿和在途请求。分类栏不跟随正文滚走。</p></div>
+          <div class="card"><h4>短页</h4><p class="tiny">直接呈现分组，不为了“统一”制造空 Tab。所有浮层、按钮和状态仍复用同一基础组件。</p></div>
+          <div class="card"><h4>列表行</h4><p class="tiny">最小 56dp；裸图标 24dp、透明触控区 48dp；左侧文字 16dp、说明 12dp；0.5dp 分隔线从文字起点缩进。</p></div>
+        </div>
+        <div class="component-stage" style="margin-top:14px">
+          <div class="stage-label"><span>Unified conversation list</span><span>Pinned → folders → today → older</span></div>
+          <div class="navigation-sample">
+            <div class="nav-row running"><div class="avatar">R</div><div><b>分析当前任务链</b><div class="tiny">正在运行 · 42 秒</div></div><span class="status-chip live">运行中</span></div>
+            <div class="group-row"><span>置顶与文件夹</span><button>−</button></div>
+            <div class="nav-row"><div class="avatar">⌑</div><div><b>产品设计</b><div class="tiny">文件夹 · 12 个会话</div></div><span class="chev">›</span></div>
+            <div class="group-row"><span>今天 · 周四</span><button>−</button></div>
+            <div class="nav-row"><div class="avatar">A</div><div><b>检查设置结构</b><div class="tiny">更新于 14:32</div></div><span class="chev">›</span></div>
+            <div class="nav-row"><div class="avatar">B</div><div><b>MCP 工具异常恢复</b><div class="tiny">更新于 10:08</div></div><span class="chev">›</span></div>
+            <div class="nav-row old"><div class="avatar">C</div><div><b>十天前的运行记录</b><div class="tiny">灰色计时态</div></div><span class="chev">›</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="motion">
+        <div class="section-head">
+          <div><span class="eyebrow">10 · Motion</span><h2>动效只解释变化，不用来撑“高级感”</h2></div>
+          <p>按压要快、状态可跟随、进入略慢于退出。列表、弹层、滚动与语音面板共享同一套运动语义。</p>
+        </div>
+        <div class="motion-grid">
+          <div class="motion-card"><div class="motion-duration">90ms</div><h4>Press</h4><p>按下立即收缩明暗与阴影；松开轻回弹一次。</p><div class="motion-track" style="--w:20%"><span></span></div></div>
+          <div class="motion-card"><div class="motion-duration">180ms</div><h4>State</h4><p>选中、开关、状态胶囊与小范围形变。</p><div class="motion-track" style="--w:37%"><span></span></div></div>
+          <div class="motion-card"><div class="motion-duration">240 / 300ms</div><h4>Enter / Overlay</h4><p>状态进入柔和收束，浮层 300–340ms；退出快 20–35%。</p><div class="motion-track" style="--w:56%"><span></span></div></div>
+          <div class="motion-card"><div class="motion-duration">380ms</div><h4>Scene</h4><p>会话/会议室等大面积切换；超过 420ms 必须有明确理由。</p><div class="motion-track" style="--w:80%"><span></span></div></div>
+        </div>
+        <div class="motion-demo" id="motionDemo"><div><h4 style="margin-bottom:4px">播放 380ms 场景切换</h4><p class="tiny" style="margin:0">点击右侧按钮观察：快速起步、柔和收束，回弹只出现一次。</p></div><div class="motion-orb"></div><button class="button button-glass" id="playMotion">播放</button></div>
+        <div class="grid-2" style="margin-top:14px">
+          <div class="card"><h4>允许</h4><p class="tiny">按压反馈、状态切换、消息进入、弹层展开、抽屉/分栏转场、加载骨架、背景轻漂。</p></div>
+          <div class="card"><h4>禁止或需降级</h4><p class="tiny">无意义旋转、每条卡片独立漂浮、系统滚动时持续缩放、低电量下的粒子和折射、Reduce Motion 下仍有位移。</p></div>
+        </div>
+        <div class="timeline"><span>0ms</span><div class="timeline-line" style="--fill:16%"></div><span>90ms</span><div class="timeline-line" style="--fill:28%"></div><span>180ms</span><div class="timeline-line" style="--fill:40%"></div><span>300ms</span><div class="timeline-line" style="--fill:54%"></div><span>380ms</span><div class="timeline-line" style="--fill:72%"></div></div>
+      </section>
+
+      <section id="skins">
+        <div class="section-head">
+          <div><span class="eyebrow">11 · Final skins</span><h2>只做两套：经典与液晶玻璃</h2></div>
+          <p>两套皮肤共享全部组件、尺寸、状态、图标和动效规则。经典强调稳定与可读；液晶玻璃把主输入区、浮动控制与临时浮层做得更透、更有体积，但普通设置卡仍保持安静。</p>
+        </div>
+        <div class="skin-grid skin-grid-two">
+          <button class="skin-card classic skin-trigger" data-skin="classic" aria-pressed="false"><div class="skin-preview"></div><b>经典</b><span>稳定、清晰、接近原生系统；主输入区使用轻微表面差，不依赖实时模糊。</span></button>
+          <button class="skin-card liquid skin-trigger" data-skin="liquid" aria-pressed="true"><div class="skin-preview"></div><b>液晶玻璃</b><span>主输入区与浮层保留高透、受光和柔和折射；分组卡片仍保持静态克制。</span></button>
+        </div>
+        <table class="token-table component-stage degrade-table">
+          <thead><tr><th>能力</th><th>经典</th><th>液晶玻璃</th></tr></thead>
+          <tbody>
+            <tr><td>普通分组</td><td>静态柔雾面</td><td>静态柔雾面，保持同一信息密度</td></tr>
+            <tr><td>背景模糊</td><td>0</td><td>主区 16–22dp；浮层 24–30dp</td></tr>
+            <tr><td>主玻璃覆盖</td><td>82–92%，几乎不透明</td><td>58–76%，仍保证文字对比</td></tr>
+            <tr><td>边缘表达</td><td>极细边界与轻阴影</td><td>局部受光 + 轻微折射；无闭合粗亮边</td></tr>
+            <tr><td>图标容器</td><td>默认裸图标</td><td>默认裸图标；仅反馈层出现短暂底光</td></tr>
+            <tr><td>性能回退</td><td>原生静态表面</td><td>关闭模糊时保留色相与层级，回退静态玻璃</td></tr>
+          </tbody>
+        </table>
+        <p class="tiny" style="margin-top:14px">液晶玻璃也不代表“所有东西都透明”：每屏只有一个持续采样的主输入区，设置组和普通卡片不实时模糊。设备不支持背景采样、关闭系统模糊、低内存或软件 Canvas 时，保留色相与层级并回退静态表面。文字和图标从不进入折射层。</p>
+      </section>
+
+      <section id="accessibility">
+        <div class="section-head"><div><span class="eyebrow">12 · Inclusive by default</span><h2>高级感不能以可用性为代价</h2></div><p>触控、字体、键盘、屏幕阅读器与减少动态属于基础组件，不是后期补丁。</p></div>
+        <div class="a11y-grid">
+          <div class="a11y-item"><strong>48×48dp</strong><span>所有可点击目标。36–40dp 只作为视觉尺寸，点击区域由父组件补足；相邻目标至少留 8dp。</span></div>
+          <div class="a11y-item"><strong>200% 字体</strong><span>设置行从单行切换为双行堆叠，标签不截断；标题最多 2 行，辅助操作可换行。</span></div>
+          <div class="a11y-item"><strong>320dp 窄屏</strong><span>弹层左右 16dp，按钮纵排；搜索与模型筛选在 320dp 不挤压；软键盘打开后 CTA 仍可达。</span></div>
+          <div class="a11y-item"><strong>TalkBack</strong><span>图标按钮必须有可读名称；状态胶囊读“运行中”，不只读圆点或颜色。</span></div>
+          <div class="a11y-item"><strong>对比与色彩</strong><span>正文 4.5:1，大字号 3:1；选中/错误同时使用形状、图标、文字；高对比模式下关闭低透明度装饰。</span></div>
+          <div class="a11y-item"><strong>Reduce Motion</strong><span>所有位移改为 120ms 交叉淡化；背景漂移停止；保留加载状态，但改用静态进度文本。</span></div>
+        </div>
+      </section>
+
+      <section id="implementation">
+        <div class="section-head"><div><span class="eyebrow">13 · Implementation contract</span><h2>按“组件族”一次性迁移，不从页面逐处补样式</h2></div><p>这页不修改源码。先建立语义组件，再把现有 146 个输入和 401 个按钮调用映射进去；页面只传语义和业务状态。</p></div>
+        <div class="migration-grid">
+          <div class="migration-step"><div class="step-no">01</div><div><b>冻结语义令牌与双皮肤</b><span>尺寸、圆角、字号、触控、材质、状态与动效只保留语义名；经典与液晶玻璃共用组件树。</span></div></div>
+          <div class="migration-step"><div class="step-no">02</div><div><b>建立 10 个输入角色</b><span>Composer、InlineSearch、Single、Multiline、Secret、Number、Locator、Code、Select、TagEditor；共享校验与键盘行为。</span></div></div>
+          <div class="migration-step"><div class="step-no">03</div><div><b>建立 10 个动作角色</b><span>Primary、Secondary、Quiet、Destructive、IconAction、FloatingPill、Segmented、ChoiceChip、StatusPill、ActionRow。</span></div></div>
+          <div class="migration-step"><div class="step-no">04</div><div><b>统一图标来源与裸图标</b><span>Material Symbols Rounded SVG → ImageVector/XML；取消设置页与普通菜单的装饰底圈。</span></div></div>
+          <div class="migration-step"><div class="step-no">05</div><div><b>先迁会话输入与主操作</b><span>主玻璃、浮动新建、模型、思考、审批、附件、语音、发送与上下文进度。</span></div></div>
+          <div class="migration-step"><div class="step-no">06</div><div><b>批量迁搜索和设置</b><span>23 个搜索入口映射 InlineSearch/SearchableSelect；设置分组与行操作统一使用 Group Surface 和 ActionRow。</span></div></div>
+          <div class="migration-step"><div class="step-no">07</div><div><b>迁列表、浮层与状态</b><span>统一列表圆角、时间组、文件夹菜单、模型选择、语音、错误、加载和危险确认。</span></div></div>
+          <div class="migration-step"><div class="step-no">08</div><div><b>只做受影响链路验收</b><span>机械扫描禁止新增散落 dp/圆角/图标格式；每个功能组完成时截当前链路并做一次最小检查。</span></div></div>
+        </div>
+        <div class="code-block"><button class="copy-btn" id="copyTokenSample">复制</button><span class="key">NexaFoundation</span> {
+  <span class="key">space</span>: 4, 8, 12, 16, 20, 24, 32, 40, 48
+  <span class="key">radius</span>: { micro: 8, control: 16, card: 20, overlay: 28 }
+  <span class="key">touch</span>: { min: 48, iconGlyph: 24, visualIcon: 40, row: 56 }
+  <span class="key">stroke</span>: { hairline: 0.5, focus: 2 }
+  <span class="key">motion</span>: { press: 90, state: 180, enter: 240, overlay: 300, scene: 380 }
+  <span class="key">type</span>: [system, humanist, editorial]
+  <span class="key">materialRole</span>: [canvas, groupSurface, field, focalControl, overlay, scrim]
+  <span class="key">inputs</span>: composer, inlineSearch, single, multiline, secret, number, locator, code, select, tagEditor
+  <span class="key">buttons</span>: primary, secondary, quiet, destructive, iconAction, floatingPill, segmented, choiceChip, statusPill, actionRow
+  <span class="key">skins</span>: [classic, liquid]
+}</div>
+        <div class="grid-3" style="margin-top:14px">
+          <div class="card"><h4>机械检查</h4><p class="tiny">禁止新增未登记 dp、十六进制颜色、tween、普通 PNG 功能图标和默认图标底圈；例外必须在角色文件中说明。</p></div>
+          <div class="card"><h4>视觉回归</h4><p class="tiny">只截取本次受影响链路：会话输入、设置行、选择弹层、危险弹窗；不在每轮重复跑整套历史用例。</p></div>
+          <div class="card"><h4>性能门禁</h4><p class="tiny">滑动区域不同时开启多个 backdrop；普通卡片零实时模糊；持续动画在后台、低电量或 Reduce Motion 时停止。</p></div>
+        </div>
+      </section>
+
+      <section id="review">
+        <div class="review-box">
+          <span class="eyebrow">14 · Review checkpoint</span>
+          <h2>先确认两套皮肤与组件字典，再统一迁移</h2>
+          <p class="lead" style="margin-bottom:0">实现时不需要逐页问你按钮多大、搜索框多高、图标加不加底。默认按本页 10 个输入角色、10 个动作角色和裸图标规范执行；你只需判断液晶玻璃的透明度、折射强度和经典皮肤的稳固程度。</p>
+          <ul class="review-list">
+            <li><b>第一步 · 视觉基础</b><span>确认经典与液晶玻璃的层级、透明度、边缘受光和设置分组样式。</span></li>
+            <li><b>第二步 · 组件迁移</b><span>按输入、动作、图标、搜索、设置、列表、浮层的顺序统一，不逐页补丁。</span></li>
+            <li><b>第三步 · 装机体验</b><span>每完成一批只验当前链路；正式视觉、输入法和长期性能由手机实测决定。</span></li>
+          </ul>
+          <div class="footnote">本评审稿只新增设计文档与样例，不修改 Kotlin、资源、路由或业务行为。当前界面截图用于说明待统一问题；皮肤目标是同结构下的一致表现。</div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <div class="modal-layer" id="demoModal" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="demoModalTitle">
+      <div class="modal-head"><h3 id="demoModalTitle">确认高影响操作</h3><button class="icon-button modal-close" aria-label="关闭">✕</button></div>
+      <p class="muted">危险或有外部影响的动作使用同一弹层底座，主按钮明确，取消路径始终可达。</p>
+      <div class="field-demo">需要保留的上下文与影响范围</div>
+      <div class="modal-actions"><button class="button button-quiet modal-close">取消</button><button class="button button-danger modal-close">确认继续</button></div>
+    </div>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script>
+    const root = document.documentElement;
+    const toast = document.getElementById('toast');
+    let toastTimer = null;
+    const showToast = (message) => {
+      toast.textContent = message;
+      toast.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove('show'), 1800);
+    };
+
+    const setSkin = (skin) => {
+      root.dataset.skin = skin;
+      document.querySelectorAll('.skin-trigger').forEach((button) => {
+        button.setAttribute('aria-pressed', String(button.dataset.skin === skin));
+      });
+    };
+    const setMode = (mode) => {
+      root.dataset.mode = mode;
+      document.querySelectorAll('.mode-trigger').forEach((button) => {
+        button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
+      });
+    };
+    const setType = (type) => {
+      root.dataset.type = type;
+      document.querySelectorAll('.type-trigger').forEach((button) => {
+        const active = button.dataset.type === type;
+        button.setAttribute('aria-pressed', String(active));
+        if (button.classList.contains('type-system-card')) button.classList.toggle('is-active', active);
+      });
+    };
+    const setMotion = (on) => {
+      root.dataset.motion = on ? 'on' : 'off';
+      const button = document.getElementById('motionToggle');
+      button.setAttribute('aria-pressed', String(on));
+      button.textContent = on ? '动效开' : '动效关';
+    };
+
+    document.querySelectorAll('.skin-trigger').forEach((button) => {
+      button.addEventListener('click', () => setSkin(button.dataset.skin));
+    });
+    document.querySelectorAll('.mode-trigger').forEach((button) => {
+      button.addEventListener('click', () => setMode(button.dataset.mode));
+    });
+    document.querySelectorAll('.type-trigger').forEach((button) => {
+      button.addEventListener('click', () => setType(button.dataset.type));
+    });
+    setSkin(root.dataset.skin);
+    setMode(root.dataset.mode);
+    setType(root.dataset.type);
+    document.getElementById('motionToggle').addEventListener('click', () => {
+      setMotion(root.dataset.motion !== 'on');
+    });
+
+    const blurRange = document.getElementById('blurRange');
+    const blurValue = document.getElementById('blurValue');
+    blurRange.addEventListener('input', () => {
+      root.style.setProperty('--glass-blur', `${blurRange.value}px`);
+      blurValue.textContent = `${blurRange.value} px`;
+    });
+
+    const modal = document.getElementById('demoModal');
+    const openModal = () => {
+      modal.classList.add('is-open');
+      modal.setAttribute('aria-hidden', 'false');
+      modal.querySelector('button').focus();
+    };
+    const closeModal = () => {
+      modal.classList.remove('is-open');
+      modal.setAttribute('aria-hidden', 'true');
+    };
+    document.querySelectorAll('[data-open-modal]').forEach((button) => button.addEventListener('click', openModal));
+    document.querySelectorAll('.modal-close').forEach((button) => button.addEventListener('click', closeModal));
+    modal.addEventListener('click', (event) => { if (event.target === modal) closeModal(); });
+
+    const playButton = document.getElementById('playMotion');
+    const motionDemo = document.getElementById('motionDemo');
+    playButton.addEventListener('click', () => {
+      root.dataset.motion = 'on';
+      motionDemo.classList.remove('is-playing');
+      void motionDemo.offsetWidth;
+      motionDemo.classList.add('is-playing');
+      playButton.textContent = '再播一次';
+      setTimeout(() => motionDemo.classList.remove('is-playing'), 780);
+    });
+
+    document.querySelectorAll('.segmented button').forEach((button) => {
+      button.addEventListener('click', () => {
+        button.parentElement.querySelectorAll('button').forEach((item) => item.setAttribute('aria-pressed', 'false'));
+        button.setAttribute('aria-pressed', 'true');
+      });
+    });
+    document.querySelectorAll('.tab-strip button').forEach((button) => {
+      button.addEventListener('click', () => {
+        button.parentElement.querySelectorAll('button').forEach((item) => item.setAttribute('aria-selected', 'false'));
+        button.setAttribute('aria-selected', 'true');
+      });
+    });
+
+    const tokenSample = `space: 4, 8, 12, 16, 20, 24, 32, 40, 48\nradius: micro 12, control 18, card 24, overlay 34, style tangent-continuous\ntouch: minimum 48, icon glyph 24, send 44, row 56\nstroke: hairline 0.5, focus 2\nmotion: press 90, state 180, enter 240, overlay 300, scene 380\ntype: system, humanist, editorial\nmaterialRole: canvasPearl, whiteGroup, field, focalGlass, frostedOverlay, scrim\nvoice: classic Plasma Orb / liquid Waveform Ring (128 real PCM samples)\ninputs: 10 roles / buttons: 10 roles / icon atlas: 30 glyphs\nskins: classic, liquid`;
+    document.getElementById('copyTokenSample').addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(tokenSample); showToast('基础令牌已复制'); }
+      catch { showToast('浏览器未开放剪贴板'); }
+    });
+
+    const tokens = {
+      version: '1.4.0',
+      date: '2026-11-14',
+      auditSnapshot: { inputApiCalls: 146, visibleSearchRoutes: 23, directButtonCalls: 401, iconReferences: 916 },
+      space: { base: 4, values: [4,8,12,16,20,24,32,40,48], pageInset: 16, cardPadding: 16, cardGap: 8, groupGap: 24, rowMinHeight: 56, overlayPadding: 20 },
+      typography: {
+        presets: ['system', 'humanist', 'editorial'],
+        defaultPreset: 'system',
+        display: { size: 34, lineHeight: 40, weight: 600 },
+        title: { size: 24, lineHeight: 32, weight: 600 },
+        item: { size: 16, lineHeight: 24, weight: 550 },
+        body: { size: 15, lineHeight: 23, weight: 400 },
+        support: { size: 12, lineHeight: 18, weight: 400 }
+      },
+      radius: { micro: 12, controlSmall: 16, control: 18, card: 24, cardLarge: 30, overlay: 34, hero: 44, capsule: 999, style: 'tangent-continuous' },
+      stroke: { hairline: 0.5, focus: 2, focusOffset: 2 },
+      touch: { minimum: 48, separation: 8, iconGlyph: 24, visualIcon: 40, visualStandard: 44, primary: 48, hero: 52, row: 56 },
+      motion: {
+        press: { duration: 90, easing: 'spring(.22,1.18,.34,1)' },
+        state: { duration: 180, easing: 'cubic-bezier(.2,0,0,1)' },
+        enter: { duration: 240, easing: 'spring(.22,1.18,.34,1)' },
+        overlay: { duration: 300, easing: 'spring(.22,1.18,.34,1)' },
+        scene: { duration: 380, easing: 'cubic-bezier(.2,0,0,1)' }
+      },
+      material: {
+        canvas: { blur: 0, light: '#f0f1f3', rule: 'pearl mist; never used as content card fill' },
+        groupSurface: { blur: 0, light: '#ffffff', fill: 1 },
+        field: { blur: 0, fill: .6 },
+        focalControl: { blur: 26, fill: .58, liveRegionsPerScreen: 1 },
+        overlay: { blur: 24, fill: .88 },
+        scrim: { blur: 7, fill: .52 }
+      },
+      skins: {
+        classic: { blur: 0, edgeRefraction: false },
+        liquid: { blur: 18, edgeRefraction: 'medium', fallback: 'static-glass' }
+      },
+      inputs: { roles: ['composerInput','inlineSearch','textFieldSingle','textFieldMultiline','secretField','numberField','locatorField','codeField','selectField','tagEditor'] },
+      buttons: { roles: ['primary','secondary','quiet','destructive','iconAction','floatingPill','segmented','choiceChip','statusPill','actionRow'] },
+      icons: { source: 'Material Symbols Rounded SVG', defaultContainer: 'none', sizes: [16,20,24,28], strokeRange: [1.55,1.85], palette: ['#3c8cff','#8b6cff','#24bfd4','#27c47b','#ffb13b','#ff607c','#ff60a8','#4a7dff'] },
+      semanticColor: { positive: '#27c47b', warning: '#ffb13b', danger: '#ff5470', info: '#24bfd4', plan: '#8b6cff', goal: '#4a7dff', approvalAuto: '#27c47b', approvalSmart: '#ffb13b', approvalManual: '#ff607c' },
+      voice: { classic: 'plasma-orb', liquidGlass: 'waveform-ring', waveformSamples: 128, waveformSource: 'latest bounded PCM window', frameLoopStopsWhenInvisible: true },
+      accessibility: { minFontScale: 2.0, minWidth: 320, reduceMotion: true, highContrast: true }
+    };
+    document.getElementById('downloadTokens').addEventListener('click', () => {
+      const blob = new Blob([JSON.stringify(tokens, null, 2)], {type: 'application/json'});
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'nexa-ui-foundation-tokens-v2.json';
+      link.click();
+      URL.revokeObjectURL(url);
+      showToast('令牌 JSON 已导出');
+    });
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && modal.classList.contains('is-open')) closeModal();
+    });
+
+    setSkin(root.dataset.skin);
+    setMode(root.dataset.mode);
+    setMotion(true);
+
+    const previewSection = new URLSearchParams(location.search).get('view');
+    if (previewSection) {
+      const target = document.getElementById(previewSection);
+      if (target) requestAnimationFrame(() => target.scrollIntoView({behavior: 'instant', block: 'start'}));
+    }
+
+    if ('IntersectionObserver' in window) {
+      const links = [...document.querySelectorAll('.rail-link')];
+      const byId = new Map(links.map((link) => [link.getAttribute('href').slice(1), link]));
+      const observer = new IntersectionObserver((entries) => {
+        const visible = entries.filter((entry) => entry.isIntersecting).sort((a,b) => b.intersectionRatio - a.intersectionRatio)[0];
+        if (!visible) return;
+        links.forEach((link) => link.classList.remove('is-active'));
+        byId.get(visible.target.id)?.classList.add('is-active');
+      }, { rootMargin: '-18% 0px -66% 0px', threshold: [0.05, 0.2, 0.5] });
+      document.querySelectorAll('main section[id]').forEach((section) => observer.observe(section));
+    } else {
+      document.querySelector('.rail-link')?.classList.add('is-active');
+    }
+  </script>
+</body>
+</html>

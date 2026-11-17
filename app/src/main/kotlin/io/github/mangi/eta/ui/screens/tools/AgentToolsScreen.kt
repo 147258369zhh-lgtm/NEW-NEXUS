@@ -29,10 +29,10 @@ import io.github.mangi.eta.ui.model.AgentToolsAction
 import io.github.mangi.eta.ui.model.AgentToolsUiState
 import io.github.mangi.eta.ui.model.ToolItemUi
 import io.github.mangi.eta.ui.model.projectToolGroups
-import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.basic.TabRow
-import top.yukonga.miuix.kmp.preference.ArrowPreference
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle as SmallTitle
+import io.github.mangi.eta.ui.components.NexusSettingsTabs
+import io.github.mangi.eta.ui.components.NexusSettingsArrowPreference as ArrowPreference
 
 private object ToolsMetrics {
     val GridHorizontalPadding = 12.dp
@@ -55,19 +55,15 @@ fun AgentToolsScreen(
         onBack = { onAction(AgentToolsAction.NavigateBack) },
         modifier = modifier,
         listState = if (showAll) allListState else currentListState,
+        aboveContent = {
+            NexusSettingsTabs(listOf(stringResource(R.string.capability_current_device), stringResource(R.string.capability_all)),
+                if (showAll) 1 else 0, { showAll = it == 1 })
+        },
     ) {
-        item(key = "capability-view") {
-            TabRow(
-                tabs = listOf(stringResource(R.string.capability_current_device), stringResource(R.string.capability_all)),
-                selectedTabIndex = if (showAll) 1 else 0,
-                onTabSelected = { showAll = it == 1 },
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            )
-        }
         item(key = "capability-discovery") {
             Card(
                 modifier = Modifier
-                    .padding(horizontal = 12.dp)
+                    .padding(horizontal = 16.dp)
                     .padding(bottom = 8.dp),
             ) {
                 ArrowPreference(

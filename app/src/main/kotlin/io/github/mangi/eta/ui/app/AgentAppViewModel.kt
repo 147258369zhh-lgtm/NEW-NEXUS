@@ -21,10 +21,30 @@ import kotlinx.coroutines.withContext
 
 /** Activity 级状态所有者；配置变更只重建 UI，不替换正在运行的 Agent 会话。 */
 internal class AgentAppViewModel(application: Application) : AndroidViewModel(application) {
-    val state = AgentAppState(
-        context = application,
-        scope = viewModelScope,
-    )
+    var state by mutableStateOf<AgentAppState?>(null)
+        private set
+    var startupFailed by mutableStateOf(false)
+        private set
+    private var startupJob: Job? = null
+
+    init { loadConversations() }
+
+    fun loadConversations() {
+        if (state != null || startupJob?.isActive == true) return
+        startupFailed = false
+        startupJob = viewModelScope.launch {
+            try {
+                val app = getApplication<Application>()
+                val snapshot = withContext(Dispatchers.IO) { AgentConversationStore.load(app) }
+                state = AgentAppState(app, viewModelScope, initialConversations = snapshot)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                AndroidAgentLogger.warn("Conversation startup failed: ${failure.javaClass.simpleName}")
+                startupFailed = true
+            }
+        }
+    }
     val skills = AgentSkillsStore(application, viewModelScope)
     val memory = AgentMemoryStore(application, viewModelScope)
     val permissionHealth = PermissionHealthStore(application, viewModelScope)

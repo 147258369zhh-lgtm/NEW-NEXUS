@@ -1,6 +1,7 @@
 package io.github.mangi.eta.ui.app
 
 import io.github.mangi.eta.agent.runtime.AgentEvent
+import io.github.mangi.eta.agent.runtime.AgentArtifactReference
 import io.github.mangi.eta.agent.runtime.AgentTokenUsage
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.AgentMessageUi
@@ -17,6 +18,38 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentRunMessageProjectorTest {
+    @Test
+    fun everyProducedMediaAttachmentUsesItsMimeAndStableMessageIdAcrossReplay() {
+        val projector = AgentRunMessageProjector { 1_000L }
+        val artifacts = listOf(
+            AgentArtifactReference("image", "无后缀图片", "image/png"),
+            AgentArtifactReference("audio", "无后缀音频", "audio/mpeg"),
+            AgentArtifactReference("video", "无后缀视频", "video/mp4"),
+        )
+        val event = AgentEvent.ToolFinished(1, "call", "mcp_media", "已保存", 0, 0,
+            success = true, artifacts = artifacts)
+        val started = AgentEvent.ToolStarted(1, "call", "mcp_media", "{}")
+        val projected = projector.applyEvent("run", event, projector.applyEvent("run", started, emptyList()))
+        val files = projected.filterIsInstance<AgentMessageUi>()
+        assertEquals(listOf("artifact-run-1-call", "artifact-run-1-call:audio", "artifact-run-1-call:video"), files.map { it.id })
+        assertTrue(files[0].contentParts.single() is io.github.zhh_lgtm.nexus.kernel.api.ImagePart)
+        assertTrue(files[1].contentParts.single() is io.github.zhh_lgtm.nexus.kernel.api.AudioPart)
+        assertTrue(files[2].contentParts.single() is io.github.zhh_lgtm.nexus.kernel.api.VideoPart)
+        val replayed = projector.replay("run", listOf(started, event), projected).messages
+        assertEquals(projected, replayed)
+        assertEquals(projected, projector.replay("run", listOf(started, event), replayed).messages)
+        assertEquals(replayed.size, replayed.map { it.id }.distinct().size)
+        val legacyMedia = AgentMessageUi("artifact-run-0-legacy", "旧附件")
+        val otherRunMedia = AgentMessageUi("artifact-other-1-call", "其他运行的附件")
+        val preserved = projector.replay("run", listOf(started, event), listOf(legacyMedia, otherRunMedia) + projected).messages
+        assertEquals(listOf(legacyMedia, otherRunMedia) + projected, preserved)
+        assertEquals(files, projector.replay("run", listOf(event), projected).messages)
+        val modelMedia = projector.applyEvent("run", AgentEvent.AssistantReceived(2, 0, "", emptyList(), artifacts), replayed)
+            .filterIsInstance<AgentMessageUi>().filter { it.id.startsWith("artifact-run-2-model") }
+        assertEquals(3, modelMedia.size)
+        assertTrue(modelMedia.last().contentParts.single() is io.github.zhh_lgtm.nexus.kernel.api.VideoPart)
+    }
+
     @Test
     fun searchSuggestionsBindToExactTextBlockAndDoNotPersistIntoAnotherRun() {
         val projector = AgentRunMessageProjector { 1_000L }
@@ -270,6 +303,43 @@ class AgentRunMessageProjectorTest {
             assertEquals("检查完成", messages.filterIsInstance<AgentMessageUi>().single().content)
             assertEquals(ToolActivityStatusUi.Success, messages.filterIsInstance<ToolActivityMessageUi>().single().status)
         }
+    }
+
+    @Test
+    fun finishedArtifactsUseMediaPartsBySafeExtensionAndKeepUnknownFilesAsAttachments() {
+        val projector = AgentRunMessageProjector(nowElapsedRealtime = { 1_000L })
+        fun artifact(name: String, id: String): AgentMessageUi {
+            val runId = "run-$id"
+            val started = projector.startTool(runId,
+                AgentEvent.ToolStarted(1, "write", "write_file", "write"), emptyList())
+            return projector.finishTool(runId, AgentEvent.ToolFinished(
+                round = 1, toolCallId = "write", name = "write_file", resultSummary = "done",
+                imageCount = 0, imageBytes = 0, success = true, artifactId = id, artifactName = name,
+            ), started).filterIsInstance<AgentMessageUi>().single()
+        }
+        assertTrue(artifact("photo.png", "img").contentParts.single() is io.github.zhh_lgtm.nexus.kernel.api.ImagePart)
+        assertTrue(artifact("clip.mp4", "video").contentParts.single() is io.github.zhh_lgtm.nexus.kernel.api.VideoPart)
+        assertTrue(artifact("voice.wav", "audio").contentParts.single() is io.github.zhh_lgtm.nexus.kernel.api.AudioPart)
+        assertTrue(artifact("report.pdf", "file").contentParts.single() is io.github.zhh_lgtm.nexus.kernel.api.FilePart)
+    }
+
+    @Test
+    fun mediaAttachmentSurvivesTextFinalizationAsASeparateMessage() {
+        val projector = AgentRunMessageProjector(nowElapsedRealtime = { 1_000L })
+        val runId = "run-media"
+        var messages = projector.appendTextDelta(runId, round = 1, index = 0, delta = "生成视频", emptyList())
+        messages = projector.startTool(runId,
+            AgentEvent.ToolStarted(1, "clip", "write_file", "write"), messages)
+        messages = projector.finishTool(runId, AgentEvent.ToolFinished(
+            round = 1, toolCallId = "clip", name = "write_file", resultSummary = "done",
+            imageCount = 0, imageBytes = 0, success = true,
+            artifactId = "clip-artifact", artifactName = "clip.mp4",
+        ), messages)
+        messages = projector.finalizeText(runId, messages)
+        val video = messages.filterIsInstance<AgentMessageUi>().single { it.id.startsWith("artifact-") }
+        assertTrue(video.contentParts.single() is io.github.zhh_lgtm.nexus.kernel.api.VideoPart)
+        assertEquals("生成视频", messages.filterIsInstance<AgentMessageUi>()
+            .single { it.id.startsWith("assistant-") }.content)
     }
 
     @Test

@@ -8,6 +8,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -35,6 +36,18 @@ class LocalModelMetricsCheckpointTest {
         AgentMetricsDatabase.closeForTests()
         LocalModelMetricsDatabase.closeForTests()
         context.deleteDatabase(LocalModelMetricsDatabase.NAME)
+    }
+
+    @Test fun localMetricSampleIdentityUsesTheEntireRunAndRequestKeys() {
+        val common = "r".repeat(221)
+        val first = LocalModelMetricsStore.sampleId(common + "A", "request")
+        val second = LocalModelMetricsStore.sampleId(common + "B", "request")
+        val third = LocalModelMetricsStore.sampleId(common + "A", "request-other")
+
+        assertEquals(71, first.length)
+        assertEquals(first, LocalModelMetricsStore.sampleId(common + "A", "request"))
+        assertNotEquals(first, second)
+        assertNotEquals(first, third)
     }
 
     @Test fun repeatedFailureCheckpointsUpsertOneRequestSample() = runBlocking {

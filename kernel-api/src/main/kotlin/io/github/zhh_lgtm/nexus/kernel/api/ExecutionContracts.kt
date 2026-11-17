@@ -29,6 +29,7 @@ enum class RunState {
     RUNNING,
     WAITING_USER,
     WAITING_AUTH,
+    WAITING_EVENT,
     PAUSED,
     VERIFYING,
     SUCCEEDED,
@@ -41,6 +42,8 @@ enum class RunEventType {
     RUN_CREATED,
     RUN_ADMITTED,
     RUN_STARTED,
+    RUN_PAUSED,
+    RUN_RESUMED,
     TURN_STARTED,
     MODEL_REQUEST_STARTED,
     MODEL_RESPONSE_STARTED,
@@ -48,12 +51,24 @@ enum class RunEventType {
     ASSISTANT_ITEM_COMPLETED,
     TOOL_ITEM_STARTED,
     TOOL_ITEM_COMPLETED,
+    /** A tool whose result could not be confirmed; the original item stays auditable but cannot be replayed automatically. */
+    TOOL_EFFECT_REVIEW_RESOLVED,
     USER_INPUT_REQUIRED,
+    USER_INPUT_RESOLVED,
     APPROVAL_REQUIRED,
     APPROVAL_RESOLVED,
+    EVENT_WAIT_REQUIRED,
+    EVENT_WAIT_RESOLVED,
     CONTEXT_COMPACTED,
+    WORKFLOW_UPDATE_STARTED,
+    WORKFLOW_UPDATE_FAILED,
+    BUDGET_RESTRICTED,
+    BUDGET_INCREASED,
+    MODEL_BUDGET_RESERVED,
+    MODEL_BUDGET_SETTLED,
     GOAL_UPDATED,
     PLAN_UPDATED,
+    NOTEPAD_UPDATED,
     HOST_CHANGED,
     RUN_SUCCEEDED,
     RUN_FAILED,
@@ -70,6 +85,7 @@ data class RunBudget(
     val softToolCalls: Int? = null,
     val hardToolCalls: Int? = null,
     val costLimitMicros: Long? = null,
+    val costCurrency: String = "USD",
 ) {
     init {
         require(softRounds == null || softRounds > 0)
@@ -82,6 +98,7 @@ data class RunBudget(
         require(hardToolCalls == null || hardToolCalls > 0)
         require(softToolCalls == null || hardToolCalls == null || softToolCalls <= hardToolCalls)
         require(costLimitMicros == null || costLimitMicros > 0)
+        require(costCurrency.matches(Regex("[A-Z]{3}")))
     }
 }
 
@@ -113,6 +130,8 @@ data class ExecutionEvent(
     val artifactId: ArtifactId? = null,
     val errorCode: String? = null,
     val schemaVersion: Int = NexusProduct.DATA_SCHEMA_VERSION,
+    val budgetLimit: RunBudget? = null,
+    val goalId: GoalId? = null,
 ) {
     init {
         require(sequence >= 0) { "sequence must be non-negative" }
@@ -122,14 +141,17 @@ data class ExecutionEvent(
 }
 
 enum class ItemKind {
+    MODEL_REQUEST,
     USER_MESSAGE,
     ASSISTANT_MESSAGE,
     TOOL_CALL,
     TOOL_RESULT,
     APPROVAL,
     USER_INPUT_REQUEST,
+    EVENT_WAIT,
     CONTEXT_COMPACTION,
     PLAN_REVISION,
+    NOTEPAD_REVISION,
     GOAL_UPDATE,
     SUBAGENT,
     ARTIFACT,

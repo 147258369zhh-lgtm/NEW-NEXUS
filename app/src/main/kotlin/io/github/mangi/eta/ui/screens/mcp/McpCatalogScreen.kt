@@ -14,7 +14,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -41,14 +40,14 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle as SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.preference.ArrowPreference
+import io.github.mangi.eta.ui.components.NexusSettingsArrowPreference as ArrowPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
 
@@ -57,12 +56,14 @@ import top.yukonga.miuix.kmp.window.WindowDialog
 internal fun McpCatalogScreen(serverId: String, onBack: () -> Unit) {
     val resources = LocalResources.current
     val scope = rememberCoroutineScope()
-    val servers by McpServerRepository.serversFlow().collectAsState(initial = emptyList())
-    val server = servers.firstOrNull { it.id == serverId }
+    var serversRefreshKey by remember { mutableIntStateOf(0) }
+    val serversLoad = rememberMcpServersLoadState(serversRefreshKey)
+    val server = (serversLoad as? McpServersLoadState.Loaded)?.servers?.firstOrNull { it.id == serverId }
     var refreshKey by remember { mutableIntStateOf(0) }
     var catalogGeneration by remember { mutableLongStateOf(0L) }
     var loading by remember { mutableStateOf(false) }
     var catalog by remember { mutableStateOf<McpHttpClient.Catalog?>(null) }
+    var catalogCredentialRevision by remember(serverId) { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var query by remember { mutableStateOf("") }
     var prompt by remember { mutableStateOf<McpHttpClient.PromptSummary?>(null) }
@@ -78,7 +79,7 @@ internal fun McpCatalogScreen(serverId: String, onBack: () -> Unit) {
     val windowHeight = with(density) { LocalWindowInfo.current.containerSize.height.toDp() }
     val bodyHeight = (windowHeight * 0.5f).coerceIn(120.dp, 480.dp)
 
-    LaunchedEffect(server, refreshKey) {
+    LaunchedEffect(server, serversLoad, refreshKey) {
         val generation = ++catalogGeneration
         readGeneration++
         readJob?.cancel()
@@ -87,15 +88,20 @@ internal fun McpCatalogScreen(serverId: String, onBack: () -> Unit) {
         previewOpen = false
         prompt = null
         catalog = null
+        catalogCredentialRevision = null
         loading = false
         error = null
-        if (server == null) return@LaunchedEffect
+        if (serversLoad !is McpServersLoadState.Loaded || server == null) return@LaunchedEffect
         loading = true
         error = null
         try {
-            val token = withContext(Dispatchers.IO) { McpServerRepository.bearerToken(server) }
-            val loaded = inspectMcp(server, token) { it.discoverCatalog() }
-            if (generation == catalogGeneration) catalog = loaded
+            val connection = withContext(Dispatchers.IO) { requireNotNull(McpServerRepository.connectionSnapshot(server.id)) }
+            require(connection.server.sameConnectionAs(server)) { "MCP 连接已变化，请刷新" }
+            val loaded = inspectMcp(connection.server, connection.token) { it.discoverCatalog() }
+            if (generation == catalogGeneration) {
+                catalogCredentialRevision = connection.credentialRevision
+                catalog = loaded
+            }
         } catch (failure: TimeoutCancellationException) {
             if (generation == catalogGeneration) error = resources.getString(R.string.mcp_catalog_timeout)
         } catch (failure: CancellationException) {
@@ -120,8 +126,10 @@ internal fun McpCatalogScreen(serverId: String, onBack: () -> Unit) {
         reading = true
         readJob = scope.launch {
             try {
-                val token = withContext(Dispatchers.IO) { McpServerRepository.bearerToken(current) }
-                val content = inspectMcp(current, token, operation = operation)
+                val connection = withContext(Dispatchers.IO) { requireNotNull(McpServerRepository.connectionSnapshot(current.id)) }
+                require(connection.server.sameConnectionAs(current)) { "MCP 连接已变化，请刷新" }
+                require(connection.credentialRevision == catalogCredentialRevision) { "MCP 凭据已变化，请刷新目录" }
+                val content = inspectMcp(connection.server, connection.token, operation = operation)
                 if (generation == readGeneration) preview = content
             } catch (failure: TimeoutCancellationException) {
                 if (generation == readGeneration) previewError = resources.getString(R.string.mcp_catalog_timeout)
@@ -159,9 +167,21 @@ internal fun McpCatalogScreen(serverId: String, onBack: () -> Unit) {
         },
     ) {
         item(key = "catalog_status") {
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 12.dp)) {
+            Card(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(server?.name ?: stringResource(R.string.mcp_catalog_server_missing), style = MiuixTheme.textStyles.body1)
+                    val serverTitle = when {
+                        server != null -> server.name
+                        serversLoad == McpServersLoadState.Loading -> stringResource(R.string.mcp_servers_loading)
+                        serversLoad == McpServersLoadState.Failed -> stringResource(R.string.mcp_servers_load_failed)
+                        else -> stringResource(R.string.mcp_catalog_server_missing)
+                    }
+                    Text(serverTitle, style = MiuixTheme.textStyles.body1)
+                    if (serversLoad == McpServersLoadState.Failed) {
+                        TextButton(
+                            text = stringResource(R.string.action_retry),
+                            onClick = { serversRefreshKey++ },
+                        )
+                    }
                     Text(
                         stringResource(R.string.mcp_catalog_preview_note),
                         style = MiuixTheme.textStyles.body2,
@@ -201,7 +221,7 @@ internal fun McpCatalogScreen(serverId: String, onBack: () -> Unit) {
                 }
             }
             itemsIndexed(filteredResources, key = { index, _ -> "resource_$index" }) { _, resource ->
-                Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 8.dp)) {
+                Card(Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp)) {
                     ArrowPreference(
                         title = resource.name.ifBlank { resource.uri },
                         summary = listOf(resource.description, resource.mimeType, resource.uri)
@@ -227,7 +247,7 @@ internal fun McpCatalogScreen(serverId: String, onBack: () -> Unit) {
                 }
             }
             itemsIndexed(filteredPrompts, key = { index, _ -> "prompt_$index" }) { _, item ->
-                Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 8.dp)) {
+                Card(Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp)) {
                     ArrowPreference(
                         title = item.title.ifBlank { item.name },
                         summary = item.description.ifBlank { stringResource(R.string.mcp_prompt_arguments, item.arguments.size) },
@@ -315,7 +335,7 @@ internal fun McpCatalogScreen(serverId: String, onBack: () -> Unit) {
 
 @Composable
 private fun CatalogNote(text: String) {
-    Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 8.dp)) {
+    Card(Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp)) {
         Text(text, style = MiuixTheme.textStyles.body2, modifier = Modifier.padding(16.dp))
     }
 }

@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <files-path name="independent_notepad" path="independent-notepad/" />
     <cache-path name="workspace_share" path="workspace-share/" />
-    <external-files-path name="voice_output" path="Music/Nexus Voice/" />
+    <external-files-path name="voice_output" path="Music/NEXA Voice/" />
+    <files-path name="voice_workspace" path="terminal-user/workspace/audio/" />
+    <files-path name="voice_workspace_legacy" path="terminal/workspace/audio/" />
+    <files-path name="terminal_workspace" path="terminal-user/workspace/" />
+    <files-path name="terminal_workspace_legacy" path="terminal/workspace/" />
 </paths>

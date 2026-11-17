@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="browser_finish_takeover">完成登入，返回對話</string>
+    <string name="browser_scan_qr">掃描 QR 碼</string>
+    <string name="browser_qr_camera">相機掃碼</string>
+    <string name="browser_qr_album">相簿識碼</string>
+    <string name="browser_qr_camera_prompt">將 QR 碼放入取景框內</string>
+    <string name="browser_qr_result">QR 碼內容</string>
+    <string name="browser_qr_open">開啟網頁</string>
+    <string name="browser_qr_not_found">未在這張圖片中識別到 QR 碼</string>
+    <string name="browser_camera_denied">請允許相機權限後再掃碼</string>
+    <string name="browser_upload_title">上傳至目前網頁</string>
+    <string name="browser_upload_choose_file">選擇檔案</string>
+    <string name="browser_upload_photo">拍照</string>
+    <string name="browser_upload_video">錄製影片</string>
+    <string name="browser_upload_audio">錄音</string>
+    <string name="browser_upload_unavailable">無法開啟檔案選擇器或拍攝應用程式</string>
+    <string name="browser_website_permission_title">網站權限</string>
+    <string name="browser_website_permission_message">%1$s 正在為目前網頁申請使用%2$s。僅在信任此網站時允許。</string>
+    <string name="browser_allow_once">允許本次請求</string>
+    <string name="browser_camera">相機</string>
+    <string name="browser_microphone">麥克風</string>
+</resources>

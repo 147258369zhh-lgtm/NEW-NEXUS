@@ -38,6 +38,7 @@ internal fun LazyListScope.providerHeadersEditor(
     onHeadersChange: (List<ProviderHeaderDraft>) -> Unit,
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
+    enabled: Boolean = true,
 ) {
     // 请求头数量很少且必须收进同一张卡片，折叠/展开态整组重排，不拆成独立 Lazy 条目。
     item(key = "custom_headers") {
@@ -46,6 +47,7 @@ internal fun LazyListScope.providerHeadersEditor(
             BasicComponent(
                 title = if (headers.isEmpty()) "未设置" else "已设置 ${headers.size} 项",
                 summary = "可覆盖 User-Agent；认证与传输请求头由系统管理。",
+                enabled = enabled,
                 endActions = {
                     Icon(
                         imageVector = Icons.Rounded.ExpandMore,
@@ -60,6 +62,7 @@ internal fun LazyListScope.providerHeadersEditor(
                 headers.forEach { row ->
                     ProviderHeaderRow(
                         row = row,
+                        enabled = enabled,
                         onNameChange = { value ->
                             onHeadersChange(headers.map {
                                 if (it.id == row.id) it.copy(header = it.header.copy(name = value)) else it
@@ -75,6 +78,7 @@ internal fun LazyListScope.providerHeadersEditor(
                 }
                 BasicComponent(
                     title = "添加请求头",
+                    enabled = enabled,
                     titleColor = BasicComponentDefaults.titleColor(color = MiuixTheme.colorScheme.primary),
                     startAction = {
                         Icon(
@@ -94,6 +98,7 @@ internal fun LazyListScope.providerHeadersEditor(
 @Composable
 private fun ProviderHeaderRow(
     row: ProviderHeaderDraft,
+    enabled: Boolean,
     onNameChange: (String) -> Unit,
     onValueChange: (String) -> Unit,
     onRemove: () -> Unit,
@@ -112,6 +117,7 @@ private fun ProviderHeaderRow(
                 onValueChange = onNameChange,
                 label = "名称",
                 singleLine = true,
+                enabled = enabled,
                 modifier = Modifier.fillMaxWidth(),
             )
             TextField(
@@ -119,9 +125,10 @@ private fun ProviderHeaderRow(
                 onValueChange = onValueChange,
                 label = "值",
                 singleLine = true,
+                enabled = enabled,
                 visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
                 trailingIcon = {
-                    IconButton(onClick = { visible = !visible }) {
+                    IconButton(enabled = enabled, onClick = { visible = !visible }) {
                         Icon(
                             imageVector = if (visible) Icons.Rounded.Visibility else Icons.Rounded.VisibilityOff,
                             contentDescription = if (visible) {
@@ -135,7 +142,7 @@ private fun ProviderHeaderRow(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
-        IconButton(onClick = onRemove) {
+        IconButton(enabled = enabled, onClick = onRemove) {
             Icon(
                 imageVector = Icons.Rounded.Delete,
                 contentDescription = stringResource(R.string.ui_delete_3755f5),

@@ -50,6 +50,7 @@ internal fun AgentOverlayStatus.localizedText(resources: Resources): String = wh
 internal fun toolDisplayName(name: String): String = toolDisplayName(LocalResources.current, name)
 
 internal fun toolDisplayName(resources: Resources, name: String): String {
+    if (name == "request_user_input") return "补充信息"
     val resource = toolDisplayNameResource(name) ?: return io.github.mangi.eta.agent.model.AgentPhoneToolCatalog.entries.firstOrNull { it.name == name }?.title
         ?: io.github.mangi.eta.agent.context.PersonalSearchTools.searches.firstOrNull { it.name == name }?.title ?: name
     return resources.getString(resource)

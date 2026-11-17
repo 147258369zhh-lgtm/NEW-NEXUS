@@ -5,6 +5,18 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentRuntimeAttachDeliveryTest {
+    @Test fun projectionFailureCannotPreventAttachAcknowledgementOrTerminalDelivery() {
+        val received = mutableListOf<String>()
+        val delivery = AgentRuntimeAttachDelivery(onReplay = { error("fixture replay projection") },
+            onEvent = { error("fixture live projection") }, onAttachResponse = { received += "attached" },
+            onResult = { received += "result" })
+        delivery.event(round(1))
+        delivery.attachResponse(true)
+        delivery.event(round(2))
+        delivery.result(result())
+        assertEquals(listOf("attached", "result"), received)
+    }
+
     @Test
     fun historyIsPublishedOnceBeforeLiveEventsAndResult() {
         val deliveries = mutableListOf<String>()

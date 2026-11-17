@@ -1,6 +1,7 @@
 package io.github.mangi.eta.ui.app
 
 import io.github.mangi.eta.agent.model.AgentContextSnapshot
+import io.github.mangi.eta.agent.model.AgentContextRestore
 
 import android.content.ContentResolver
 import android.content.Context
@@ -30,6 +31,8 @@ import io.github.mangi.eta.agent.model.AgentFileReferenceKind
 import io.github.mangi.eta.agent.model.AgentFileReferencePolicy
 import io.github.mangi.eta.agent.model.AgentFileReferencePromptCodec
 import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.agent.model.ContextBudgetPolicy
+import io.github.mangi.eta.agent.model.ModelCandidateRouteRequest
 import io.github.mangi.eta.agent.roleplay.RoleplayBinding
 import io.github.mangi.eta.agent.roleplay.CharacterMacros
 import io.github.mangi.eta.agent.roleplay.CharacterCardCodec
@@ -49,12 +52,16 @@ import io.github.mangi.eta.agent.runtime.AgentRunCheckpointStore
 import io.github.mangi.eta.agent.runtime.AgentRuntimeClient
 import io.github.mangi.eta.agent.runtime.AgentRuntimeWire
 import io.github.mangi.eta.agent.runtime.AgentUiHandoffPayload
+import io.github.mangi.eta.agent.runtime.NexusRunMapper
+import io.github.mangi.eta.agent.runtime.RunInputRequest
+import io.github.mangi.eta.agent.runtime.RunUserInput
 import io.github.mangi.eta.agent.workflow.GoalPlanNotepadStore
 import io.github.zhh_lgtm.nexus.application.api.WorkflowMode
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
+import io.github.mangi.eta.data.model.ModelCandidatePurpose
 import io.github.mangi.eta.data.model.ProviderSetting
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.data.model.enabledModel
@@ -70,6 +77,7 @@ import io.github.mangi.eta.fork.conversations.ConversationExtensionSnapshot
 import io.github.mangi.eta.fork.conversations.IDLE_ARCHIVE_REASON
 import io.github.mangi.eta.fork.conversations.MANUAL_ARCHIVE_REASON
 import io.github.mangi.eta.fork.conversations.MEETING_CONVERSATION_KIND
+import io.github.mangi.eta.fork.meeting.MeetingRunCoordinator
 import io.github.mangi.eta.ui.IncomingShareRequest
 import io.github.mangi.eta.ui.model.AgentChatHomeUiState
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
@@ -120,6 +128,7 @@ internal class AgentAppState(
     context: Context,
     private val scope: CoroutineScope,
     initialConversations: AgentConversationStore.Snapshot = AgentConversationStore.load(context),
+    private val prepareRuntimeConfig: suspend (String?) -> AgentModelClient.ModelConfig? = RuntimeConfigRepository::runtimeConfigForSelection,
 ) {
     private val appContext = context.applicationContext
     private val runMessageProjector = AgentRunMessageProjector()
@@ -134,6 +143,8 @@ internal class AgentAppState(
     @Volatile
     private var conversationPersistence = AgentConversationPersistence(initialConversations)
     private var currentReasoningCapabilities: ModelReasoningCapabilities? = null
+    private val conversationPreviewCache = mutableMapOf<String, Pair<AgentChatMessageUi?, String>>()
+    private var previewLocale: String? = null
     private var providers: List<ProviderSetting> = emptyList()
     private var defaultModelId: String? = null
     private var defaultProviderId: String? = null
@@ -160,6 +171,7 @@ internal class AgentAppState(
     private var conversationsById: Map<String, AgentChatHomeUiState> = initialConversations.conversationsById
     private var conversationTitles: Map<String, String> = initialConversations.titles
     private var conversationUpdatedAt: Map<String, Long> = initialConversations.updatedAt
+    private var conversationMessageActivity: Map<String, Long> = emptyMap()
     private var conversationPinnedIds: Set<String> = initialConversations.pinnedIds
     private var pendingBranchDrafts: Map<String, ConversationBranchDraft> = emptyMap()
     var isCreatingConversationBranch by mutableStateOf(false)
@@ -196,6 +208,7 @@ internal class AgentAppState(
     private fun attachmentSnapshot(state: AgentChatHomeUiState) = ConversationAttachments(
         state.messageEdit?.previousImages ?: state.pendingImages,
         state.messageEdit?.previousFileReferences ?: state.pendingFileReferences,
+        state.selectedSkillIds,
     )
 
     private fun restoreAttachmentDraft(conversationId: String? = selectedConversationId) {
@@ -215,8 +228,13 @@ internal class AgentAppState(
                     // Do not overwrite a live attachment accepted during startup/share handling.
                     val images = (attachments.images + current.pendingImages).distinctBy { it.id }
                     val files = (attachments.files + current.pendingFileReferences).distinctBy { it.reference.absolutePath }
-                    val next = current.copy(pendingImages = images, pendingFileReferences = files)
-                    saveAttachmentDraft(subject, ConversationAttachments(images, files))
+                    val selectedSkills = current.selectedSkillIds.ifEmpty { attachments.selectedSkillIds }
+                    val next = current.copy(
+                        pendingImages = images,
+                        pendingFileReferences = files,
+                        selectedSkillIds = selectedSkills,
+                    )
+                    saveAttachmentDraft(subject, ConversationAttachments(images, files, selectedSkills))
                     if (id == null) homeState = next else {
                         conversationsById = conversationsById + (id to next)
                         if (selectedConversationId == id) homeState = next
@@ -253,6 +271,16 @@ internal class AgentAppState(
             try {
                 recoverRuntimeRuns()
                 importArchivedExternalRuns()
+                val executionStore = io.github.mangi.eta.data.repository.NexusExecutionStore.get(appContext)
+                val recoveredAt = System.currentTimeMillis()
+                // A tool whose result is unknown must become a review item before wait/approval
+                // reconciliation decides the run's remaining state. Nothing is replayed.
+                executionStore.reconcileAbandonedToolEffects(recoveredAt)
+                // Resolve event waits first so a run that also lost an approval can still reach
+                // the approval reconciler without leaving an invisible open ledger item.
+                executionStore.reconcileAbandonedEventWaits(recoveredAt)
+                executionStore.reconcileAbandonedApprovals(recoveredAt)
+                RunUserInput.restore(appContext)
             } finally {
                 runtimeRecoveryInProgress.set(false)
             }
@@ -321,7 +349,7 @@ internal class AgentAppState(
     /**
      * 选择器、思考强度与上下文窗口统一投影自当前会话的有效模型：
      * 会话绑定的模型仍可用时用它，否则用默认模型。回落只影响显示与发送，不改写会话绑定，
-     * 模型重新启用后会话自动回到原模型；真正发送后才把实际模型写入绑定。
+     * 模型重新启用后会话自动回到原模型；本轮回退不会改写会话绑定。
      */
     private fun refreshConversationModel() {
         val bound = providers.enabledModel(homeState.modelId)
@@ -372,7 +400,7 @@ internal class AgentAppState(
         password: String? = null,
         onProgress: (EtaBackupProgress) -> Unit = {},
         options: io.github.mangi.eta.data.repository.EtaBackupOptions = io.github.mangi.eta.data.repository.EtaBackupOptions(),
-    ): EtaBackupSummary = io.github.mangi.eta.data.repository.EtaBackupOperations.exclusive {
+    ): EtaBackupSummary = io.github.mangi.eta.data.repository.EtaBackupOperations.exclusive(backup = true) {
         io.github.mangi.eta.data.repository.EtaBackupOperations.requireIdle(appContext)
         onProgress(EtaBackupProgress("checking_runtime"))
         val locallyBusy = withContext(Dispatchers.Main.immediate) {
@@ -395,7 +423,7 @@ internal class AgentAppState(
 
     suspend fun importBackup(input: InputStream, password: String? = null,
         onPhase: (String) -> Unit = {},
-    ): EtaBackupSummary = io.github.mangi.eta.data.repository.EtaBackupOperations.exclusive {
+    ): EtaBackupSummary = io.github.mangi.eta.data.repository.EtaBackupOperations.exclusive(backup = true) {
         io.github.mangi.eta.data.repository.EtaBackupOperations.requireIdle(appContext)
         onPhase("checking_runtime")
         val locallyBusy = withContext(Dispatchers.Main.immediate) {
@@ -508,7 +536,7 @@ internal class AgentAppState(
         val checkpoints = withContext(Dispatchers.IO) {
             AgentRunCheckpointStore.list(appContext)
         }
-        val initialCompletedQuery = client.queryCompletedRuns()
+        val initialCompletedQuery = client.queryCompletedRuns(AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE)
         if (initialCompletedQuery is AgentRuntimeClient.CompletedRunsQuery.Unavailable) {
             AndroidAgentLogger.warnThrottled("agent_ui_drain_results_failed") {
                 "Agent UI pending result recovery failed"
@@ -522,7 +550,7 @@ internal class AgentAppState(
         val terminalRaceQuery = if (
             activeRunQuery is AgentRuntimeClient.ActiveRunsQuery.Known
         ) {
-            client.queryCompletedRuns()
+            client.queryCompletedRuns(AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE)
         } else {
             initialCompletedQuery
         }
@@ -722,7 +750,25 @@ internal class AgentAppState(
             }
         }
         if (interrupted && (checkpoint.contextSnapshot != null || checkpoint.transcript.isNotEmpty())) {
-            applyConversationHistoryResult(runId, checkpoint.transcript, checkpoint.contextSnapshot, true)
+            // 恢复顺序：事件账本 → 摘要/检查点 → 工作集 → 任务状态；任一不匹配时只回放 transcript。
+            val workflow = runCatching { GoalPlanNotepadStore.get(appContext).snapshot(conversationId) }.getOrNull()
+            val decision = AgentContextRestore.decide(
+                snapshot = checkpoint.contextSnapshot,
+                runId = runId,
+                ledgerRunId = NexusRunMapper.canonicalRunId(runId).value,
+                conversationId = conversationId,
+                scopeId = conversationId,
+                mode = workflow?.mode?.name,
+                goalId = workflow?.goal?.goalId?.value,
+                goalRevision = workflow?.goal?.revision ?: 0,
+                planRevision = workflow?.plan?.revision ?: 0,
+            )
+            decision.failure?.let { code ->
+                AndroidAgentLogger.warnThrottled("context_link_restore_rejected") {
+                    "Context link rejected at restore: layer=${decision.layer?.name} code=$code"
+                }
+            }
+            applyConversationHistoryResult(runId, checkpoint.transcript, decision.snapshot, true)
         }
         conversationsById[conversationId]?.let { state ->
             updateConversation(conversationId, RoleplayConversationReducer.linkRun(state, runId))
@@ -751,11 +797,16 @@ internal class AgentAppState(
         refreshConversationSummaries()
         val observationJob = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
             val client = AgentRuntimeClient(appContext, AndroidAgentLogger)
-            val outcome = client.attachRun(
+            val outcome = try { client.attachRun(
                 runId = runId,
                 onReplay = { events -> restoreRunEvents(runId, events) },
                 onEvent = { event -> enqueueRunEvent(runId, event) },
-            )
+            ) } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                AndroidAgentLogger.warn("Run reattachment failed: type=${failure.safeLogType()}")
+                AgentRuntimeClient.AttachOutcome.Unavailable
+            }
             when (outcome) {
                 is AgentRuntimeClient.AttachOutcome.Completed -> withContext(Dispatchers.Main) {
                     applyRunResult(
@@ -879,6 +930,7 @@ internal class AgentAppState(
             )
         )
         archivedRun.events.forEach { event -> applyRunEvent(runId, event) }
+        payload.supplements.forEach { supplement -> applyRunEvent(runId, AgentEvent.UserSupplementReceived(supplement.index, supplement.text)) }
         applyRunResult(runId, archivedRun.result)
         conversationUpdatedAt = conversationUpdatedAt + (conversationId to archivedRun.createdAt)
         return runId
@@ -908,6 +960,13 @@ internal class AgentAppState(
                 GoalPlanNotepadStore.get(appContext).setMode(conversationId, mode)
             }
         }
+    }
+
+    fun updateSelectedSkillIds(skillIds: List<String>) {
+        if (!homeState.isConversationLoaded) return
+        val normalized = skillIds.map(String::trim).filter(String::isNotBlank).distinct().take(3)
+        if (normalized == homeState.selectedSkillIds) return
+        updateCurrentConversation(homeState.copy(selectedSkillIds = normalized), updateTimestamp = false)
     }
 
     /** 聊天内切换同时改当前会话绑定与默认模型；默认模型供新会话和系统助手入口使用。 */
@@ -980,6 +1039,10 @@ internal class AgentAppState(
         val folder = conversationExtensions.folders.firstOrNull { it.id == folderId }
             ?: throw io.github.mangi.eta.fork.conversations.ConversationFolderException("NOT_FOUND")
         ConversationExtensionRepository.renameFolder(appContext, folder, name)
+    }
+
+    suspend fun setConversationFolderPinned(folderId: String, pinned: Boolean) = withContext(Dispatchers.IO) {
+        ConversationExtensionRepository.setFolderPinned(appContext, folderId, pinned)
     }
 
     suspend fun moveConversationToFolder(conversationId: String, folderId: String?) = withContext(Dispatchers.IO) {
@@ -1118,6 +1181,7 @@ internal class AgentAppState(
     }
 
     fun loadEarlierMessages() = changeMessageWindow(loadEarlier = true)
+
 
     fun updateHistoryViewport(atLatest: Boolean) {
         if (!atLatest) {
@@ -1315,6 +1379,11 @@ internal class AgentAppState(
         val saved = persistConversations()
         scope.launch(Dispatchers.IO) {
             try { if (saved.await()) {
+                if (!io.github.mangi.eta.agent.prompt.PromptInjectionStore.unbind(
+                        io.github.mangi.eta.agent.prompt.PromptTarget.conversation(conversationId),
+                    )) {
+                    AndroidAgentLogger.warn("Conversation prompt binding cleanup failed")
+                }
                 ConversationDraftRepository.get(appContext).remove(ConversationSubject.chat(conversationId))
                 attachmentDrafts.remove(ConversationSubject.chat(conversationId))
                 loadedAttachmentDrafts.remove(ConversationSubject.chat(conversationId))
@@ -1341,14 +1410,15 @@ internal class AgentAppState(
     }
 
     fun toggleConversationPin(conversationId: String) {
-        if (conversationId !in conversationsById) return
-        conversationPinnedIds = if (conversationId in conversationPinnedIds) {
-            conversationPinnedIds - conversationId
-        } else {
-            conversationPinnedIds + conversationId
-        }
+        setConversationPinned(conversationId, conversationId !in conversationPinnedIds)
+    }
+
+    fun setConversationPinned(conversationId: String, pinned: Boolean): Deferred<Boolean>? {
+        if (conversationId !in conversationsById) return null
+        if ((conversationId in conversationPinnedIds) == pinned) return null
+        conversationPinnedIds = if (pinned) conversationPinnedIds + conversationId else conversationPinnedIds - conversationId
         refreshConversationSummaries()
-        persistConversations()
+        return persistConversations()
     }
 
     suspend fun exportConversationMarkdown(conversationId: String): String? {
@@ -1420,6 +1490,11 @@ internal class AgentAppState(
                             current.messages == latest.messages && current.journal == latest.journal && current.history == latest.history &&
                             current.roleplayMessages == latest.roleplayMessages && current.roleplay == latest.roleplay)
                         val id = plan.draft.node.conversationId
+                        if (plan.state.roleplay == null) {
+                            check(io.github.mangi.eta.agent.prompt.PromptInjectionStore.bindNewConversationDefault(id)) {
+                                "BRANCH_PROMPT_BINDING_FAILED"
+                            }
+                        }
                         canCancelConversationBranch = false
                         conversationBranchPhase = R.string.branch_stage_save_branch
                         conversationsById = conversationsById + (id to plan.state)
@@ -1488,11 +1563,70 @@ internal class AgentAppState(
     fun interruptAndSendCurrentMessage(submittedText: String? = null): Boolean =
         submitOrQueueCurrentMessage(submittedText = submittedText, immediateInterrupt = true)
 
+    /** Continues an interrupted chat from its recovered question and checkpoint history. */
+    suspend fun resumeRecoveredRunInput(request: RunInputRequest, answer: String): Boolean {
+        val text = answer.trim()
+        if (request.part.deadlineAtMillis?.let { System.currentTimeMillis() > it } == true) return false
+        val answerLabel = if (request.part.questions.isNotEmpty()) {
+            val forms = runCatching { io.github.mangi.eta.agent.runtime.RunInputForms.answer(request.part.questions, text) }.getOrNull() ?: return false
+            io.github.mangi.eta.agent.runtime.RunInputForms.summary(request.part.questions, forms)
+        } else {
+            if (text.isEmpty() || text.length > 4000 || !request.part.allowFreeText && text !in request.part.options) return false
+            text
+        }
+        if (request.source == io.github.zhh_lgtm.nexus.kernel.api.RunSource.MEETING_HOST ||
+            request.source == io.github.zhh_lgtm.nexus.kernel.api.RunSource.MEETING_PARTICIPANT
+        ) {
+            return MeetingRunCoordinator.resumeInput(appContext, request, text)
+        }
+        val conversationId = request.conversationId ?: return false
+        return withLoadedConversations(setOf(conversationId)) {
+            withContext(Dispatchers.Main.immediate) {
+                if (conversationId in pendingConversationDeletes) return@withContext false
+                val state = conversationsById[conversationId] ?: return@withContext false
+                if (state.isStreaming || state.isCompacting) return@withContext false
+                // Consumption is committed with the answer/outbox before any Runtime submission.
+                val continuation = withContext(Dispatchers.IO) {
+                    io.github.mangi.eta.agent.runtime.RecoveredRunInputStore(appContext).use { store ->
+                        store.prepare(appContext, request, text, state.history)
+                    }
+                }
+                val current = conversationsById[conversationId] ?: return@withContext false
+                if (current.isStreaming || current.isCompacting || conversationId in pendingConversationDeletes) return@withContext false
+                val notice = if (continuation.exact) "补充回答（恢复原工具结果）\n" else
+                    "补充回答（旧记录无法恢复原工具调用；本轮仅核对资料与整理答复，未重放操作）\n"
+                launchConversationRun(
+                    conversationId = conversationId, runId = continuation.runId,
+                    prompt = continuation.requestId, images = emptyList(), history = continuation.messages,
+                    userHistoryMessage = null,
+                    messages = current.messages + UserMessageUi(id = "user-${continuation.runId}", content = notice + answerLabel),
+                    state = current, reasoningEffort = current.reasoningEffort,
+                    operation = AgentRuntimeWire.OP_RESUME_INPUT,
+                )
+            }
+        }
+    }
+
     /** External input is a one-shot handoff; local editing belongs to the draft repository. */
     fun consumeInputSync(conversationId: String?, version: Int, text: String) {
         if (selectedConversationId != conversationId || homeState.inputSyncVersion != version ||
             homeState.messageEdit != null || homeState.input != text || text.isEmpty()) return
         updateCurrentConversation(homeState.copy(input = ""), updateTimestamp = false)
+    }
+
+    suspend fun insertPluginDraft(expectedConversation: String?, text: String): Boolean = withContext(Dispatchers.Main.immediate) {
+        if (selectedConversationId != expectedConversation || homeState.messageEdit != null) return@withContext false
+        ConversationDraftRepository.get(appContext).insertExternal(ConversationSubject.chat(expectedConversation), text) {
+            selectedConversationId == expectedConversation && homeState.messageEdit == null
+        }
+    }
+
+    suspend fun pluginDraft(expectedConversation: String?): String? = withContext(Dispatchers.Main.immediate) {
+        if (selectedConversationId != expectedConversation || homeState.messageEdit != null) return@withContext null
+        val repository = ConversationDraftRepository.get(appContext)
+        val subject = ConversationSubject.chat(expectedConversation)
+        val draft = repository.activeDraft(subject) ?: repository.load(repository.open(subject))
+        draft?.text?.takeIf { selectedConversationId == expectedConversation }
     }
 
     fun steerQueuedMessage(id: String) {
@@ -1573,6 +1707,7 @@ internal class AgentAppState(
                 pendingImages = pendingImages,
                 pendingFileReferences = pendingFileReferences,
                 immediateInterrupt = immediateInterrupt,
+                selectedSkillIds = homeState.selectedSkillIds,
             )
             updateCurrentConversation(
                 state = AgentMessageQueueReducer.enqueue(homeState, queued),
@@ -1599,6 +1734,10 @@ internal class AgentAppState(
 
         val wasNew = selectedConversationId == null
         val conversationId = selectedConversationId ?: newConversationId().also {
+            if (!io.github.mangi.eta.agent.prompt.PromptInjectionStore.bindNewConversationDefault(it)) {
+                Toast.makeText(appContext, "无法保存新会话的默认提示词，请检查提示词设置后重试。", Toast.LENGTH_LONG).show()
+                return false
+            }
             selectedConversationId = it
             loadedAttachmentDrafts += ConversationSubject.chat(it)
         }
@@ -1609,7 +1748,18 @@ internal class AgentAppState(
             pendingImages = pendingImages,
             pendingFileReferences = pendingFileReferences,
             editBoundary = editBoundary,
+            selectedSkillIds = homeState.selectedSkillIds,
         )
+        if (!accepted && wasNew) {
+            selectedConversationId = null
+            conversationTitles = conversationTitles - conversationId
+            loadedAttachmentDrafts.remove(ConversationSubject.chat(conversationId))
+            if (!io.github.mangi.eta.agent.prompt.PromptInjectionStore.unbind(
+                    io.github.mangi.eta.agent.prompt.PromptTarget.conversation(conversationId),
+                )) {
+                AndroidAgentLogger.warn("New conversation prompt binding rollback failed")
+            }
+        }
         if (accepted && wasNew) saveAttachmentDraft(ConversationSubject.chat(null), ConversationAttachments())
         return accepted
     }
@@ -1644,6 +1794,7 @@ internal class AgentAppState(
             pendingFileReferences = item.pendingFileReferences,
             editBoundary = null,
             preserveCurrentDraft = true,
+            selectedSkillIds = item.selectedSkillIds,
         )
     }
 
@@ -1655,6 +1806,7 @@ internal class AgentAppState(
         pendingFileReferences: List<PendingFileReferenceUi>,
         editBoundary: AgentConversationRevisionReducer.Boundary?,
         preserveCurrentDraft: Boolean = false,
+        selectedSkillIds: List<String> = state.selectedSkillIds,
     ): Boolean {
         val fileReferences = pendingFileReferences.map { it.reference }
         val runtimePrompt = AgentFileReferencePromptCodec.format(prompt, fileReferences)
@@ -1719,6 +1871,7 @@ internal class AgentAppState(
                 )
             },
             reasoningEffort = state.reasoningEffort,
+            selectedSkillIds = selectedSkillIds,
         )
     }
 
@@ -1835,7 +1988,13 @@ internal class AgentAppState(
             refreshConversationModel()
             conversationPaneState = conversationPaneState.copy(selectedConversationId = null)
             refreshConversationSummaries()
-            persistConversations()
+            persistConversations(onSaved = {
+                if (!io.github.mangi.eta.agent.prompt.PromptInjectionStore.unbind(
+                        io.github.mangi.eta.agent.prompt.PromptTarget.conversation(conversationId),
+                    )) {
+                    AndroidAgentLogger.warn("Conversation prompt binding cleanup failed")
+                }
+            })
             return
         }
         updateConversation(conversationId, revised)
@@ -1913,9 +2072,12 @@ internal class AgentAppState(
         operation: String = AgentRuntimeWire.OP_CHAT,
         rewriteTargetMessageId: String? = null,
         compactionSelection: IntRange? = null,
+        selectedSkillIds: List<String> = state.selectedSkillIds,
     ): Boolean {
         if (conversationId in pendingConversationDeletes || !runStore.register(runId, conversationId)) return false
-        // 发送即绑定：会话记住本轮实际使用的模型，回落到默认模型时也随之更新。
+        val submissionController = io.github.mangi.eta.agent.runtime.AgentRunController()
+        runStore.registerLocalCancellation(runId, submissionController::cancel)
+        // Resolve the run separately so a temporary fallback does not overwrite the conversation binding.
         val runModelId = state.effectiveModelId
         val runReasoningEffort = providers.enabledModel(runModelId)?.let { (provider, model) ->
             RuntimeConfigRepository.reasoningCapabilities(provider, model)?.normalize(reasoningEffort)
@@ -1924,7 +2086,6 @@ internal class AgentAppState(
         updateConversation(
             conversationId,
             state.copy(
-                modelId = runModelId,
                 isStreaming = true,
                 history = if (operation == AgentRuntimeWire.OP_REWRITE_REPLY) state.history else history + listOfNotNull(userHistoryMessage),
                 journal = state.journal.ifEmpty { state.history } + listOfNotNull(userHistoryMessage),
@@ -1937,6 +2098,8 @@ internal class AgentAppState(
         val initialPersistence = persistConversations()
 
         val preparationJob = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            var runtimeRequested = false
+            try {
             // write-ahead：用户消息未提交前不把可能产生副作用的 run 交给 Runtime。
             if (!initialPersistence.await()) {
                 withContext(Dispatchers.Main) {
@@ -1988,7 +2151,8 @@ internal class AgentAppState(
             } else {
                 ReasoningEffort.OFF
             }
-            val config = RuntimeConfigRepository.runtimeConfigFor(runModelId)?.copy(
+            submissionController.throwIfStopped()
+            val config = prepareRuntimeConfig(runModelId)?.copy(
                 terminalTools = agentBooleanForUi(Prefs.Keys.AGENT_TERMINAL_TOOLS),
                 browserTools = agentBooleanForUi(Prefs.Keys.AGENT_BROWSER_TOOLS),
                 deviceDirectTools = agentBooleanForUi(Prefs.Keys.AGENT_DEVICE_DIRECT_TOOLS),
@@ -2000,6 +2164,7 @@ internal class AgentAppState(
                 thinkingEnabled = permittedReasoningEffort.enablesReasoning,
                 reasoningEffort = permittedReasoningEffort,
             )
+            submissionController.throwIfStopped()
             if (config == null) {
                 withContext(Dispatchers.Main) {
                     applyRunResult(
@@ -2039,6 +2204,45 @@ internal class AgentAppState(
                     source = "user_attach",
                 )
             }
+            val routeDecision = withContext(Dispatchers.IO) {
+                RuntimeConfigRepository.routeChatRuntimeConfig(
+                    primary = effectiveConfig,
+                    primaryModelId = runModelId.orEmpty(),
+                    requirements = ModelCandidateRouteRequest(
+                        purpose = ModelCandidatePurpose.CHAT,
+                        estimatedInputTokens = ContextBudgetPolicy.estimateTextTokens(prompt) +
+                            ContextBudgetPolicy.estimateTextTokens(effectiveConfig.systemPrompt) +
+                            ContextBudgetPolicy.estimateMessages(history) +
+                            ContextBudgetPolicy.estimateImages(modelImages.size),
+                        requiredTools = listOf(
+                            effectiveConfig.terminalTools,
+                            effectiveConfig.browserTools,
+                            effectiveConfig.deviceDirectTools,
+                            effectiveConfig.deviceSensitiveReadTools,
+                            effectiveConfig.deviceSensitiveActionTools,
+                            effectiveConfig.subagentTools,
+                        ).any { it },
+                        requiredVision = modelImages.isNotEmpty(),
+                    ),
+                )
+            }
+            val routedConfig = routeDecision.selected?.config
+            if (routedConfig == null) {
+                withContext(Dispatchers.Main) {
+                    applyRunResult(
+                        runId,
+                        AgentRuntimeWire.RunResult(
+                            runId = runId,
+                            ok = false,
+                            content = "",
+                            error = "没有符合本次会话工具、视觉或上下文约束的候选模型。请调整候选模型集合。",
+                            operation = operation,
+                            rewriteTargetMessageId = rewriteTargetMessageId,
+                        ),
+                    )
+                }
+                return@launch
+            }
             if (withContext(Dispatchers.Main) { runStore.isStopRequested(runId) }) {
                 withContext(Dispatchers.Main) {
                     applyRunResult(runId, AgentRuntimeWire.RunResult(runId, false, "", "已停止", operation = operation))
@@ -2050,7 +2254,7 @@ internal class AgentAppState(
                 rewriteTargetMessageId = rewriteTargetMessageId,
                 runId = runId,
                 prompt = prompt,
-                config = effectiveConfig.copy(supportsSearchSuggestions = true),
+                config = routedConfig.copy(supportsSearchSuggestions = true),
                 images = modelImages,
                 history = history,
                 handoff = AgentRuntimeWire.EntryHandoff(
@@ -2059,26 +2263,28 @@ internal class AgentAppState(
                     payload = AgentUiHandoffPayload(
                         conversationId = conversationId,
                         workflowMode = state.workflowMode.name,
+                        selectedSkillIds = selectedSkillIds,
                     ).toJson(),
                 ),
                 compactionSelection = compactionSelection,
             )
             val runtimeResult = runInterruptible {
+                submissionController.throwIfStopped()
+                runtimeRequested = true
                 AgentExecutionPort.run(
                     context = appContext,
                     request = request,
                     onEvent = { event -> enqueueRunEvent(runId, event) },
+                    controller = submissionController,
                 )
             }
             val result = if (state.roleplay == null && AgentRuntimeLocalFallback.shouldUse(request, runtimeResult)) {
-                val controller = io.github.mangi.eta.agent.runtime.AgentRunController()
-                withContext(Dispatchers.Main) {
-                    runStore.registerLocalCancellation(runId, controller::cancel)
-                }
                 runInterruptible {
-                    AgentRuntimeLocalFallback.run(request, controller, onTelemetry = {
-                        io.github.mangi.eta.agent.runtime.AgentRunMetricsStore.enqueue(appContext, it)
-                    }, priceResolver = { provider, model ->
+                    AgentRuntimeLocalFallback.run(request, submissionController,
+                        executionStore = io.github.mangi.eta.data.repository.NexusExecutionStore.get(appContext),
+                        onTelemetry = {
+                            io.github.mangi.eta.agent.runtime.AgentRunMetricsStore.enqueue(appContext, it)
+                        }, priceResolver = { provider, model ->
                         io.github.mangi.eta.agent.runtime.AgentTokenPriceStore.resolve(appContext, provider, model)
                     }) { event ->
                         // Runtime IPC events arrive on Main; the local model runs on IO.
@@ -2093,6 +2299,22 @@ internal class AgentAppState(
             }
             withContext(Dispatchers.Main) {
                 applyRunResult(runId, result, acknowledgeRuntimeResult = true)
+            }
+            } catch (cancelled: CancellationException) {
+                // ViewModel disposal must not acknowledge or replay an uncertain Runtime result.
+                throw cancelled
+            } catch (failure: Exception) {
+                AndroidAgentLogger.warn("Conversation submission failed: type=${failure.safeLogType()}")
+                withContext(Dispatchers.Main) {
+                    applyRunResult(runId, AgentRuntimeWire.RunResult(
+                        runId = runId, ok = false, content = "",
+                        error = if (submissionController.isUserCancelled) "已停止" else if (runtimeRequested)
+                            "任务连接或结果处理异常，请重新打开会话核对已保存的结果，勿直接重复执行。"
+                        else "任务准备失败，请检查模型和会话配置后重试。",
+                        contextSnapshotRef = if (runtimeRequested) runId else "",
+                        operation = operation, rewriteTargetMessageId = rewriteTargetMessageId,
+                    ))
+                }
             }
         }
         runStore.observe(runId, preparationJob)
@@ -2528,15 +2750,15 @@ internal class AgentAppState(
         // 或中途的 Running 状态使已结束的思考重新展开、播放动画。
         Snapshot.withMutableSnapshot {
             flushPendingRunDelta(runId)
-            updateMessages(runId, updateTimestamp = false) { messages ->
-                runMessageProjector.resetForReplay(
-                    runId = runId,
-                    messages = messages,
-                    replaySupplementIndexes = events.filterIsInstance<AgentEvent.UserSupplementReceived>()
-                        .mapTo(mutableSetOf()) { it.index },
-                )
+            val projection = runMessageProjector.replay(runId, events, conversationStateForRun(runId).messages)
+            updateMessages(runId, updateTimestamp = projection.updateTimestamp) { projection.messages }
+            events.filterIsInstance<AgentEvent.GuiControlChanged>().lastOrNull()?.let {
+                runStore.updateGuiStatus(runId, it.status)
             }
-            events.forEach { event -> applyRunEvent(runId, event, persistSupplement = false) }
+            if (runStore.isStopRequested(runId) && events.any { it is AgentEvent.RunStarted }) {
+                scope.launch(Dispatchers.IO) { AgentRuntimeClient(appContext, AndroidAgentLogger).cancelRun(runId) }
+            }
+            refreshConversationSummaries()
         }
     }
 
@@ -2787,6 +3009,23 @@ internal class AgentAppState(
         updateTimestamp: Boolean = true,
     ) {
         val isNewConversation = conversationId !in conversationsById
+        val before = conversationsById[conversationId]
+        val last = state.messages.lastOrNull()
+        val hasNewUserMessage = before?.isConversationLoaded != false &&
+            last is UserMessageUi && last.id != before?.messages?.lastOrNull()?.id
+        if (isNewConversation || hasNewUserMessage || (before?.isStreaming == true && !state.isStreaming)) {
+            val now = System.currentTimeMillis()
+            conversationMessageActivity = conversationMessageActivity + (conversationId to now)
+            scope.launch(Dispatchers.IO) {
+                try {
+                    ConversationExtensionRepository.recordMessageActivity(appContext, conversationId, now)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    AndroidAgentLogger.warn("Message activity persistence failed: type=${failure.safeLogType()}")
+                }
+            }
+        }
         saveAttachmentChanges(ConversationSubject.chat(conversationId), conversationsById[conversationId] ?: emptyChatState(defaultThinkingEnabled), state)
         conversationsById = conversationsById + (conversationId to state)
         if (isNewConversation) ensureConversationExtension(conversationId)
@@ -2812,6 +3051,20 @@ internal class AgentAppState(
     }
 
     private fun refreshConversationSummaries() {
+        val locale = appContext.resources.configuration.locales[0]
+        if (previewLocale != locale.toLanguageTag()) {
+            previewLocale = locale.toLanguageTag()
+            conversationPreviewCache.clear()
+        }
+        conversationPreviewCache.keys.retainAll(conversationsById.keys)
+        val timeFormatter = ConversationTimeLabels.Formatter(
+            nowMillis = System.currentTimeMillis(),
+            locale = locale,
+            timeZone = java.util.TimeZone.getDefault(),
+            use24HourClock = DateFormat.is24HourFormat(appContext),
+            yesterdayLabel = appContext.getString(R.string.time_yesterday),
+            recentLabel = appContext.getString(R.string.time_recent),
+        )
         val summaries = conversationsById.entries
             .sortedWith(
                 compareByDescending<Map.Entry<String, AgentChatHomeUiState>> { (id, _) ->
@@ -2831,7 +3084,7 @@ internal class AgentAppState(
                     title = conversationTitles[id].orEmpty().ifBlank {
                         appContext.getString(R.string.conversation_unnamed)
                     },
-                    preview = when (lastMessage) {
+                    preview = conversationPreviewCache[id]?.takeIf { it.first === lastMessage }?.second ?: when (lastMessage) {
                         is UserMessageUi -> AgentFileReferencePromptCodec
                             .parse(lastMessage.content)
                             .let { parsed ->
@@ -2850,26 +3103,22 @@ internal class AgentAppState(
                             lastMessage.toolName,
                         )
                         else -> appContext.getString(R.string.conversation_preview_empty)
-                    }.take(MAX_PREVIEW_CHARS),
+                    }.take(MAX_PREVIEW_CHARS).also { conversationPreviewCache[id] = lastMessage to it },
                     timeLabel = if (state.isStreaming) {
                         appContext.getString(R.string.time_now)
                     } else {
                         lastActiveAt.takeIf { it > 0L }?.let { timestamp ->
-                            ConversationTimeLabels.label(
-                                timestampMillis = timestamp,
-                                locale = appContext.resources.configuration.locales[0],
-                                use24HourClock = DateFormat.is24HourFormat(appContext),
-                                yesterdayLabel = appContext.getString(R.string.time_yesterday),
-                                recentLabel = appContext.getString(R.string.time_recent),
-                            )
+                            timeFormatter.label(timestamp)
                         } ?: appContext.getString(R.string.time_recent)
                     },
                     updatedAtMillis = lastActiveAt,
+                    lastActivityAtMillis = maxOf(conversationMessageActivity[id] ?: 0L,
+                        extension?.lastMessageAt ?: conversationUpdatedAt[id] ?: 0L),
                     mode = ConversationModeUi.Chat,
                     isPinned = id in conversationPinnedIds,
                     characterName = state.roleplay?.characterName ?: state.conversationCharacterName,
                     characterAvatarPath = state.roleplay?.avatarPath ?: state.conversationCharacterAvatarPath,
-                    isActiveRun = state.isStreaming,
+                    isActiveRun = state.isStreaming || runStore.activeRunId(id) != null,
                     runStatus = when (runStore.guiStatus(id)) {
                         GuiControlStatus.Waiting -> appContext.getString(R.string.run_waiting_for_gui)
                         GuiControlStatus.UserPaused -> appContext.getString(R.string.run_gui_user_paused)
@@ -2903,6 +3152,7 @@ internal class AgentAppState(
         conversationPaneState = conversationPaneState.copy(
             selectedConversationId = selectedConversationId,
             conversations = filteredSummaries.filterNot(ConversationSummaryUi::isArchived),
+            unfilteredConversations = summaries.filterNot(ConversationSummaryUi::isArchived),
             archivedConversations = filteredSummaries
                 .filter(ConversationSummaryUi::isArchived)
                 .sortedByDescending(ConversationSummaryUi::updatedAtMillis),

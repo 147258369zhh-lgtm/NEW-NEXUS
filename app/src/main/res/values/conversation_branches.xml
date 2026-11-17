@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="chat_create_automation">Create task</string>
+    <string name="chat_create_automation_failed">Could not open the task editor. Please try again.</string>
     <string name="branch_graph_title">Conversation branches</string>
     <string name="branch_create">Branch from here</string>
     <string name="branch_title_from">Branch · %1$s</string>

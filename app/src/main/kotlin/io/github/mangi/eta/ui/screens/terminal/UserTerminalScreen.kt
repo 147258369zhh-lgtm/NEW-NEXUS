@@ -32,6 +32,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -63,6 +64,8 @@ import io.github.mangi.eta.ui.components.EtaMonospace
 import io.github.mangi.eta.ui.components.ansiPlainText
 import io.github.mangi.eta.ui.components.ansiToAnnotatedString
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.DropdownImpl
 import top.yukonga.miuix.kmp.basic.Icon
@@ -271,7 +274,9 @@ private fun CommandBlock(
             )
             if (block.output.isNotEmpty()) {
                 // 原始输出含 ANSI 序列；整段重解析保证流式截断的序列在下一次到达后恢复。
-                val parsedOutput = remember(block.output) { ansiToAnnotatedString(block.output) }
+                val parsedOutput by produceState(AnnotatedString(""), block.id, block.output) {
+                    value = withContext(Dispatchers.Default) { ansiToAnnotatedString(block.output) }
+                }
                 Text(
                     text = parsedOutput,
                     style = MiuixTheme.textStyles.footnote1.copy(fontFamily = EtaMonospace),

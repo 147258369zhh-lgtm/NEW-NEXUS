@@ -68,12 +68,24 @@ internal class BackgroundTerminalJobs(
         return result.put("output", logs.text).put("output_truncated", logs.truncated).toString()
     }
 
-    fun stop(id: String): String {
+    fun stop(id: String, reason: String = "stopped"): String {
         val task = supervisor.findTask(id)?.takeIf { it.commandTask }
             ?: return failure("JOB_NOT_FOUND", "未找到后台命令")
-        if (!supervisor.stopCommand(task.id)) return failure("JOB_STOP_FAILED", "无法停止后台命令，请检查当前身份授权")
+        if (!supervisor.stopCommand(task.id, reason)) {
+            return failure("JOB_STOP_FAILED", "无法确认后台命令及其子进程已退出；任务记录保留，可重试停止")
+        }
         refresh()
         return taskJson(supervisor.findTask(id) ?: task).put("action", "stop").toString()
+    }
+
+    /** Runtime 取消在 UI 线程触发，停止探测放到后台命令宿主线程，避免阻塞界面。 */
+    fun stopAsync(id: String, reason: String) {
+        runCatching {
+            executor.execute {
+                runCatching { stop(id, reason) }
+                    .onFailure { logger.warn("Background command cancel failed: type=${it.javaClass.simpleName}") }
+            }
+        }.onFailure { logger.warn("Background command cancel rejected: type=${it.javaClass.simpleName}") }
     }
 
     fun waitFor(id: String, timeoutMs: Long, isCancelled: () -> Boolean): String {
@@ -145,8 +157,15 @@ internal class BackgroundTerminalJobs(
     }
 
     @Synchronized
-    fun stopAll() {
-        supervisor.list().filter { it.task.commandTask && it.running }.forEach { supervisor.stopCommand(it.task.id) }
+    fun stopAll(reason: String = "stopped") {
+        val failures = supervisor.list().filter { it.task.commandTask && it.running }.mapNotNull { status ->
+            // 单个任务停止失败不能阻断其余任务的清理。
+            val stopped = runCatching { supervisor.stopCommand(status.task.id, reason) }
+                .onFailure { logger.warn("Background command stop failed: type=${it.javaClass.simpleName}") }
+                .getOrDefault(false)
+            if (stopped) null else status.task.id
+        }
+        if (failures.isNotEmpty()) logger.warn("Background command stop left unconfirmed tasks: count=${failures.size}")
         refresh()
     }
 

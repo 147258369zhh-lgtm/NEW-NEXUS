@@ -52,6 +52,15 @@ class ConversationAttachmentDraftsTest {
         subjects.forEachIndexed { index, subject -> assertEquals(value("$index"), fresh.load(fresh.open(subject))) }
     }
 
+    @Test fun composerSkillSelectionPersistsPerConversationAndOldDraftsDefaultEmpty() = runBlocking {
+        val store = store()
+        val selected = ConversationAttachments(selectedSkillIds = listOf("skill-a", "skill-b"))
+        store.save(store.open(chat), selected).await()
+        assertEquals(selected, store().let { it.load(it.open(chat)) })
+        assertEquals(ConversationAttachments(), store.decode("""{"version":1,"images":[],"files":[]}"""))
+        assertFalse(store.decode(store.encode(selected)).isEmpty)
+    }
+
     @Test fun rapidChangesAndAcceptedClearNeverBringBackSubmittedAttachments() = runBlocking {
         val store = store(); val lease = store.open(chat)
         repeat(100) { store.save(lease, value("$it")) }

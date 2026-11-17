@@ -25,7 +25,8 @@ internal object SkillQualityPolicy {
     ): SkillQualityReport {
         val useCount = usage?.useCount ?: 0
         val failureCount = usage?.failureCount ?: 0
-        val failureRate = if (useCount > 0) failureCount.toFloat() / useCount else 0f
+        val settled = (usage?.successCount ?: 0).toLong() + failureCount
+        val failureRate = if (settled > 0) failureCount.toFloat() / settled else 0f
         val activityAt = usage?.lastUsedAt?.takeIf { it > 0L }
             ?: entry.provenance?.installedAt?.takeIf { it > 0L }
         val days = activityAt?.let { timestamp ->
@@ -33,7 +34,7 @@ internal object SkillQualityPolicy {
         }
         val issue = when {
             !entry.enabled -> SkillQualityIssue.NONE
-            useCount >= MIN_FAILURE_SAMPLE && failureRate >= HIGH_FAILURE_RATE ->
+            settled >= MIN_FAILURE_SAMPLE && failureRate >= HIGH_FAILURE_RATE ->
                 SkillQualityIssue.HIGH_FAILURE_RATE
             useCount == 0 && days != null && days >= STALE_DAYS -> SkillQualityIssue.STALE
             useCount > 0 && days != null && days >= STALE_DAYS -> SkillQualityIssue.STALE

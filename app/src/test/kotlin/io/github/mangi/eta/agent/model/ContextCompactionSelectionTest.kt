@@ -6,6 +6,11 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class ContextCompactionSelectionTest {
+    @Test fun firstConversationTurnCanBeSelectedWithoutAPrependedSystemMessage() {
+        val messages = JSONArray().put(JSONObject().put("role", "user").put("content", "first"))
+            .put(JSONObject().put("role", "assistant").put("content", "completed"))
+        assertEquals(ContextCompactionSelection.Range(0, 2), ContextCompactionSelection.resolve(messages, 0, 0..1))
+    }
     @Test fun selectedRangeKeepsSystemBoundaryAndToolPair() {
         val messages = JSONArray().apply {
             put(JSONObject().put("role", "system"))

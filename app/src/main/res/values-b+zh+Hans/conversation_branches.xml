@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="chat_create_automation">创建任务</string>
+    <string name="chat_create_automation_failed">无法打开任务编辑页面，请重试。</string>
     <string name="branch_graph_title">会话分支</string>
     <string name="branch_create">从这里创建分支</string>
     <string name="branch_title_from">分支 · %1$s</string>

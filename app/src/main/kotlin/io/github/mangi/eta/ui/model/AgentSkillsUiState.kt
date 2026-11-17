@@ -10,7 +10,11 @@ data class AgentSkillsUiState(
     val busySkillId: String? = null,
     val replacement: SkillReplacementUi? = null,
     val notice: SkillNoticeUi? = null,
+    val editor: SkillEditorUi? = null,
 )
+
+@Immutable
+data class SkillEditorUi(val id: String, val name: String, val body: String, val revision: String)
 
 @Immutable
 data class SkillReplacementUi(

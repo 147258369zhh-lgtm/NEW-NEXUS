@@ -53,6 +53,8 @@ internal class AgentTraceFormatter {
             "open_system_panel" -> "打开系统面板"
             "read_image" -> "查看图片"
             "voice_synthesize" -> "生成语音"
+            in AgentCloudToolCatalog.names -> summarizeCloudArguments(toolCall.name, toolCall.argumentsJson)
+            "deliver_file" -> "交付生成文件"
             AgentSubagentToolCatalog.TOOL_NAME -> summarizeSubagentArguments(toolCall.argumentsJson)
             AgentSubagentToolCatalog.PROFILE_TOOL_NAME -> summarizeSubagentProfileArguments(toolCall.argumentsJson)
             AgentConversationToolCatalog.READ_HISTORY -> "读取当前会话历史"
@@ -168,6 +170,13 @@ internal class AgentTraceFormatter {
             "$label · $chars 字符"
         }.getOrDefault(label)
 
+    /** 云内容、文件引用、任务标识和模型提示词不进入可持久化轨迹。 */
+    private fun summarizeCloudArguments(toolName: String, argumentsJson: String): String = runCatching {
+        val operation = JSONObject(argumentsJson).optString("operation")
+        AgentCloudToolCatalog.operationLabel(toolName, operation)
+            ?: if (toolName == AgentCloudToolCatalog.DOCUMENT) "云文档操作" else "云媒体操作"
+    }.getOrDefault(if (toolName == AgentCloudToolCatalog.DOCUMENT) "云文档操作" else "云媒体操作")
+
     /** 只展示动作与长度，不回显正文：输入内容可能是密码或私人消息。 */
     private fun summarizeTypeText(argumentsJson: String): String =
         runCatching {
@@ -281,12 +290,17 @@ internal class AgentTraceFormatter {
     fun isSuccessResult(result: AgentModelClient.ToolResult): Boolean =
         parseResultJson(result)?.optBoolean("ok", true) ?: true
 
+    /** A command or request may already have reached the outside world; success is not knowable. */
+    fun isUnconfirmedResult(result: AgentModelClient.ToolResult): Boolean =
+        parseResultJson(result)?.let { it.optString("status") == "unconfirmed" || it.optBoolean("outcome_unknown") } == true
+
     fun summarizeResult(
         toolName: String,
         result: AgentModelClient.ToolResult,
     ): String {
         val json = parseResultJson(result)
         if (toolName == "web_search" || toolName == "fetch_url") return summarizeWebResult(toolName, json)
+        if (toolName in AgentCloudToolCatalog.names) return summarizeCloudResult(toolName, json)
         // 终端 exit_code != 0 时 ok=false 但没有 code 字段，必须走专用分支保留退出码与输出
         if (toolName in AgentTerminalToolCatalog.names || toolName == "run_command") {
             return summarizeTerminalResult(toolName, json)
@@ -327,6 +341,19 @@ internal class AgentTraceFormatter {
 
     private fun parseResultJson(result: AgentModelClient.ToolResult): JSONObject? =
         runCatching { JSONObject(result.content) }.getOrNull()
+
+    private fun summarizeCloudResult(toolName: String, json: JSONObject?): String {
+        val label = if (toolName == AgentCloudToolCatalog.DOCUMENT) "云文档" else "云媒体"
+        if (json == null) return "${label}结果未确认"
+        if (json.optBoolean("outcome_unknown") || json.optString("status") == "unconfirmed") {
+            return "${label}请求结果未确认"
+        }
+        if (!json.optBoolean("ok", true)) return "${label}操作失败"
+        if (json.optBoolean("pending") || json.optString("status") in setOf("pending", "running") ||
+            json.optString("task_status") in setOf("PENDING", "RUNNING")) return "${label}任务处理中"
+        if (json.optBoolean("refused")) return "${label}请求未获供应商执行"
+        return "${label}操作完成"
+    }
 
     /**
      * 网页错误正文、搜索词和页面标题可能回显私密 URL，只保留计数。动作与主机已在参数摘要中，

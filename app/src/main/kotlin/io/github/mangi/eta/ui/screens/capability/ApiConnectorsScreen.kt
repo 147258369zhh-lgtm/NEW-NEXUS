@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -34,15 +36,18 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.capability.ApiConnectorAuthType
 import io.github.mangi.eta.agent.capability.ApiConnectorDefinition
 import io.github.mangi.eta.agent.capability.ApiConnectorService
@@ -53,6 +58,7 @@ import io.github.mangi.eta.agent.capability.ApiOAuth2Configuration
 import io.github.mangi.eta.ui.components.EtaChoiceChip
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.NexusSettingsTabs
 import io.github.mangi.eta.ui.components.PreferenceIcon
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -60,16 +66,16 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import top.yukonga.miuix.kmp.basic.Card
+import io.github.mangi.eta.ui.components.NexusSettingsCard as Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
-import top.yukonga.miuix.kmp.basic.SmallTitle
+import io.github.mangi.eta.ui.components.NexusSettingsSmallTitle as SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.preference.ArrowPreference
-import top.yukonga.miuix.kmp.preference.SwitchPreference
+import io.github.mangi.eta.ui.components.NexusSettingsArrowPreference as ArrowPreference
+import io.github.mangi.eta.ui.components.NexusSettingsSwitchPreference as SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
 
@@ -83,17 +89,20 @@ internal fun ApiConnectorsScreen(
     var connectors by remember { mutableStateOf<List<ApiConnectorDefinition>>(emptyList()) }
     var credentialAvailability by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
     var loading by remember { mutableStateOf(true) }
+    var loadError by remember { mutableStateOf<String?>(null) }
     var refreshGeneration by remember { mutableIntStateOf(0) }
     var showAdd by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<ApiConnectorDefinition?>(null) }
     var deleteTarget by remember { mutableStateOf<ApiConnectorDefinition?>(null) }
     var pendingDangerousAction by remember { mutableStateOf<Pair<ApiConnectorDefinition, String>?>(null) }
     var credentialTarget by remember { mutableStateOf<ApiConnectorDefinition?>(null) }
+    var disconnectTarget by remember { mutableStateOf<ApiConnectorDefinition?>(null) }
     var notice by remember { mutableStateOf<ApiNotice?>(null) }
 
     fun reload() {
         scope.launch {
             loading = true
+            loadError = null
             runCatching {
                 withContext(Dispatchers.IO) {
                     val loaded = service.connectors()
@@ -104,7 +113,7 @@ internal fun ApiConnectorsScreen(
                 credentialAvailability = credentials
                 selected = selected?.let { current -> loaded.firstOrNull { it.id == current.id } }
             }.onFailure {
-                notice = ApiNotice("读取失败", safeApiMessage(it), true)
+                loadError = safeApiMessage(it)
             }
             loading = false
         }
@@ -202,7 +211,7 @@ internal fun ApiConnectorsScreen(
     ) {
         item(key = "api_header") {
             SmallTitle("连接 ${connectors.size}")
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+            Card(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -220,10 +229,10 @@ internal fun ApiConnectorsScreen(
                 }
             }
         }
-        if (connectors.isEmpty() && !loading) {
+        if (apiConnectorEmptyStateVisible(connectors.isEmpty(), loading, loadError)) {
             item(key = "api_empty") {
                 SmallTitle("开始连接")
-                Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+                Card(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                     Column(
                         modifier = Modifier.fillMaxWidth().padding(18.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -237,6 +246,20 @@ internal fun ApiConnectorsScreen(
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         )
                         TextButton(text = "添加连接", onClick = { showAdd = true })
+                    }
+                }
+            }
+        }
+        loadError?.let { message ->
+            item(key = "api_load_error") {
+                Card(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text("连接读取失败", style = MiuixTheme.textStyles.body1, color = MiuixTheme.colorScheme.error)
+                        Text(message, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                        TextButton(text = "重试", enabled = !loading, onClick = { reload() })
                     }
                 }
             }
@@ -264,7 +287,7 @@ internal fun ApiConnectorsScreen(
         }
         item(key = "api_security") {
             SmallTitle("安全边界")
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
+            Card(Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) {
                 ArrowPreference(
                     title = "请求不跟随重定向",
                     summary = "只访问连接声明的主机；响应和文档均有大小上限",
@@ -301,6 +324,7 @@ internal fun ApiConnectorsScreen(
             },
             onEditCredential = { credentialTarget = connector },
             onAuthorize = { authorize(connector) },
+            onDisconnect = { disconnectTarget = connector },
             onDelete = { deleteTarget = connector },
         )
     }
@@ -315,6 +339,38 @@ internal fun ApiConnectorsScreen(
                 notice = ApiNotice("访问令牌已更新", "新凭据将在下一轮对话中生效。", false)
             },
         )
+    }
+
+    disconnectTarget?.let { connector ->
+        WindowDialog(
+            show = true,
+            title = "清除本地凭据？",
+            summary = if (connector.authType == ApiConnectorAuthType.OAUTH2) {
+                "${connector.name} 的本地 OAuth 令牌和 Client Secret 将被删除；再次使用前需要重新配置并授权。"
+            } else {
+                "${connector.name} 的本地访问令牌将被删除；连接和已审核的操作配置会保留。"
+            },
+            onDismissRequest = { disconnectTarget = null },
+        ) {
+            MiuixDialogActions(
+                confirmText = "清除凭据",
+                destructive = true,
+                onCancel = { disconnectTarget = null },
+                onConfirm = {
+                    disconnectTarget = null
+                    scope.launch {
+                        runCatching {
+                            withContext(Dispatchers.IO) { service.disconnect(connector.id) }
+                        }.onSuccess {
+                            notice = ApiNotice("凭据已清除", "Agent 将无法再使用此连接，直到重新配置凭据。", false)
+                            refreshGeneration += 1
+                        }.onFailure {
+                            notice = ApiNotice("清除失败", safeApiMessage(it), true)
+                        }
+                    }
+                },
+            )
+        }
     }
 
     pendingDangerousAction?.let { (connector, actionName) ->
@@ -381,6 +437,9 @@ internal fun ApiConnectorsScreen(
     }
 }
 
+internal fun apiConnectorEmptyStateVisible(connectorsEmpty: Boolean, loading: Boolean, loadError: String?): Boolean =
+    connectorsEmpty && !loading && loadError == null
+
 @Composable
 private fun ApiConnectorCard(
     connector: ApiConnectorDefinition,
@@ -390,7 +449,7 @@ private fun ApiConnectorCard(
 ) {
     Card(
         modifier = Modifier
-            .padding(horizontal = 12.dp, vertical = 2.dp)
+            .padding(horizontal = 16.dp, vertical = 2.dp)
             .clickable(onClick = onOpen),
     ) {
         Column(Modifier.fillMaxWidth()) {
@@ -424,11 +483,11 @@ private fun ApiConnectorCard(
             SwitchPreference(
                 title = "启用连接",
                 summary = when {
+                    !connector.enabled -> "已停用；启用后继续检查凭据与操作"
                     connector.actions.none { it.enabled } -> "待配置操作"
                     !credentialAvailable && connector.authType == ApiConnectorAuthType.OAUTH2 -> "等待 OAuth 授权"
                     !credentialAvailable -> "缺少访问令牌"
-                    connector.enabled -> connector.activeActions.size.toString() + " 个操作可供 Agent 使用"
-                    else -> "已停用，不向 Agent 暴露操作"
+                    else -> connector.activeActions.size.toString() + " 个操作已启用；实际请求仍受权限与服务状态约束"
                 },
                 checked = connector.enabled,
                 onCheckedChange = onToggle,
@@ -445,6 +504,7 @@ private fun ApiConnectorDetailDialog(
     onActionToggle: (String, Boolean) -> Unit,
     onEditCredential: () -> Unit,
     onAuthorize: () -> Unit,
+    onDisconnect: () -> Unit,
     onDelete: () -> Unit,
 ) {
     WindowDialog(
@@ -498,10 +558,10 @@ private fun ApiConnectorDetailDialog(
                 style = MiuixTheme.textStyles.body2,
                 fontWeight = FontWeight.SemiBold,
             )
-            Column(
-                modifier = Modifier.fillMaxWidth().weight(1f, fill = false).verticalScroll(rememberScrollState()),
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
             ) {
-                connector.actions.forEach { action ->
+                items(connector.actions, key = { it.name }) { action ->
                     SwitchPreference(
                         title = action.name,
                         summary = buildString {
@@ -516,15 +576,18 @@ private fun ApiConnectorDetailDialog(
                     )
                 }
             }
-            Row(
+            FlowRow(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.End,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 TextButton(
                     text = "删除连接",
                     onClick = onDelete,
                 )
-                Spacer(Modifier.weight(1f))
+                if (connector.authType != ApiConnectorAuthType.NONE && credentialAvailable) {
+                    TextButton(text = "清除凭据", onClick = onDisconnect)
+                }
                 TextButton(text = "完成", onClick = onDismiss)
             }
         }
@@ -552,6 +615,9 @@ private fun AddApiConnectorDialog(
     var clientSecret by remember { mutableStateOf("") }
     var working by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var selectedTab by rememberSaveable { mutableStateOf(0) }
+    val connectionScrollState = rememberScrollState()
+    val authorizationScrollState = rememberScrollState()
 
     WindowDialog(
         show = true,
@@ -563,102 +629,123 @@ private fun AddApiConnectorDialog(
             modifier = Modifier.fillMaxWidth().heightIn(max = 600.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            NexusSettingsTabs(
+                tabs = listOf(stringResource(R.string.settings_tab_connections), stringResource(R.string.settings_tab_authorization)),
+                selectedTab = selectedTab,
+                onTabSelected = { selectedTab = it },
+            )
             Column(
-                modifier = Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
+                modifier = Modifier.weight(1f, fill = false).verticalScroll(if (selectedTab == 0) connectionScrollState else authorizationScrollState),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                TextField(
-                    value = name,
-                    onValueChange = { name = it.take(80) },
-                    label = "显示名称（可选）",
-                    singleLine = true,
-                    enabled = !working,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                TextField(
-                    value = specUrl,
-                    onValueChange = { specUrl = it.take(2_048) },
-                    label = "OpenAPI JSON 文档地址",
-                    singleLine = true,
-                    enabled = !working,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Text("认证方式", style = MiuixTheme.textStyles.footnote1)
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    listOf(
-                        ApiConnectorAuthType.NONE to "无认证",
-                        ApiConnectorAuthType.BEARER to "Bearer",
-                        ApiConnectorAuthType.HEADER to "请求头密钥",
-                        ApiConnectorAuthType.OAUTH2 to "OAuth 2.0",
-                    ).forEach { (type, label) ->
-                        EtaChoiceChip(
-                            text = label,
-                            selected = authType == type,
+                if (selectedTab == 0) {
+                    TextField(
+                        value = name,
+                        onValueChange = { name = it.take(80) },
+                        label = "显示名称（可选）",
+                        singleLine = true,
+                        enabled = !working,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    TextField(
+                        value = specUrl,
+                        onValueChange = { specUrl = it.take(2_048) },
+                        label = "OpenAPI JSON 文档地址",
+                        singleLine = true,
+                        enabled = !working,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                if (selectedTab == 1) {
+                    Text("认证方式", style = MiuixTheme.textStyles.footnote1)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        listOf(
+                            ApiConnectorAuthType.NONE to "无认证",
+                            ApiConnectorAuthType.BEARER to "Bearer",
+                            ApiConnectorAuthType.HEADER to "请求头密钥",
+                            ApiConnectorAuthType.OAUTH2 to "OAuth 2.0",
+                        ).forEach { (type, label) ->
+                            EtaChoiceChip(
+                                text = label,
+                                selected = authType == type,
+                                enabled = !working,
+                                onClick = { authType = type },
+                            )
+                        }
+                    }
+                    if (authType == ApiConnectorAuthType.HEADER) {
+                        TextField(
+                            value = headerName,
+                            onValueChange = { headerName = it.take(64) },
+                            label = "认证请求头名称",
+                            singleLine = true,
                             enabled = !working,
-                            onClick = { authType = type },
+                            modifier = Modifier.fillMaxWidth(),
                         )
                     }
-                }
-                if (authType == ApiConnectorAuthType.HEADER) {
-                    TextField(
-                        value = headerName,
-                        onValueChange = { headerName = it.take(64) },
-                        label = "认证请求头名称",
-                        singleLine = true,
-                        enabled = !working,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-                if (authType == ApiConnectorAuthType.OAUTH2) {
-                    TextField(
-                        value = authorizationEndpoint,
-                        onValueChange = { authorizationEndpoint = it.take(2_048) },
-                        label = "授权端点（HTTPS）",
-                        singleLine = true,
-                        enabled = !working,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    TextField(
-                        value = tokenEndpoint,
-                        onValueChange = { tokenEndpoint = it.take(2_048) },
-                        label = "令牌端点（HTTPS）",
-                        singleLine = true,
-                        enabled = !working,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    TextField(
-                        value = clientId,
-                        onValueChange = { clientId = it.take(512) },
-                        label = "Client ID",
-                        singleLine = true,
-                        enabled = !working,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    TextField(
-                        value = scopes,
-                        onValueChange = { scopes = it.take(2_048) },
-                        label = "Scopes（空格分隔，可选）",
-                        singleLine = true,
-                        enabled = !working,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    SwitchPreference(
-                        title = "使用 Client Secret",
-                        summary = "仅用于令牌端点；密钥保存在 Android Keystore",
-                        checked = usesClientSecret,
-                        onCheckedChange = { usesClientSecret = it },
-                    )
-                    if (usesClientSecret) {
+                    if (authType == ApiConnectorAuthType.OAUTH2) {
                         TextField(
-                            value = clientSecret,
-                            onValueChange = { clientSecret = it.take(16_384) },
-                            label = "Client Secret",
+                            value = authorizationEndpoint,
+                            onValueChange = { authorizationEndpoint = it.take(2_048) },
+                            label = "授权端点（HTTPS）",
+                            singleLine = true,
+                            enabled = !working,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        TextField(
+                            value = tokenEndpoint,
+                            onValueChange = { tokenEndpoint = it.take(2_048) },
+                            label = "令牌端点（HTTPS）",
+                            singleLine = true,
+                            enabled = !working,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        TextField(
+                            value = clientId,
+                            onValueChange = { clientId = it.take(512) },
+                            label = "Client ID",
+                            singleLine = true,
+                            enabled = !working,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        TextField(
+                            value = scopes,
+                            onValueChange = { scopes = it.take(2_048) },
+                            label = "Scopes（空格分隔，可选）",
+                            singleLine = true,
+                            enabled = !working,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        SwitchPreference(
+                            title = "使用 Client Secret",
+                            summary = "仅用于令牌端点；密钥保存在 Android Keystore",
+                            checked = usesClientSecret,
+                            onCheckedChange = { usesClientSecret = it },
+                        )
+                        if (usesClientSecret) {
+                            TextField(
+                                value = clientSecret,
+                                onValueChange = { clientSecret = it.take(16_384) },
+                                label = "Client Secret",
+                                singleLine = true,
+                                enabled = !working,
+                                visualTransformation = PasswordVisualTransformation(),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+                    if (authType == ApiConnectorAuthType.BEARER || authType == ApiConnectorAuthType.HEADER) {
+                        TextField(
+                            value = credential,
+                            onValueChange = { credential = it.take(16_384) },
+                            label = "访问令牌",
                             singleLine = true,
                             enabled = !working,
                             visualTransformation = PasswordVisualTransformation(),
@@ -667,21 +754,9 @@ private fun AddApiConnectorDialog(
                         )
                     }
                 }
-                if (authType == ApiConnectorAuthType.BEARER || authType == ApiConnectorAuthType.HEADER) {
-                    TextField(
-                        value = credential,
-                        onValueChange = { credential = it.take(16_384) },
-                        label = "访问令牌",
-                        singleLine = true,
-                        enabled = !working,
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-                error?.let {
-                    Text(it, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.error)
-                }
+            }
+            error?.let {
+                Text(it, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.error)
             }
             if (working) {
                 Row(
